@@ -1,0 +1,30 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.eggs/
+
+# Local app data (sessions, DB, logs — recreate on each machine)
+data/selenium_linkedin_cookies.json
+data/applications.db
+data/bot.log
+data/listings_log.jsonl
+
+# Outputs
+output/screenshots/
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Optional: keep resume out of the repo (remove this line if you want to commit a sample)
+# resume.pdf

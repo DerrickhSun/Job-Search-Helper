@@ -1,0 +1,64 @@
+{
+  "raw_text": "Derrick H. Sun \nWebsite | derrick.han.sun@gmail.com| github.com/derrickhsun | San Diego, CA, 92130 | Phone: 858-397-3992 \nSummary: M.S. in Computer Science with software engineering skills, industry internship, and \nresearch in machine learning. Experience automating workflows, building predictive models, and \noptimizing AI architectures. US Citizen. Available to work immediately, open to relocation. \nEducation \n❖ Purdue University, M.S. in Computer Science           \n                     August 2024 – May 2026 \no Specialization in AI and Machine Learning with focus on Computer Security \no Advanced courses: Deep learning, Prompt Engineering (DSPy), and LLM integration \n❖ UC Berkeley, B.A. in Computer Science and in Applied Math                   June 2020 – May 2024 \no Double major with emphasis on machine learning, AI, and statistics \no Courses: Deep Learning, Statistical Analysis, Data Structures & Algorithms \nWork Experience \n❖ Teaching Assistant | Purdue University, West Lafayette, IN.                  Fall 2024 & Spring 2025 \no Led discussion sessions and held office hours for undergraduate CS courses. \n❖ Data Scientist Intern | Bridger Investment Partners, New York, NY. May 2024 – August 2024 \no Automated data processing workflows with Prefect, removing manual workflows. \no Ran statistical analysis of mortgage data with Python & SQL on AWS S3 & Redshift.  \n❖ Research Assistant | UC Berkeley, Berkeley, CA.  \n \n December 2023 – May 2024 \no Conducted comparative analysis of transformer architectures (GPT-2, Mamba, \nLLaMA) on in-context learning tasks.  \no Results available on GitHub (code and arXiv). \n❖ iOS Developer Intern | NewsBreak, Seattle, WA.                                         May 2022 – August 2022 \no Implemented the Discover page of the NewsBreak iOS app using Swift and UIKit.  \no Developed data-fetching to retrieve & display news for user-selected organizations.  \nResearch and Publications \n❖ Research Coauthor | UC Berkeley, ICL with Custom Models \n December 2023 – May 2024 \n❖ Research Coauthor | UCSD, Skewed Random Utility Models  \n              May 2023 – May 2024 \no Implemented empirical data analysis and Monte Carlo simulations. \no Employed Gosper's hack and memoization to improve computational speed by 80%. \nProjects \n❖ Webnovel Downloader and Translator   \n \n \n \n \n   2025 – 2026 \no Personal project that downloads online content and calls OpenAI API to translate it. \no Utilizes Selenium to display a menu and automatically navigate the internet. \n❖ Deep Learning for Mushroom Classification (Report)  \n \n \n    Spring 2025 \no Built decision trees, neural networks, and naïve Bayes classifiers to determine the \nedibility of mushrooms with >90% accuracy.  \no Deployed LIME for interpretability of the models. \n❖ Uncertainty Quantification with Neural Networks (Report) \n \n                  Spring 2025 \no Trained neural networks to approximate uncertainty in Walmart Sales, evaluating \ntheir performance with quantile calibration error curves.  \no Developed a NN model capable of predicting uncertainty with 10% margin of error. \n❖ Transformer Optimization (Report) \n \n \n \n \n \n          Fall 2023 \no Tested transformer performance on various simple tasks with ReLU-attention and \nquantization optimizations, reducing model runtime on simple tasks by 0.1 seconds. \nProgramming Skills  \n❖ Programming Languages: Python, Java, SQL, C, C++, R, MATLAB, Swift, JavaScript, HTML/CSS \n❖ ML/AI Frameworks: PyTorch, TensorFlow, DSPy, Scikit-learn \n❖ Data Tools: Pandas, NumPy, Matplotlib, Seaborn, RStudio, Jupyter \n❖ Cloud & Databases: AWS S3, Redshift, PostgreSQL, MongoDB \n❖ Development Tools: Git, Docker, Prefect, XCode, LaTeX, RISC-V, Bootstrap \n",
+  "name": "Derrick H. Sun",
+  "website": "https://derrickhsun.github.io/",
+  "linkedin": "https://www.linkedin.com/in/derrick-sun-052130228/",
+  "email": "derrick.han.sun@gmail.com",
+  "phone": "858-397-3992",
+  "skills": [
+    "python",
+    "javascript",
+    "java",
+    "c++",
+    "go",
+    "sql",
+    "postgresql",
+    "mongodb",
+    "aws",
+    "docker",
+    "machine learning",
+    "deep learning",
+    "tensorflow",
+    "pytorch",
+    "git",
+    "❖ Programming Languages: Python",
+    "C",
+    "R",
+    "MATLAB",
+    "Swift",
+    "HTML/CSS",
+    "❖ ML/AI Frameworks: PyTorch",
+    "DSPy",
+    "Scikit-learn",
+    "❖ Data Tools: Pandas",
+    "NumPy",
+    "Matplotlib",
+    "Seaborn",
+    "RStudio",
+    "Jupyter",
+    "❖ Cloud & Databases: AWS S3",
+    "Redshift",
+    "❖ Development Tools: Git",
+    "Prefect",
+    "XCode",
+    "LaTeX",
+    "RISC-V",
+    "Bootstrap"
+  ],
+  "experience": [
+    {
+      "title": "automating workflows, building predictive models, and",
+      "company": "optimizing AI architectures. US Citizen. Available to work immediately, open to relocation.",
+      "dates": "",
+      "bullets": []
+    }
+  ],
+  "education": [
+    {
+      "degree": "❖ Purdue University, M.S. in Computer Science",
+      "institution": "August 2024 – May 2026",
+      "year": "o Specialization in AI and Machine Learning with focus on Computer Security"
+    }
+  ],
+  "summary": "M.S. in Computer Science with software engineering skills, industry internship, and \nresearch in machine learning. Experience automating workflows, building predictive models, and \noptimizing AI architectures. US Citizen. Available to work immediately, open to relocation. \nEducation \n❖ Purdue University, M.S. in Computer Science           \n                     August 2024 – May 2026 \no Specialization in AI and Machine Learning with focus on Computer Security \no Advanced courses: Deep learning, P"
+}
