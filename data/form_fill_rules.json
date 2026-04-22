@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "documentation": "Rules drive LinkedIn Easy Apply auto-fill. Within each list, the FIRST matching rule wins. Labels are normalized: lowercased and runs of whitespace collapsed to a single space. Matching: all_substrings = every string must appear as a substring; any_substrings = at least one; all_of_any = list of groups — from each group at least one substring must appear; not_substrings = none of these may appear; starts_with = label must start with this text (after normalization); regex = Python regex (default case-insensitive). Results: screening_yes_no uses answer 'Yes' or 'No'. Text/select results use type literal, name_part, resume_key_list, years_experience_total, cover_letter_full, cover_letter_truncated.",
+  "screening_yes_no": [
+    {
+      "id": "us_work_auth_without_sponsorship",
+      "comment": "Authorized in US without sponsorship (LinkedIn often says 'without the need for sponsorship')",
+      "match": {
+        "all_substrings": ["authorized", "united states", "sponsorship"],
+        "any_substrings": ["without the need", "without sponsorship", "not require sponsorship", "no sponsorship"]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "us_citizen",
+      "comment": "Are you a US / U.S. / United States citizen (or equivalent phrasing)",
+      "match": {
+        "all_substrings": ["citizen"],
+        "any_substrings": [
+          "us citizen",
+          "u.s. citizen",
+          "u.s citizen",
+          "united states citizen",
+          "citizen of the united states",
+          "citizen of the us",
+          "citizen of the usa",
+          "american citizen",
+          "citizenship in the united states",
+          "citizenship in the us"
+        ]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "sponsorship_and_visa_terms",
+      "comment": "Visa / employment sponsorship",
+      "match": {
+        "all_of_any": [
+          ["sponsorship", " sponsor", "sponsor "],
+          ["visa", "h-1", "h1b", "h1-b", "immigration", "employment visa"]
+        ]
+      },
+      "answer": "No"
+    },
+    {
+      "id": "sponsorship_need_will",
+      "comment": "Sponsorship + require/will you (do not use plain 'need' — it matches 'without the need for sponsorship')",
+      "match": {
+        "all_substrings": ["sponsorship"],
+        "any_substrings": ["require", "requiring", "will you", "will we need to sponsor", "need sponsorship", "need a visa", "need visa", "need h-1", "need h1b"]
+      },
+      "answer": "No"
+    },
+    {
+      "id": "relatives_at_employer",
+      "comment": "Relatives / family employed there",
+      "match": {
+        "all_of_any": [
+          ["relative", "relatives", "family member"],
+          ["employed", "work", "working"]
+        ]
+      },
+      "answer": "No"
+    },
+    {
+      "id": "previously_employed_by",
+      "comment": "Previously employed by this company",
+      "match": { "all_substrings": ["employed by"] },
+      "answer": "No"
+    },
+    {
+      "id": "authorized_to_work",
+      "comment": "US work authorization",
+      "match": { "all_substrings": ["authorized", "work"] },
+      "answer": "Yes"
+    },
+    {
+      "id": "start_immediately",
+      "comment": "Availability — start immediately",
+      "match": {
+        "all_substrings": ["immediately"],
+        "any_substrings": ["start", "begin"]
+      },
+      "answer": "Yes"
+    }
+  ],
+  "text_inputs": [
+    {
+      "id": "first_name",
+      "match": { "any_substrings": ["first name", "given name"] },
+      "result": { "type": "name_part", "part": "first" }
+    },
+    {
+      "id": "last_name",
+      "match": { "any_substrings": ["last name", "surname", "family name"] },
+      "result": { "type": "name_part", "part": "last" }
+    },
+    {
+      "id": "email",
+      "match": { "all_substrings": ["email"] },
+      "result": { "type": "resume_key_list", "keys": ["email"] }
+    },
+    {
+      "id": "phone",
+      "match": { "any_substrings": ["phone", "mobile"] },
+      "result": { "type": "resume_key_list", "keys": ["phone"] }
+    },
+    {
+      "id": "city_blank",
+      "comment": "City often location-specific — leave blank",
+      "match": { "all_substrings": ["city"] },
+      "result": { "type": "literal", "value": "" }
+    },
+    {
+      "id": "years_experience_total",
+      "comment": "Generic total YOE only — not years with Python/etc.",
+      "match": {
+        "all_substrings": ["years", "experience"],
+        "not_substrings": [" with "]
+      },
+      "result": { "type": "years_experience_total" }
+    },
+    {
+      "id": "linkedin_url",
+      "match": { "all_substrings": ["linkedin"] },
+      "result": { "type": "resume_key_list", "keys": ["linkedin", "linkedin_url"] }
+    },
+    {
+      "id": "github_url",
+      "match": { "all_substrings": ["github"] },
+      "result": { "type": "resume_key_list", "keys": ["github_url", "github"] }
+    },
+    {
+      "id": "portfolio_url",
+      "match": { "all_substrings": ["portfolio"] },
+      "result": { "type": "resume_key_list", "keys": ["portfolio_url", "portfolio"] }
+    },
+    {
+      "id": "website_url",
+      "match": { "all_substrings": ["website"] },
+      "result": { "type": "resume_key_list", "keys": ["website", "website_url", "personal_website"] }
+    }
+  ],
+  "textareas": [
+    {
+      "id": "cover_letter",
+      "match": { "all_substrings": ["cover"] },
+      "result": { "type": "cover_letter_full" }
+    },
+    {
+      "id": "additional_message",
+      "match": { "any_substrings": ["additional", "message"] },
+      "result": { "type": "cover_letter_truncated", "max_length": 500 }
+    }
+  ],
+  "selects": [
+    {
+      "id": "marketing_opt_in",
+      "match": { "starts_with": "would you like to receive" },
+      "result": { "type": "literal", "value": "No" }
+    }
+  ]
+}

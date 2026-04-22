@@ -20,47 +20,9 @@ from selenium.webdriver.support.ui import Select
 
 from chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies
 from cover_letter import write_cover_letter_docx
+from form_fill_rules import FormFillRulesEngine
 
 log = logging.getLogger(__name__)
-
-
-def binary_screening_answer(label: str) -> str | None:
-    """
-    Common yes/no screening questions (substring match on label; spacing normalized).
-
-    Returns ``\"Yes\"``, ``\"No\"``, or ``None`` if no rule matches.
-    """
-    l = re.sub(r"\s+", " ", (label or "").lower()).strip()
-    if not l:
-        return None
-
-    # Visa / employment sponsorship (will require sponsorship for a visa, etc.)
-    if ("sponsorship" in l or " sponsor" in l or "sponsor " in l) and any(
-        x in l for x in ("visa", "h-1", "h1b", "h1-b", "immigration", "employment visa")
-    ):
-        return "No"
-    if "sponsorship" in l and any(x in l for x in ("require", "requiring", "needed", "need", "will you")):
-        return "No"
-
-    # Relatives / family at employer
-    if ("relative" in l or "relatives" in l or "family member" in l) and (
-        "employed" in l or "work" in l or "working" in l
-    ):
-        return "No"
-
-    # Previously employed by this company
-    if "employed by" in l:
-        return "No"
-
-    # Work authorization (US)
-    if "authorized" in l and "work" in l:
-        return "Yes"
-
-    # Availability — start immediately
-    if "immediately" in l and ("start" in l or "begin" in l):
-        return "Yes"
-
-    return None
 
 
 SEL = {
@@ -94,6 +56,29 @@ POST_APPLY_DISMISS = (
     "button.artdeco-modal__dismiss",
 )
 
+# Workday-hosted apply flows (new tab from LinkedIn “Apply”): no LinkedIn modal; often nested iframes.
+# Several selectors — tenants vary; we only need one match to treat the context as fillable.
+WORKDAY_FIELD_MARKERS: tuple[str, ...] = (
+    'input[data-automation-id="email"]',
+    'input[data-automation-id="Email"]',
+    '[data-automation-id="formField-email"]',
+    '[data-automation-id="formField-Email"]',
+    'input[autocomplete="email"]',
+    '[data-automation-id*="email"]',
+)
+
+WORKDAY_URL_SUBSTRINGS: tuple[str, ...] = (
+    "myworkdayjobs.com",
+    "myworkday.com",
+)
+
+# Honeypot / anti-bot fields — never fill (label often contains "website" and would match website rules).
+WORKDAY_SKIP_AUTOMATION_IDS: frozenset[str] = frozenset(
+    {
+        "beecatcher",
+    }
+)
+
 # Shown after **Dismiss** on an in-progress application — save draft vs discard.
 DRAFT_SAVE_ARIA = (
     'button[aria-label="Save"]',
@@ -115,6 +100,8 @@ class EasyApplyFiller:
         apply_click_gap_seconds: float = 1.0,
         apply_review_pause_after_fill_seconds: float = 10.0,
         cover_letter_docx_dir: Path | str = "output/coverletters",
+        form_fill_rules_path: Path | str | None = None,
+        helper_scan_all_tabs: bool = False,
     ):
         self.headless = headless
         self.screenshot_dir = Path(screenshot_dir)
@@ -129,6 +116,224 @@ class EasyApplyFiller:
         self.apply_review_pause_after_fill_seconds = max(
             0.0, float(apply_review_pause_after_fill_seconds)
         )
+        self._rules = FormFillRulesEngine(
+            Path(form_fill_rules_path) if form_fill_rules_path else None
+        )
+        # Helper mode: if False, only the current WebDriver tab is checked (no tab switching; avoids focus
+        # stealing). If True, every tab is scanned (needed when Workday opens in a new tab WebDriver did not
+        # switch to). WebDriver has no API for “the tab the user clicked last.”
+        self.helper_scan_all_tabs = bool(helper_scan_all_tabs)
+
+    @staticmethod
+    def _default_content(driver: Any) -> None:
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+
+    def _workday_markers_present(self, driver: Any) -> bool:
+        """True if any Workday-style marker exists in the **current** document context."""
+        for sel in WORKDAY_FIELD_MARKERS:
+            try:
+                if driver.find_elements(By.CSS_SELECTOR, sel):
+                    return True
+            except Exception:
+                continue
+        for xp in (
+            "//input[@data-automation-id='email']",
+            "//*[@data-automation-id='formField-email']",
+        ):
+            try:
+                if driver.find_elements(By.XPATH, xp):
+                    return True
+            except Exception:
+                continue
+        # Some drivers/pages behave more reliably than pure CSS for attribute selectors.
+        try:
+            if driver.execute_script(
+                """
+                return !!(
+                  document.querySelector('input[data-automation-id="email"]') ||
+                  document.querySelector('[data-automation-id="formField-email"]') ||
+                  document.querySelector('input[autocomplete="email"]')
+                );
+                """
+            ):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _url_looks_like_workday_jobs(self, driver: Any) -> bool:
+        try:
+            u = (driver.current_url or "").lower()
+        except Exception:
+            return False
+        return any(s in u for s in WORKDAY_URL_SUBSTRINGS)
+
+    def _workday_apply_shell_present_js(self, driver: Any) -> bool:
+        """True when the candidate apply MFE shell is mounted (even if inputs are not in DOM yet)."""
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    return !!(
+                      document.querySelector('[data-automation-id="applyFlowPage"]') ||
+                      document.querySelector('[data-automation-id="signInFormo"]') ||
+                      document.querySelector('[data-mfe-id="applyFlow"]') ||
+                      document.querySelector('form[data-automation-id="signInFormo"]')
+                    );
+                    """
+                )
+            )
+        except Exception:
+            return False
+
+    def _label_looks_like_robot_trap(self, label: str | None) -> bool:
+        """Heuristic for honeypot labels (e.g. “for robots only, do not enter if you're human”)."""
+        low = (label or "").lower()
+        if "robots only" in low:
+            return True
+        if "do not enter" in low and "human" in low:
+            return True
+        return False
+
+    def _automation_id_is_skipped(self, input_el: Any) -> bool:
+        try:
+            return (input_el.get_attribute("data-automation-id") or "").strip().lower() in WORKDAY_SKIP_AUTOMATION_IDS
+        except Exception:
+            return False
+
+    def _find_workday_fill_body(self, driver: Any, depth: int = 0) -> Any | None:
+        """
+        Return ``body`` in the document or nested ``iframe``/``frame`` that contains Workday markers.
+        On success, ``driver`` is left focused on that document (possibly nested). On failure, returns
+        ``None`` with ``driver`` back at the starting context of the failed branch.
+        """
+        if depth > 10:
+            return None
+        if self._workday_markers_present(driver):
+            return driver.find_element(By.TAG_NAME, "body")
+        frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+        for fr in frames:
+            try:
+                driver.switch_to.frame(fr)
+            except Exception:
+                continue
+            inner = self._find_workday_fill_body(driver, depth + 1)
+            if inner is not None:
+                return inner
+            try:
+                driver.switch_to.parent_frame()
+            except Exception:
+                self._default_content(driver)
+                return None
+        return None
+
+    def _resolve_fill_root(self, driver: Any) -> Any | None:
+        """
+        LinkedIn: visible ``.jobs-easy-apply-modal``. Workday / similar: ``body`` in the document or
+        nested iframe stack that contains Workday field markers (see ``WORKDAY_FIELD_MARKERS``).
+        Leaves ``driver`` inside the iframe when the form lives there.
+        """
+        self._default_content(driver)
+        for el in driver.find_elements(By.CSS_SELECTOR, SEL["modal"]):
+            try:
+                if el.is_displayed():
+                    return el
+            except Exception:
+                continue
+        wd = self._find_workday_fill_body(driver, 0)
+        if wd is not None:
+            return wd
+        self._default_content(driver)
+        if self._url_looks_like_workday_jobs(driver) and self._workday_apply_shell_present_js(driver):
+            return driver.find_element(By.TAG_NAME, "body")
+        u = (driver.current_url or "").lower()
+        if "workday" in u or "myworkdayjobs" in u:
+            log.debug(
+                "Workday-like URL but no markers matched (%s). "
+                "Possible shadow-DOM fields, different data-automation-id values, or page still loading.",
+                driver.current_url,
+            )
+        return None
+
+    def _assist_context_open_single_tab(self, driver: Any) -> bool:
+        """Check only the current WebDriver window (no ``switch_to.window``)."""
+        if self._easy_apply_modal_is_open(driver):
+            return True
+        self._default_content(driver)
+        if self._workday_markers_present(driver):
+            return True
+        if self._url_looks_like_workday_jobs(driver) and self._workday_apply_shell_present_js(driver):
+            return True
+        wd = self._find_workday_fill_body(driver, 0)
+        self._default_content(driver)
+        return wd is not None
+
+    def _assist_context_open_scan_all_tabs(self, driver: Any) -> bool:
+        """
+        Walk every window handle. Needed when apply opens Workday in a new tab but WebDriver still points
+        at LinkedIn — **but** each ``switch_to`` can briefly activate that tab in Chrome (annoying).
+        """
+        try:
+            handles = list(driver.window_handles)
+        except Exception:
+            handles = []
+        if not handles:
+            return False
+        try:
+            original = driver.current_window_handle
+        except Exception:
+            original = None
+
+        for h in handles:
+            try:
+                driver.switch_to.window(h)
+            except Exception:
+                continue
+            try:
+                self._default_content(driver)
+                if self._easy_apply_modal_is_open(driver):
+                    log.debug("assist_context: Easy Apply modal on tab %s", h[-8:])
+                    return True
+                if self._workday_markers_present(driver):
+                    log.debug("assist_context: Workday markers on tab %s url=%s", h[-8:], driver.current_url[:80])
+                    return True
+                if self._url_looks_like_workday_jobs(driver) and self._workday_apply_shell_present_js(driver):
+                    log.debug("assist_context: Workday shell on tab %s url=%s", h[-8:], driver.current_url[:80])
+                    return True
+                wd = self._find_workday_fill_body(driver, 0)
+                self._default_content(driver)
+                if wd is not None:
+                    log.debug("assist_context: Workday form in iframe on tab %s", h[-8:])
+                    return True
+            except Exception as e:
+                log.debug("assist_context: tab scan skip: %s", e)
+                try:
+                    self._default_content(driver)
+                except Exception:
+                    pass
+                continue
+
+        if original:
+            try:
+                driver.switch_to.window(original)
+                self._default_content(driver)
+            except Exception:
+                pass
+        return False
+
+    def assist_context_open(self, driver: Any) -> bool:
+        """
+        True if we should run assist: LinkedIn Easy Apply sheet open, or a Workday-style apply form.
+
+        By default only the **current WebDriver tab** is inspected (no programmatic tab switching).
+        Set ``helper_scan_all_tabs`` to also scan other tabs (can steal focus in Chrome).
+        """
+        if self.helper_scan_all_tabs:
+            return self._assist_context_open_scan_all_tabs(driver)
+        return self._assist_context_open_single_tab(driver)
 
     def _pause(self) -> None:
         if self.step_delay > 0:
@@ -724,29 +929,60 @@ class EasyApplyFiller:
                 continue
         return False
 
-    def _fill_step(self, driver: Any, resume: dict, cover_letter: str, job: dict) -> bool:
+    def assist_fill_current_modal(self, driver: Any, resume: dict, cover_letter: str, job: dict) -> None:
+        """
+        Fill whatever we can on the current Easy Apply step **without** clicking Next/Submit.
+        Also supports Workday-style apply pages (``data-automation-id`` fields, often in an iframe).
+        Unknown required fields are left for the user. Safe to call repeatedly (skips non-empty fields).
+        """
+        try:
+            self._fill_step(driver, resume, cover_letter, job, assist=True)
+        except Exception as e:
+            log.debug("Assist fill pass skipped: %s", e)
+        finally:
+            self._default_content(driver)
+
+    def _fill_step(
+        self, driver: Any, resume: dict, cover_letter: str, job: dict, *, assist: bool = False
+    ) -> bool:
         """
         Fill the current step. Returns False if we should abandon (unknown required field with no rule);
-        the caller will dismiss the modal.
+        the caller will dismiss the modal — unless ``assist`` is True (manual apply mode: skip unknowns).
         """
-        modal = driver.find_element(By.CSS_SELECTOR, SEL["modal"])
+        root = self._resolve_fill_root(driver)
+        if root is None:
+            if assist:
+                return True
+            log.warning("No fill root: no LinkedIn Easy Apply modal and no Workday-style apply fields found")
+            return False
 
-        for input_el in modal.find_elements(By.CSS_SELECTOR, SEL["text_input"]):
+        for input_el in root.find_elements(By.CSS_SELECTOR, SEL["text_input"]):
             try:
                 current = (input_el.get_attribute("value") or "").strip()
                 if current:
                     continue
+                if self._automation_id_is_skipped(input_el):
+                    continue
                 label = self._get_label(driver, input_el)
+                if self._label_looks_like_robot_trap(label):
+                    continue
                 value = self._answer_text_field(label, resume)
                 required = self._element_is_required(input_el)
+                if value is None and assist and "email" in (label or "").lower():
+                    log.debug(
+                        "Assist: email field label matched rules but no value (set email in data/resume_profile.json): %r",
+                        label[:120],
+                    )
                 if value is None:
-                    if required:
+                    if required and not assist:
                         log.warning(
                             "No rule for required text field (job %s) label=%r — abandoning",
                             job.get("id"),
                             label,
                         )
                         return False
+                    if required and assist:
+                        log.debug("Assist: leaving required text field empty (no rule) label=%r", label)
                     continue
                 if value:
                     if self.highlight:
@@ -757,7 +993,7 @@ class EasyApplyFiller:
             except Exception as e:
                 log.debug("Skipping text field: %s", e)
 
-        for ta in modal.find_elements(By.CSS_SELECTOR, SEL["textarea"]):
+        for ta in root.find_elements(By.CSS_SELECTOR, SEL["textarea"]):
             try:
                 current = (ta.get_attribute("value") or "").strip()
                 if current:
@@ -766,13 +1002,15 @@ class EasyApplyFiller:
                 text = self._answer_textarea(label, cover_letter)
                 required = self._element_is_required(ta)
                 if text is None:
-                    if required:
+                    if required and not assist:
                         log.warning(
                             "No rule for required textarea (job %s) label=%r — abandoning",
                             job.get("id"),
                             label,
                         )
                         return False
+                    if required and assist:
+                        log.debug("Assist: leaving required textarea empty (no rule) label=%r", label)
                     continue
                 if text:
                     if self.highlight:
@@ -783,7 +1021,7 @@ class EasyApplyFiller:
             except Exception as e:
                 log.debug("Skipping textarea: %s", e)
 
-        for sel_el in modal.find_elements(By.CSS_SELECTOR, SEL["select"]):
+        for sel_el in root.find_elements(By.CSS_SELECTOR, SEL["select"]):
             try:
                 if not self._select_needs_fill(sel_el):
                     continue
@@ -797,17 +1035,23 @@ class EasyApplyFiller:
                     self._apply_select_choice(dd, opt_els, preferred)
                     self._after_field_fill()
                 else:
-                    log.warning(
-                        "No selection rule for required dropdown (job %s) label=%r — abandoning",
-                        job.get("id"),
-                        label,
-                    )
-                    return False
+                    if assist:
+                        log.debug(
+                            "Assist: skipping required dropdown (no rule) label=%r",
+                            label,
+                        )
+                    else:
+                        log.warning(
+                            "No selection rule for required dropdown (job %s) label=%r — abandoning",
+                            job.get("id"),
+                            label,
+                        )
+                        return False
             except Exception as e:
                 log.debug("Skipping select: %s", e)
 
         radio_groups: dict[str, list] = defaultdict(list)
-        for radio in modal.find_elements(By.CSS_SELECTOR, SEL["radio"]):
+        for radio in root.find_elements(By.CSS_SELECTOR, SEL["radio"]):
             try:
                 name = radio.get_attribute("name") or ""
                 if name:
@@ -819,10 +1063,10 @@ class EasyApplyFiller:
                 if any(r.is_selected() for r in radios):
                     continue
                 label = self._label_for_radio_group(driver, radios[0])
-                ans = binary_screening_answer(label)
+                ans = self._rules.screening_yes_no(label)
                 if ans is None:
-                    # Legacy: prefer Yes when value hints yes (unknown questions)
-                    if any(
+                    # Legacy: prefer Yes when value hints yes (unknown questions) — not in assist mode
+                    if not assist and any(
                         (r.get_attribute("value") or "").lower() in ("yes", "true", "1")
                         for r in radios
                     ):
@@ -841,7 +1085,7 @@ class EasyApplyFiller:
             except Exception as e:
                 log.debug("Skipping radio group %s: %s", name, e)
 
-        for finp in modal.find_elements(By.CSS_SELECTOR, 'input[type="file"]'):
+        for finp in root.find_elements(By.CSS_SELECTOR, 'input[type="file"]'):
             try:
                 if not self._file_input_is_cover_letter_upload(driver, finp):
                     continue
@@ -874,16 +1118,9 @@ class EasyApplyFiller:
         """
         Return the ``value=`` (or matching visible text) we should choose, or ``None`` if there is
         no rule — the caller will abandon the application (Dismiss) instead of guessing (e.g. "Yes").
-
-        Marketing / spam consent: decline automated outreach.
+        Rules: ``data/form_fill_rules.json`` (``selects`` + ``screening_yes_no``).
         """
-        label_l = (label or "").strip().lower()
-        screening = binary_screening_answer(label)
-        if screening is not None:
-            return screening
-        if label_l.startswith("would you like to receive"):
-            return "No"
-        return None
+        return self._rules.answer_select(label)
 
     def _apply_select_choice(self, dd: Select, opt_els, preferred_value: str) -> None:
         """Set dropdown to ``preferred_value`` (matches ``value=`` or visible text)."""
@@ -903,88 +1140,65 @@ class EasyApplyFiller:
         """
         Return text to type, ``""`` when the label matches a rule that intentionally leaves the field
         blank, or ``None`` when there is nothing we can truthfully fill (caller abandons if required).
-
-        URL-style questions read from the resume / profile JSON (e.g. ``data/resume_profile.json``).
-        LinkedIn-style labels use ``linkedin`` / ``linkedin_url``; website labels use ``website`` /
-        ``website_url`` / ``personal_website``. If no value is set, returns ``None`` (required → dismiss).
+        Rules: ``data/form_fill_rules.json`` (``text_inputs`` + ``screening_yes_no``); resume keys match
+        ``data/resume_profile.json``.
         """
-        label = label.lower()
-        screening = binary_screening_answer(label)
-        if screening is not None:
-            return screening
-
-        if any(k in label for k in ("first name", "given name")):
-            parts = resume.get("name", "").split()
-            return parts[0] if parts else ""
-        if any(k in label for k in ("last name", "surname", "family name")):
-            parts = resume.get("name", "").split()
-            return parts[-1] if len(parts) > 1 else ""
-        if "email" in label:
-            return resume.get("email", "")
-        if "phone" in label or "mobile" in label:
-            return resume.get("phone", "")
-        if "city" in label:
-            return ""
-        # Generic total YOE only — not "years of … experience with Python/AI/…" (those need explicit rules).
-        if "years" in label and "experience" in label:
-            if " with " in label:
-                return None
-            return str(max(1, len(resume.get("experience", [])) * 2))
-        # URLs — keys from resume_profile.json (plain ``linkedin`` / ``website`` preferred)
-        if "linkedin" in label:
-            for k in ("linkedin", "linkedin_url"):
-                v = (resume.get(k) or "").strip()
-                if v:
-                    return v
-            return None
-        if "github" in label:
-            for k in ("github_url", "github"):
-                v = (resume.get(k) or "").strip()
-                if v:
-                    return v
-            return None
-        if "portfolio" in label:
-            for k in ("portfolio_url", "portfolio"):
-                v = (resume.get(k) or "").strip()
-                if v:
-                    return v
-            return None
-        if "website" in label:
-            for k in ("website", "website_url", "personal_website"):
-                v = (resume.get(k) or "").strip()
-                if v:
-                    return v
-            return None
-
-        return None
+        return self._rules.answer_text_field(label, resume)
 
     def _answer_textarea(self, label: str, cover_letter: str) -> str | None:
         """
         Return text for a textarea, or ``None`` if the label does not match a known pattern
-        (caller abandons when the field is required).
+        (caller abandons when the field is required). Rules: ``data/form_fill_rules.json`` (``textareas``).
         """
-        label_l = (label or "").strip().lower()
-        screening = binary_screening_answer(label)
-        if screening is not None:
-            return screening
-        if "cover" in label_l:
-            return cover_letter
-        if "additional" in label_l or "message" in label_l:
-            return cover_letter[:500]
-        return None
+        return self._rules.answer_textarea(label, cover_letter)
 
     def _get_label(self, driver, element) -> str:
+        """
+        Prefer ``<label for=id>`` text; then aria / placeholder; then Workday-style
+        ``data-automation-id``, ``autocomplete``, ``formField-*`` wrappers.
+        """
         try:
             el_id = element.get_attribute("id")
             if el_id:
                 labels = driver.find_elements(By.CSS_SELECTOR, f'label[for="{el_id}"]')
                 if labels:
-                    return labels[0].text
+                    t = (labels[0].text or "").strip()
+                    if t:
+                        return t
 
-            aria = element.get_attribute("aria-label") or ""
+            aria = (element.get_attribute("aria-label") or "").strip()
             if aria:
                 return aria
 
-            return element.get_attribute("placeholder") or ""
+            pl = (element.get_attribute("placeholder") or "").strip()
+            if pl:
+                return pl
+
+            dai = (element.get_attribute("data-automation-id") or "").strip()
+            if dai:
+                return dai
+
+            aut = (element.get_attribute("autocomplete") or "").strip().lower()
+            if aut == "email":
+                return "email"
+            if aut in ("tel", "phone"):
+                return "phone"
+
+            el_type = (element.get_attribute("type") or "").strip().lower()
+            if el_type == "email":
+                return "email"
+
+            try:
+                wrap = element.find_element(
+                    By.XPATH,
+                    './ancestor::*[starts-with(@data-automation-id, "formField-")][1]',
+                )
+                fid = (wrap.get_attribute("data-automation-id") or "").strip()
+                if fid.startswith("formField-"):
+                    tail = fid[len("formField-") :].strip()
+                    return tail.replace("-", " ").strip() or fid
+            except NoSuchElementException:
+                pass
         except Exception:
-            return ""
+            pass
+        return ""

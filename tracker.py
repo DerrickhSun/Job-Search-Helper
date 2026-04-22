@@ -1,7 +1,10 @@
 """
 Application Tracker
-Logs every job to SQLite and exports ``applications.csv`` in the same 6-column layout as Google Sheets
-(successful applies only: empty, company, empty, date, url, title).
+Logs every job to SQLite and exports CSV in the same 6-column layout as Google Sheets
+(A empty, B company, C empty, D date, E job URL, F title):
+
+- ``applications.csv`` — status ``applied`` (manual ``r`` / successful auto-applies)
+- ``apply_opened.csv`` — status ``apply_opened`` (helper: external apply tab opened)
 """
 
 import csv
@@ -57,6 +60,15 @@ class ApplicationTracker:
             ).fetchone()
         return row is not None
 
+    def last_status_for_job(self, job_id: str) -> str | None:
+        """Latest stored status for this LinkedIn job id, or None if never logged."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT status FROM applications WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        return row[0] if row else None
+
     def log(
         self,
         job: dict,
@@ -85,18 +97,24 @@ class ApplicationTracker:
             )
         log.debug("Tracked: %s — %s (%s)", job.get("title"), job.get("company"), status)
 
-    def export_csv(self, path: str):
+    def export_csv(self, path: str, *, statuses: tuple[str, ...] = ("applied",)):
         """
-        Export successful applies only, same columns as the Sheet: A empty, B company, C empty,
-        D date, E url, F title.
+        Export rows in the Google Sheet layout: A empty, B company, C empty, D date, E url, F title.
+
+        Default ``statuses`` is ``("applied",)`` (manual helper ``r`` / successful auto-applies).
+        Use ``statuses=("apply_opened",)`` for external-apply-tab captures.
         """
+        if not statuses:
+            raise ValueError("statuses must not be empty")
+        placeholders = ",".join("?" * len(statuses))
         with self._conn() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT company, url, title, applied_at FROM applications
-                WHERE status = 'applied'
+                WHERE status IN ({placeholders})
                 ORDER BY applied_at ASC
-                """
+                """,
+                statuses,
             ).fetchall()
 
         out = Path(path)
@@ -109,7 +127,12 @@ class ApplicationTracker:
                 job = {"company": company or "", "url": url or "", "title": title or ""}
                 writer.writerow(applied_sheet_row(job, _applied_at_to_mdy(applied_at or "")))
 
-        log.info("Exported %d applied job(s) to %s (sheet column layout)", len(rows), out)
+        log.info(
+            "Exported %d job(s) (statuses=%s) to %s (sheet column layout)",
+            len(rows),
+            ",".join(statuses),
+            out,
+        )
 
     def summary(self) -> dict:
         with self._conn() as conn:
@@ -123,7 +146,20 @@ class ApplicationTracker:
             failed = conn.execute(
                 "SELECT COUNT(*) FROM applications WHERE status='failed'"
             ).fetchone()[0]
-        return {"total": total, "applied": applied, "skipped": skipped, "failed": failed}
+            apply_opened = conn.execute(
+                "SELECT COUNT(*) FROM applications WHERE status='apply_opened'"
+            ).fetchone()[0]
+            blacklisted = conn.execute(
+                "SELECT COUNT(*) FROM applications WHERE status='blacklisted'"
+            ).fetchone()[0]
+        return {
+            "total": total,
+            "applied": applied,
+            "skipped": skipped,
+            "failed": failed,
+            "apply_opened": apply_opened,
+            "blacklisted": blacklisted,
+        }
 
     def _conn(self):
         return sqlite3.connect(self.db_path)

@@ -147,6 +147,7 @@ class JobSearcher:
         job_list_scroll_stable_rounds: int = 7,
         job_list_tail_pass_rounds: int = 12,
         jobs_per_results_page: int = 25,
+        posted_within_24h: bool = True,
     ):
         self.headless = headless
         self.session_file = Path(session_file)
@@ -168,6 +169,16 @@ class JobSearcher:
         self.job_list_tail_pass_rounds = max(4, int(job_list_tail_pass_rounds))
         # LinkedIn typically shows 25 jobs per search page when another page exists.
         self.jobs_per_results_page = max(1, int(jobs_per_results_page))
+        # Same as UI "Date posted → Past 24 hours" (seconds since post).
+        self.posted_within_24h = bool(posted_within_24h)
+
+    def _jobs_search_query(self, keywords: str, location: str, easy_apply_only: bool) -> str:
+        params: dict[str, str] = {"keywords": keywords, "location": location}
+        if easy_apply_only:
+            params["f_LF"] = "f_AL"
+        if self.posted_within_24h:
+            params["f_TPR"] = "r86400"
+        return urllib.parse.urlencode(params)
 
     def _pause(self) -> None:
         if self.step_delay > 0:
@@ -195,10 +206,7 @@ class JobSearcher:
             load_cookies(driver, self.session_file)
             self._login(driver)
 
-            params = {"keywords": keywords, "location": location}
-            if easy_apply_only:
-                params["f_LF"] = "f_AL"
-            query = urllib.parse.urlencode(params)
+            query = self._jobs_search_query(keywords, location, easy_apply_only)
             url = f"https://www.linkedin.com/jobs/search/?{query}"
 
             log.info("Navigating to: %s", url)
@@ -234,6 +242,8 @@ class JobSearcher:
 
         If ``easy_apply_only`` is true, the search URL includes LinkedIn's Easy Apply filter (``f_LF=f_AL``).
         If false, the search shows all jobs for the keywords/location.
+        When ``JobSearcher`` was constructed with ``posted_within_24h=True`` (default), ``f_TPR=r86400``
+        limits results to the past 24 hours (same as the Date posted → Past 24 hours filter).
 
         Pagination: when the Next control is available, we aim for ``jobs_per_results_page`` jobs (default 25)
         on that page before advancing — matching typical LinkedIn page size. Job IDs are deduplicated for
@@ -248,10 +258,7 @@ class JobSearcher:
             load_cookies(driver, self.session_file)
             self._login(driver)
 
-            params = {"keywords": keywords, "location": location}
-            if easy_apply_only:
-                params["f_LF"] = "f_AL"
-            query = urllib.parse.urlencode(params)
+            query = self._jobs_search_query(keywords, location, easy_apply_only)
             url = f"https://www.linkedin.com/jobs/search/?{query}"
 
             log.info("Navigating to: %s", url)
@@ -750,6 +757,79 @@ class JobSearcher:
         except Exception as e:
             log.debug("Error parsing job list link %d: %s", index, e)
             return None
+
+    def parse_current_job_from_detail_pane(self, driver) -> dict | None:
+        """
+        Best-effort job dict from the **currently selected** listing (URL + right-hand detail pane).
+        Used in manual/helper mode where the user clicks jobs instead of the automated pipeline.
+        """
+        url = (driver.current_url or "").strip()
+        job_id = ""
+        m = re.search(r"currentJobId=(\d+)", url, re.I)
+        if m:
+            job_id = m.group(1)
+        else:
+            m = re.search(r"/jobs/view/(\d+)", url, re.I)
+            if m:
+                job_id = m.group(1)
+        if not job_id:
+            return None
+
+        full_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
+
+        title = ""
+        for css in (
+            ".jobs-unified-top-card__job-title",
+            ".jobs-details-top-card__title-text",
+            "h1.jobs-unified-top-card__job-title",
+            "div[class*='jobs-details-top-card'] h1",
+            "h1[class*='job-title']",
+        ):
+            title = self._text_from_first_match(driver, (css,))
+            if title:
+                break
+
+        company = ""
+        for css in (
+            ".job-details-jobs-unified-top-card__company-name a",
+            ".jobs-unified-top-card__company-name a",
+            ".jobs-unified-top-card__company-name",
+            "a[class*='company-name']",
+        ):
+            company = self._text_from_first_match(driver, (css,))
+            if company:
+                break
+
+        loc = ""
+        for css in (
+            ".job-details-jobs-unified-top-card__primary-description",
+            ".jobs-unified-top-card__bullet",
+            ".jobs-unified-top-card__workplace-type",
+        ):
+            loc = self._text_from_first_match(driver, (css,))
+            if loc:
+                break
+
+        if not title:
+            try:
+                title = driver.find_element(By.TAG_NAME, "h1").text.strip()
+            except Exception:
+                title = ""
+
+        description = ""
+        desc_els = driver.find_elements(By.CSS_SELECTOR, SEL["job_description"])
+        if desc_els:
+            description = desc_els[0].text.strip()
+
+        return {
+            "id": job_id,
+            "title": title or "(unknown title)",
+            "company": company,
+            "location": loc,
+            "url": full_url,
+            "description": description,
+            "easy_apply": True,
+        }
 
     def _session_looks_logged_in(self, driver) -> bool:
         # Use feed *path* only — "feed" in the raw URL matches login pages (?trk=feed, redirect=...feed...).

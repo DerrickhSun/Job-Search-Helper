@@ -1,20 +1,33 @@
 """
 LinkedIn Auto-Apply Bot
-Run: python main.py --resume resume.pdf --keywords "software engineer" --location "United States"
+Run: python main.py --keywords "software engineer" --location "United States"
+Default resume path is resume.pdf in the working directory; use --resume PATH to override.
 """
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
+# Windows consoles often use cp1252; resume/cover text may contain Unicode (e.g. bullets). UTF-8 avoids
+# UnicodeEncodeError when logging DEBUG lines from third-party libraries (e.g. OpenAI request bodies).
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
 from apply_sheets import append_applied_job_row
+from company_blacklist import is_company_blacklisted, load_company_blacklist
 from cover_letter import CoverLetterGenerator
 from dspy_lm import configure_dspy
 from form_filler import EasyApplyFiller
+from helper_browser import run_helper_mode
 from job_records import DEFAULT_LISTINGS_LOG
 from job_searcher import JobSearcher
-from matcher import JobMatcher
-from resume_cache import DEFAULT_RESUME_CACHE_PATH, load_or_build_resume
+from matcher import JobMatcher, print_job_fit_debug
+from resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 from resume_parser import ResumeParser, first_name_from_resume
 from tracker import ApplicationTracker
 
@@ -23,7 +36,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("data/bot.log"),
+        logging.FileHandler("data/bot.log", encoding="utf-8"),
     ],
 )
 log = logging.getLogger(__name__)
@@ -41,6 +54,7 @@ def _job_searcher_from_args(args, **kwargs):
         job_description_wait_seconds=args.job_desc_wait,
         login_complete_max_seconds=args.login_poll_max,
         login_complete_max_seconds_no_checkpoint=args.login_poll_max_no_checkpoint,
+        posted_within_24h=args.posted_within_24h,
         **kwargs,
     )
 
@@ -49,14 +63,17 @@ def run(args):
     # 0 = unlimited listings; positive int = cap (default 100).
     max_jobs_cap: int | None = None if args.max_jobs <= 0 else args.max_jobs
 
+    if args.debug_jobs_page and args.helper:
+        raise SystemExit("error: use either --debug-jobs-page or --helper, not both")
+
     if args.debug_jobs_page:
         log.info(
             "Debug mode: login + job search URL only (no scraping, matching, or applies). "
             "Pass --resume to use your first name for login detection."
         )
         account_first = None
-        if args.resume and Path(args.resume).exists():
-            resume_dbg = ResumeParser().parse(args.resume)
+        if Path(args.resume).exists():
+            resume_dbg = ResumeParser().parse(str(args.resume))
             account_first = first_name_from_resume(resume_dbg)
             log.info("Using first name %r from resume for login detection", account_first)
         searcher = _job_searcher_from_args(
@@ -73,11 +90,47 @@ def run(args):
         log.info("Debug session finished.")
         return
 
+    if args.helper:
+        configure_dspy()
+        resume = load_or_build_resume(
+            Path(args.resume),
+            Path(args.resume_cache),
+            force_reparse=args.force_resume_parse,
+        )
+        log.info(
+            "Helper mode: browse LinkedIn and apply yourself; the bot assists Easy Apply fields when the "
+            "modal is open. Type r + Enter here to record an apply, q + Enter to quit."
+        )
+        log.info("Profile: %d skills, %d roles", len(resume["skills"]), len(resume["experience"]))
+        if args.easy_apply_only:
+            log.info("Job search filter: Easy Apply only (LinkedIn f_AL).")
+        else:
+            log.info("Job search filter: all listings (no f_AL).")
+        if args.posted_within_24h:
+            log.info("Job search filter: posted in the past 24 hours (LinkedIn f_TPR=r86400).")
+        else:
+            log.info("Job search filter: any date posted (no f_TPR).")
+        if args.headless:
+            log.warning("Helper mode usually needs a visible window — omit --headless to see the browser.")
+        tracker = ApplicationTracker("data/applications.db")
+        account_first = first_name_from_resume(resume)
+        matcher = JobMatcher()
+        cover_gen = CoverLetterGenerator()
+        run_helper_mode(
+            args=args,
+            resume=resume,
+            tracker=tracker,
+            matcher=matcher,
+            cover_gen=cover_gen,
+            account_first=account_first,
+        )
+        return
+
     configure_dspy()
 
     # 1. Load resume profile (JSON cache or parse PDF/DOCX)
     resume = load_or_build_resume(
-        Path(args.resume) if args.resume else None,
+        Path(args.resume),
         Path(args.resume_cache),
         force_reparse=args.force_resume_parse,
     )
@@ -92,6 +145,10 @@ def run(args):
             "Job search filter: all listings (no Easy Apply URL filter). "
             "Cards without Easy Apply are skipped for apply until other flows exist."
         )
+    if args.posted_within_24h:
+        log.info("Job search filter: posted in the past 24 hours (LinkedIn f_TPR=r86400).")
+    else:
+        log.info("Job search filter: any date posted (no f_TPR).")
     tracker = ApplicationTracker("data/applications.db")
     account_first = first_name_from_resume(resume)
     if account_first:
@@ -103,6 +160,10 @@ def run(args):
 
     matcher = JobMatcher()
     cover_gen = CoverLetterGenerator()
+    company_blacklist = load_company_blacklist(args.company_blacklist)
+    if company_blacklist:
+        log.info("Company blacklist active: %d entr%s", len(company_blacklist), "y" if len(company_blacklist) == 1 else "ies")
+
     filler = EasyApplyFiller(
         headless=args.headless,
         step_delay=args.step_delay,
@@ -111,6 +172,7 @@ def run(args):
         apply_click_gap_seconds=args.apply_click_gap,
         apply_review_pause_after_fill_seconds=args.apply_review_pause,
         cover_letter_docx_dir=args.cover_letter_dir,
+        form_fill_rules_path=args.form_fill_rules,
     )
 
     searcher = _job_searcher_from_args(args, account_first_name=account_first)
@@ -128,6 +190,10 @@ def run(args):
         if tracker.already_applied(job["id"]):
             log.info("Skipping (already applied): %s at %s", job["title"], job["company"])
             return
+        if is_company_blacklisted(job.get("company") or "", company_blacklist):
+            log.info("Skipping (company blacklisted): %s at %s", job["title"], job["company"])
+            tracker.log(job, status="blacklisted", score=0.0)
+            return
         if not job.get("easy_apply"):
             log.info(
                 "Skipping (no Easy Apply on card — external apply not implemented yet): %s at %s",
@@ -137,19 +203,35 @@ def run(args):
             tracker.log(job, status="skipped", score=0.0)
             return
 
-        score = matcher.score(resume, job)
-        log.info("Score %.0f%%: %s at %s", score * 100, job["title"], job["company"])
+        if not matcher.gates_pass(resume, job):
+            log.info(
+                "Skipping (education or experience requirements not met): %s at %s",
+                job["title"],
+                job["company"],
+            )
+            print_job_fit_debug(job.get("company"), job.get("title"), None, note="gates_failed")
+            tracker.log(job, status="skipped", score=0.0)
+            return
 
-        if score < args.min_score:
-            log.info("  → Below threshold (%.0f%%), skipping apply", args.min_score * 100)
-            tracker.log(job, status="skipped", score=score)
+        fit = matcher.fit_score(resume, job)
+        log.info("Fit score %.0f%%: %s at %s", fit * 100, job["title"], job["company"])
+        print_job_fit_debug(
+            job.get("company"),
+            job.get("title"),
+            fit,
+            note=f"min_score={float(args.min_score):.3f}",
+        )
+
+        if fit < args.min_score:
+            log.info("  → Below fit threshold (%.0f%%), skipping apply", args.min_score * 100)
+            tracker.log(job, status="skipped", score=fit)
             return
 
         cover_letter = cover_gen.generate(resume, job)
         log.info("  → Easy Apply (same browser session)...")
         success = filler.apply(job, resume, cover_letter, driver=driver)
         status = "applied" if success else "failed"
-        tracker.log(job, status=status, score=score, cover_letter=cover_letter)
+        tracker.log(job, status=status, score=fit, cover_letter=cover_letter)
 
         if success:
             log.info("  ✓ Applied successfully!")
@@ -171,18 +253,21 @@ def run(args):
     )
     log.info("Finished search pipeline: %d listing(s) processed (see %s).", processed, args.listings_log)
 
-    # Export summary
+    # Export summary (same 6-column sheet layout: company, date, LinkedIn job URL, title)
     tracker.export_csv("output/applications.csv")
-    log.info("Done. Summary exported to output/applications.csv")
+    tracker.export_csv("output/apply_opened.csv", statuses=("apply_opened",))
+    log.info("Done. Exports: output/applications.csv (applied), output/apply_opened.csv (external apply tab)")
 
 
 def main():
     ap = argparse.ArgumentParser(description="LinkedIn Easy Apply bot")
     ap.add_argument(
         "--resume",
-        default=None,
-        help="Path to your resume PDF or DOCX (required on first run or with --force-resume-parse; "
-        "optional if data/resume_profile.json already exists).",
+        type=Path,
+        default=DEFAULT_RESUME_FILE,
+        metavar="PATH",
+        help=f"Resume PDF or DOCX (default: {DEFAULT_RESUME_FILE}). "
+        "If data/resume_profile.json exists, that cache is used unless --force-resume-parse.",
     )
     ap.add_argument(
         "--resume-cache",
@@ -211,6 +296,13 @@ def main():
         "Use --no-easy-apply-only to include all jobs; only Easy Apply is auto-applied for now.",
     )
     ap.add_argument(
+        "--posted-within-24h",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Restrict the LinkedIn search to jobs posted in the past 24 hours (default: on; URL f_TPR=r86400, "
+        'same as the "Past 24 hours" date filter). Use --no-posted-within-24h for any posting date.',
+    )
+    ap.add_argument(
         "--max-jobs",
         type=int,
         default=100,
@@ -218,7 +310,12 @@ def main():
         help="Max job listings to walk through per run (default: 100). "
         "Use 0 for no limit. LinkedIn shows ~25 per page when more pages exist.",
     )
-    ap.add_argument("--min-score", type=float, default=0.6, help="Minimum match score 0-1 (default: 0.6)")
+    ap.add_argument(
+        "--min-score",
+        type=float,
+        default=0.6,
+        help="Minimum semantic fit score 0–1 after education/years gates pass (default: 0.6).",
+    )
     ap.add_argument(
         "--headless",
         action="store_true",
@@ -236,9 +333,51 @@ def main():
         help="Disable the red outline that shows which element is being clicked",
     )
     ap.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Debug logging for this app on the console and in data/bot.log (default is INFO). "
+        "Selenium, OpenAI/LiteLLM, and HTTP client libraries stay at WARNING so logs stay readable.",
+    )
+    ap.add_argument(
         "--debug-jobs-page",
         action="store_true",
         help="Open LinkedIn job search after login, then wait for Enter; skips resume, scraping, and applies.",
+    )
+    ap.add_argument(
+        "--helper",
+        action="store_true",
+        help="Manual apply mode: open job search; you click jobs and submit applications. The bot fills "
+        "recognized Easy Apply fields when the modal is open. In this terminal: r = record apply, q = quit.",
+    )
+    ap.add_argument(
+        "--helper-poll",
+        type=float,
+        default=0.75,
+        metavar="SEC",
+        help="Seconds between background scans for the Easy Apply modal (default: 0.75).",
+    )
+    ap.add_argument(
+        "--helper-review-pause",
+        type=float,
+        default=0.0,
+        metavar="SEC",
+        help="Seconds to pause after each assisted field fill in helper mode (default: 0).",
+    )
+    ap.add_argument(
+        "--helper-scan-all-tabs",
+        action="store_true",
+        help="Helper mode: scan every tab for Easy Apply / Workday (may briefly activate each tab in Chrome). "
+        "Default checks only WebDriver's current tab (no tab switching). Use when apply opens Workday in a "
+        "new tab; Selenium does not know which tab you last clicked.",
+    )
+    ap.add_argument(
+        "--helper-downloads-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Helper mode: folder for cover letter .docx files when an external apply tab is detected "
+        "(default: your Downloads folder).",
     )
     ap.add_argument(
         "--job-cards-wait",
@@ -320,6 +459,21 @@ def main():
         "(default: output/coverletters).",
     )
     ap.add_argument(
+        "--form-fill-rules",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="JSON rules for screening questions and field fills (default: data/form_fill_rules.json).",
+    )
+    ap.add_argument(
+        "--company-blacklist",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="JSON file of company strings to never auto-apply to (default: data/company_blacklist.json). "
+        "Matching ignores case and punctuation; see that file for the format.",
+    )
+    ap.add_argument(
         "--google-sheets-credentials",
         type=Path,
         default=None,
@@ -336,17 +490,33 @@ def main():
     )
     args = ap.parse_args()
 
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        # Selenium/urllib3 log every HTTP round-trip to the local WebDriver at DEBUG — very noisy.
+        for _name in (
+            "urllib3",
+            "urllib3.connectionpool",
+            "selenium",
+            "selenium.webdriver",
+            "selenium.webdriver.remote",
+            "selenium.webdriver.remote.remote_connection",
+            "httpcore",
+            "httpcore.connection",
+            "httpx",
+            "openai",
+            "openai._base_client",
+            "litellm",
+        ):
+            logging.getLogger(_name).setLevel(logging.WARNING)
+
     if not args.debug_jobs_page:
         cache_p = Path(args.resume_cache)
         need_resume_file = args.force_resume_parse or not cache_p.is_file()
-        if need_resume_file:
-            if not args.resume:
-                raise SystemExit(
-                    "error: --resume is required when the profile JSON does not exist yet "
-                    "or when using --force-resume-parse (unless --debug-jobs-page)"
-                )
-            if not Path(args.resume).exists():
-                raise FileNotFoundError(f"Resume not found: {args.resume}")
+        if need_resume_file and not Path(args.resume).exists():
+            raise FileNotFoundError(
+                f"Resume not found: {args.resume} — add this file or pass --resume PATH "
+                "(needed when data/resume_profile.json is missing or with --force-resume-parse)."
+            )
 
     run(args)
 

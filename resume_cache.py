@@ -17,6 +17,8 @@ from resume_parser import ResumeParser
 log = logging.getLogger(__name__)
 
 DEFAULT_RESUME_CACHE_PATH = Path("data/resume_profile.json")
+# Default source document when --resume is omitted (project cwd is usually the repo root).
+DEFAULT_RESUME_FILE = Path("resume.pdf")
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -70,8 +72,8 @@ def load_or_build_resume(
 
     if not resume_file or not resume_file.is_file():
         raise FileNotFoundError(
-            f"No resume cache at {cache_path} and no valid --resume file; "
-            "provide --resume once to create the cache, or create the JSON by hand."
+            f"No resume cache at {cache_path} and no resume file at {resume_file!s}; "
+            "add resume.pdf (or pass --resume PATH), or create the JSON cache by hand."
         )
     log.info("Parsing resume (no cache yet): %s", resume_file)
     data = ResumeParser().parse(str(resume_file))
