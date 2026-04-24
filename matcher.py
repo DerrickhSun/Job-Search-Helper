@@ -68,8 +68,13 @@ minimum_years_experience — a non-negative number: the smallest years-of-experi
 If the posting does not state any minimum years of professional/work experience, use -1. (-1 means
 **no minimum years** — any amount of experience, including zero, passes this gate.)
 
-Do not infer stricter requirements than written. If multiple numbers appear, use the minimum years
-required for the role as a whole (not preferred/nice-to-have) when possible; if unclear, use -1."""
+If the posting lists several explicit year minima (for example per-skill lines like "3+ years of work
+experience with Node.js" and "5+ years of work experience with TypeScript"), use the **largest**
+such number as minimum_years_experience — the candidate must meet each stated floor, so the strictest
+single-year bar is the max, not the smallest line item.
+
+Do not infer stricter requirements than written. If numbers are ambiguous or clearly only
+nice-to-have, use -1."""
 
 FIT_INSTRUCTION = """You rate how strong a fit the candidate is for this job on a scale from 0.0 to 1.0.
 
@@ -435,7 +440,13 @@ def _estimate_years_experience(resume: dict) -> float:
 
 
 def _extract_job_requirements_regex(description: str) -> tuple[str, float | None]:
-    """Rough fallback: infer minimum education and years from keywords."""
+    """
+    Rough fallback: infer minimum education and years from keywords.
+
+    Years patterns include ``N(+)? years of experience``, ``N(+)? years of work experience``,
+    ``N(+)? years of <phrase> experience`` (domain-specific tenure implies at least ``N`` years overall),
+    and a few ``minimum/over`` forms.
+    """
     t = (description or "").lower()
     req_edu = "unspecified"
     if re.search(r"\b(ph\.?d|doctorate|doctoral)\b", t):
@@ -454,7 +465,17 @@ def _extract_job_requirements_regex(description: str) -> tuple[str, float | None
         t,
     ):
         nums.append(float(m.group(1)))
-    for m in re.finditer(r"(\d+)\s*\+\s*years?\s+of\s+experience", t):
+    # "N years of experience" / "N+ years of experience" (optional + after the digit)
+    for m in re.finditer(r"(\d+)\s*\+?\s*years?\s+of\s+experience\b", t):
+        nums.append(float(m.group(1)))
+    # LinkedIn / poster lines: "N+ years of work experience with …" (before "with" clause)
+    for m in re.finditer(r"(\d+)\s*\+?\s*years?\s+of\s+work\s+experience\b", t):
+        nums.append(float(m.group(1)))
+    # "N years of <domain> experience" — domain-specific tenure implies at least N years overall
+    for m in re.finditer(
+        r"(\d+)\s*\+?\s*years?\s+of\s+(?!experience\b)(.+?)\s+experience\b",
+        t,
+    ):
         nums.append(float(m.group(1)))
     for m in re.finditer(r"(\d+)\s*[-–]\s*(\d+)\s*years?\s+of\s+experience", t):
         nums.append(float(m.group(1)))

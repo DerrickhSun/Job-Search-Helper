@@ -28,6 +28,7 @@ from typing import Any
 from apply_sheets import append_applied_job_row
 from chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, load_cookies, save_cookies
 from company_blacklist import is_company_blacklisted, load_company_blacklist
+from consulting_filter import is_consulting_listing
 from cover_letter import CoverLetterGenerator, write_cover_letter_docx
 from form_filler import EasyApplyFiller
 from job_searcher import JobSearcher
@@ -147,6 +148,7 @@ def _detect_external_apply_new_tabs(
     downloads_dir: Path,
     restore_to: str | None = None,
     company_blacklist: list[str] | None = None,
+    skip_consulting: bool = True,
 ) -> set[str]:
     """
     If new window handles appeared and any looks like an external ATS apply URL, record the current
@@ -186,6 +188,9 @@ def _detect_external_apply_new_tabs(
 
         if is_company_blacklisted(job.get("company") or "", bl):
             log.info("Skip external apply record (company blacklisted): %s", job.get("company"))
+            continue
+        if skip_consulting and is_consulting_listing(job):
+            log.info("Skip external apply record (consulting / staffing): %s", job.get("company"))
             continue
 
         jid = str(job.get("id") or "")
@@ -321,6 +326,7 @@ def run_helper_mode(
     )
 
     company_blacklist = load_company_blacklist(getattr(args, "company_blacklist", None))
+    skip_consulting = bool(getattr(args, "skip_consulting", True))
 
     query = searcher._jobs_search_query(args.keywords, args.location, args.easy_apply_only)
     search_url = f"https://www.linkedin.com/jobs/search/?{query}"
@@ -402,6 +408,13 @@ def run_helper_mode(
                         )
                     elif tracker.already_applied(job["id"]):
                         log.info("Already recorded as applied: %s — %s", job["title"], job["company"])
+                    elif skip_consulting and is_consulting_listing(job):
+                        log.info(
+                            "Not recording (consulting / staffing indicators): %s at %s",
+                            job["title"],
+                            job["company"],
+                        )
+                        tracker.log(job, status="consulting", score=0.0)
                     else:
                         score = matcher.score(resume, job)
                         print_job_fit_debug(
@@ -411,7 +424,7 @@ def run_helper_mode(
                             note="helper_record_apply",
                         )
                         cl = _cover_letter_for_job(cover_gen, resume, job, cover_cache)
-                        tracker.log(job, status="applied", score=score, cover_letter=cl)
+                        applied_at = tracker.log(job, status="applied", score=score, cover_letter=cl)
                         log.info(
                             "Recorded apply: %.0f%% — %s at %s",
                             score * 100,
@@ -422,6 +435,7 @@ def run_helper_mode(
                             job,
                             credentials_path=args.google_sheets_credentials,
                             spreadsheet_id=args.google_spreadsheet_id,
+                            applied_at_iso=applied_at,
                         )
             if not running:
                 break
@@ -446,6 +460,7 @@ def run_helper_mode(
                 downloads_dir=downloads_dir,
                 restore_to=tab_before,
                 company_blacklist=company_blacklist,
+                skip_consulting=skip_consulting,
             )
 
             if linkedin_jobs_tab and linkedin_jobs_tab in driver.window_handles:
