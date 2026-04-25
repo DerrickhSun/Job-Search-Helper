@@ -3,6 +3,10 @@ Resume profile JSON cache (``data/resume_profile.json`` by default).
 
 After the first parse from PDF/DOCX, the structured dict is written so you can edit fields
 (e.g. ``linkedin_url``, ``website_url``) without re-parsing. Re-parse with ``--force-resume-parse``.
+
+Optional ``experience_years_cap`` (number): caps the resume ``years`` heuristic used only for
+education/years **gates** in ``matcher`` (see ``_estimate_years_experience``), e.g. when calendar
+span overstates how senior you are vs per-skill posting requirements.
 """
 
 from __future__ import annotations

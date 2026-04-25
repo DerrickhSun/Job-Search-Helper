@@ -483,9 +483,10 @@ def main():
         "--skip-consulting",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Skip jobs when the company name includes the word consulting (whole word) or the description "
-        "mentions consultant/consulting/consultancy/client company (default: on). "
-        "Use --no-skip-consulting to disable.",
+        help="Skip jobs when the company name includes consulting (whole word) or the description suggests "
+        "a consultancy/staffing employer (consultant, consulting firm/company, consultancy, client company, "
+        "etc.; bare 'consulting' in the description is ignored to avoid industry-experience false positives). "
+        "Default: on. Use --no-skip-consulting to disable.",
     )
     ap.add_argument(
         "--google-sheets-credentials",

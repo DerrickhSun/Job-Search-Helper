@@ -415,6 +415,9 @@ def _estimate_years_experience(resume: dict) -> float:
     bullets/dates (or ``raw_text`` if no experience text). That can **overestimate** overlapping roles
     or long education-adjacent spans — if gates pass unexpectedly, check INFO logs for
     ``candidate yrs≈`` vs ``eff min yrs``.
+
+    Optional ``resume["experience_years_cap"]`` (number): for gates only, the estimate is
+    ``min(heuristic, cap)`` so calendar span does not imply more seniority than you want to claim.
     """
     chunks: list[str] = []
     for r in resume.get("experience") or []:
@@ -428,15 +431,25 @@ def _estimate_years_experience(resume: dict) -> float:
 
     years_found = [int(m.group(0)) for m in re.finditer(r"\b(19|20)\d{2}\b", text)]
     if len(years_found) >= 2:
-        return float(max(years_found) - min(years_found))
-    if len(years_found) == 1:
-        return 2.0
+        estimate = float(max(years_found) - min(years_found))
+    elif len(years_found) == 1:
+        estimate = 2.0
+    else:
+        roles = [r for r in (resume.get("experience") or []) if isinstance(r, dict)]
+        if roles:
+            estimate = float(max(1, len(roles)))
+        else:
+            estimate = 0.0
 
-    roles = [r for r in (resume.get("experience") or []) if isinstance(r, dict)]
-    if roles:
-        return float(max(1, len(roles)))
-
-    return 0.0
+    cap = resume.get("experience_years_cap")
+    if cap is not None:
+        try:
+            c = float(cap)
+            if c >= 0.0:
+                estimate = min(estimate, c)
+        except (TypeError, ValueError):
+            pass
+    return estimate
 
 
 def _extract_job_requirements_regex(description: str) -> tuple[str, float | None]:

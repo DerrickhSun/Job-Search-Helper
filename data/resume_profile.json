@@ -6,6 +6,7 @@
   "email": "derrick.han.sun@gmail.com",
   "phone": "858-397-3992",
   "location": "San Diego, CA, USA",
+  "experience_years_cap": 1,
   "skills": [
     "python",
     "javascript",
