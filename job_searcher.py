@@ -671,6 +671,43 @@ class JobSearcher:
         except Exception:
             return False
 
+    def _read_job_description_panel(self, driver) -> str:
+        """
+        Read ``.jobs-description__content`` after scrolling it — LinkedIn often lazy-loads sections
+        (e.g. \"Requirements added by the job poster\") below the first viewport.
+        """
+        sel = SEL["job_description"]
+        out = ""
+        for attempt in range(2):
+            if attempt:
+                time.sleep(1.0)
+            els = driver.find_elements(By.CSS_SELECTOR, sel)
+            if not els:
+                continue
+            el = els[0]
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'end'});", el)
+                time.sleep(0.55)
+            except Exception:
+                pass
+            try:
+                out = (el.text or "").strip()
+            except Exception:
+                out = ""
+            if out:
+                break
+        if not out:
+            return ""
+        els = driver.find_elements(By.CSS_SELECTOR, sel)
+        if els:
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'end'});", els[0])
+                time.sleep(0.65)
+                out = (els[0].text or "").strip() or out
+            except Exception:
+                pass
+        return out
+
     def _parse_job_at_card_index(
         self, driver, index: int, links: list | None = None
     ) -> dict | None:
@@ -739,11 +776,8 @@ class JobSearcher:
             self._pause()
             time.sleep(0.9)
 
-            description = ""
             time.sleep(self.job_description_wait_seconds)
-            desc_els = driver.find_elements(By.CSS_SELECTOR, SEL["job_description"])
-            if desc_els:
-                description = desc_els[0].text.strip()
+            description = self._read_job_description_panel(driver)
 
             return {
                 "id": job_id,
@@ -816,10 +850,8 @@ class JobSearcher:
             except Exception:
                 title = ""
 
-        description = ""
-        desc_els = driver.find_elements(By.CSS_SELECTOR, SEL["job_description"])
-        if desc_els:
-            description = desc_els[0].text.strip()
+        time.sleep(max(0.5, min(self.job_description_wait_seconds, 2.0)))
+        description = self._read_job_description_panel(driver)
 
         return {
             "id": job_id,

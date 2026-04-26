@@ -5,29 +5,18 @@ Logs every job to SQLite and exports CSV in the same 6-column layout as Google S
 
 - ``applications.csv`` — status ``applied`` (manual ``r`` / successful auto-applies)
 - ``apply_opened.csv`` — status ``apply_opened`` (helper: external apply tab opened)
+- ``consulting`` — skipped for staffing / consulting heuristics (see ``consulting_filter``)
 """
 
 import csv
 import logging
 import sqlite3
-from datetime import date, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-from apply_sheets import applied_sheet_row
+from apply_sheets import applied_sheet_row, format_apply_date_mdy
 
 log = logging.getLogger(__name__)
-
-
-def _applied_at_to_mdy(iso: str) -> str:
-    """Format stored UTC ISO timestamps as ``MM/DD/YYYY`` for column D."""
-    s = (iso or "").strip()
-    if not s:
-        return date.today().strftime("%m/%d/%Y")
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return dt.strftime("%m/%d/%Y")
-    except ValueError:
-        return s[:10] if len(s) >= 10 else date.today().strftime("%m/%d/%Y")
 
 
 class ApplicationTracker:
@@ -75,7 +64,9 @@ class ApplicationTracker:
         status: str,
         score: float = 0.0,
         cover_letter: str = "",
-    ):
+    ) -> str:
+        """Persist row and return ``applied_at`` ISO (UTC) for Google Sheets / display consistency."""
+        applied_at = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             conn.execute(
                 """
@@ -92,10 +83,11 @@ class ApplicationTracker:
                     status,
                     round(score, 3),
                     cover_letter,
-                    datetime.utcnow().isoformat(),
+                    applied_at,
                 ),
             )
         log.debug("Tracked: %s — %s (%s)", job.get("title"), job.get("company"), status)
+        return applied_at
 
     def export_csv(self, path: str, *, statuses: tuple[str, ...] = ("applied",)):
         """
@@ -125,7 +117,7 @@ class ApplicationTracker:
             writer.writerow(header)
             for company, url, title, applied_at in rows:
                 job = {"company": company or "", "url": url or "", "title": title or ""}
-                writer.writerow(applied_sheet_row(job, _applied_at_to_mdy(applied_at or "")))
+                writer.writerow(applied_sheet_row(job, format_apply_date_mdy(applied_at or "")))
 
         log.info(
             "Exported %d job(s) (statuses=%s) to %s (sheet column layout)",
@@ -152,6 +144,9 @@ class ApplicationTracker:
             blacklisted = conn.execute(
                 "SELECT COUNT(*) FROM applications WHERE status='blacklisted'"
             ).fetchone()[0]
+            consulting = conn.execute(
+                "SELECT COUNT(*) FROM applications WHERE status='consulting'"
+            ).fetchone()[0]
         return {
             "total": total,
             "applied": applied,
@@ -159,6 +154,7 @@ class ApplicationTracker:
             "failed": failed,
             "apply_opened": apply_opened,
             "blacklisted": blacklisted,
+            "consulting": consulting,
         }
 
     def _conn(self):

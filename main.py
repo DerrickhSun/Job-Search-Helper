@@ -20,6 +20,7 @@ if sys.platform == "win32":
 
 from apply_sheets import append_applied_job_row
 from company_blacklist import is_company_blacklisted, load_company_blacklist
+from consulting_filter import is_consulting_listing
 from cover_letter import CoverLetterGenerator
 from dspy_lm import configure_dspy
 from form_filler import EasyApplyFiller
@@ -194,6 +195,10 @@ def run(args):
             log.info("Skipping (company blacklisted): %s at %s", job["title"], job["company"])
             tracker.log(job, status="blacklisted", score=0.0)
             return
+        if args.skip_consulting and is_consulting_listing(job):
+            log.info("Skipping (consulting / staffing indicators): %s at %s", job["title"], job["company"])
+            tracker.log(job, status="consulting", score=0.0)
+            return
         if not job.get("easy_apply"):
             log.info(
                 "Skipping (no Easy Apply on card — external apply not implemented yet): %s at %s",
@@ -231,7 +236,7 @@ def run(args):
         log.info("  → Easy Apply (same browser session)...")
         success = filler.apply(job, resume, cover_letter, driver=driver)
         status = "applied" if success else "failed"
-        tracker.log(job, status=status, score=fit, cover_letter=cover_letter)
+        applied_at = tracker.log(job, status=status, score=fit, cover_letter=cover_letter)
 
         if success:
             log.info("  ✓ Applied successfully!")
@@ -239,6 +244,7 @@ def run(args):
                 job,
                 credentials_path=args.google_sheets_credentials,
                 spreadsheet_id=args.google_spreadsheet_id,
+                applied_at_iso=applied_at,
             )
         else:
             log.warning("  ✗ Application failed — check output/screenshots/")
@@ -474,6 +480,15 @@ def main():
         "Matching ignores case and punctuation; see that file for the format.",
     )
     ap.add_argument(
+        "--skip-consulting",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip jobs when the company name includes consulting (whole word) or the description suggests "
+        "a consultancy/staffing employer (consultant, consulting firm/company, consultancy, client company, "
+        "etc.; bare 'consulting' in the description is ignored to avoid industry-experience false positives). "
+        "Default: on. Use --no-skip-consulting to disable.",
+    )
+    ap.add_argument(
         "--google-sheets-credentials",
         type=Path,
         default=None,
@@ -487,6 +502,12 @@ def main():
         default=None,
         metavar="ID",
         help="Spreadsheet id (default: project sheet or GOOGLE_SHEETS_SPREADSHEET_ID env).",
+    )
+    ap.add_argument(
+        "--export-csv",
+        action="store_true",
+        help="Write output/applications.csv and output/apply_opened.csv from data/applications.db and exit. "
+        "Use when a run was interrupted (Ctrl+C) or you want CSVs to match the DB without re-scraping.",
     )
     args = ap.parse_args()
 
@@ -508,6 +529,13 @@ def main():
             "litellm",
         ):
             logging.getLogger(_name).setLevel(logging.WARNING)
+
+    if args.export_csv:
+        tracker = ApplicationTracker("data/applications.db")
+        tracker.export_csv("output/applications.csv")
+        tracker.export_csv("output/apply_opened.csv", statuses=("apply_opened",))
+        log.info("Re-exported output/applications.csv and output/apply_opened.csv from SQLite.")
+        return
 
     if not args.debug_jobs_page:
         cache_p = Path(args.resume_cache)

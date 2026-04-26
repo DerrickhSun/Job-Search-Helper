@@ -68,8 +68,13 @@ minimum_years_experience — a non-negative number: the smallest years-of-experi
 If the posting does not state any minimum years of professional/work experience, use -1. (-1 means
 **no minimum years** — any amount of experience, including zero, passes this gate.)
 
-Do not infer stricter requirements than written. If multiple numbers appear, use the minimum years
-required for the role as a whole (not preferred/nice-to-have) when possible; if unclear, use -1."""
+If the posting lists several explicit year minima (for example per-skill lines like "3+ years of work
+experience with Node.js" and "5+ years of work experience with TypeScript"), use the **largest**
+such number as minimum_years_experience — the candidate must meet each stated floor, so the strictest
+single-year bar is the max, not the smallest line item.
+
+Do not infer stricter requirements than written. If numbers are ambiguous or clearly only
+nice-to-have, use -1."""
 
 FIT_INSTRUCTION = """You rate how strong a fit the candidate is for this job on a scale from 0.0 to 1.0.
 
@@ -410,6 +415,9 @@ def _estimate_years_experience(resume: dict) -> float:
     bullets/dates (or ``raw_text`` if no experience text). That can **overestimate** overlapping roles
     or long education-adjacent spans — if gates pass unexpectedly, check INFO logs for
     ``candidate yrs≈`` vs ``eff min yrs``.
+
+    Optional ``resume["experience_years_cap"]`` (number): for gates only, the estimate is
+    ``min(heuristic, cap)`` so calendar span does not imply more seniority than you want to claim.
     """
     chunks: list[str] = []
     for r in resume.get("experience") or []:
@@ -423,19 +431,35 @@ def _estimate_years_experience(resume: dict) -> float:
 
     years_found = [int(m.group(0)) for m in re.finditer(r"\b(19|20)\d{2}\b", text)]
     if len(years_found) >= 2:
-        return float(max(years_found) - min(years_found))
-    if len(years_found) == 1:
-        return 2.0
+        estimate = float(max(years_found) - min(years_found))
+    elif len(years_found) == 1:
+        estimate = 2.0
+    else:
+        roles = [r for r in (resume.get("experience") or []) if isinstance(r, dict)]
+        if roles:
+            estimate = float(max(1, len(roles)))
+        else:
+            estimate = 0.0
 
-    roles = [r for r in (resume.get("experience") or []) if isinstance(r, dict)]
-    if roles:
-        return float(max(1, len(roles)))
-
-    return 0.0
+    cap = resume.get("experience_years_cap")
+    if cap is not None:
+        try:
+            c = float(cap)
+            if c >= 0.0:
+                estimate = min(estimate, c)
+        except (TypeError, ValueError):
+            pass
+    return estimate
 
 
 def _extract_job_requirements_regex(description: str) -> tuple[str, float | None]:
-    """Rough fallback: infer minimum education and years from keywords."""
+    """
+    Rough fallback: infer minimum education and years from keywords.
+
+    Years patterns include ``N(+)? years of experience``, ``N(+)? years of work experience``,
+    ``N(+)? years of <phrase> experience`` (domain-specific tenure implies at least ``N`` years overall),
+    and a few ``minimum/over`` forms.
+    """
     t = (description or "").lower()
     req_edu = "unspecified"
     if re.search(r"\b(ph\.?d|doctorate|doctoral)\b", t):
@@ -454,7 +478,17 @@ def _extract_job_requirements_regex(description: str) -> tuple[str, float | None
         t,
     ):
         nums.append(float(m.group(1)))
-    for m in re.finditer(r"(\d+)\s*\+\s*years?\s+of\s+experience", t):
+    # "N years of experience" / "N+ years of experience" (optional + after the digit)
+    for m in re.finditer(r"(\d+)\s*\+?\s*years?\s+of\s+experience\b", t):
+        nums.append(float(m.group(1)))
+    # LinkedIn / poster lines: "N+ years of work experience with …" (before "with" clause)
+    for m in re.finditer(r"(\d+)\s*\+?\s*years?\s+of\s+work\s+experience\b", t):
+        nums.append(float(m.group(1)))
+    # "N years of <domain> experience" — domain-specific tenure implies at least N years overall
+    for m in re.finditer(
+        r"(\d+)\s*\+?\s*years?\s+of\s+(?!experience\b)(.+?)\s+experience\b",
+        t,
+    ):
         nums.append(float(m.group(1)))
     for m in re.finditer(r"(\d+)\s*[-–]\s*(\d+)\s*years?\s+of\s+experience", t):
         nums.append(float(m.group(1)))
