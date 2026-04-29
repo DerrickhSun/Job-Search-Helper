@@ -109,7 +109,7 @@
       "id": "location_bracket",
       "comment": "Labels like Location[...] (Workday-style); must run before city_blank if label contains 'city'",
       "match": { "regex": "location\\[" },
-      "result": { "type": "literal", "value": "San Diego, CA, United States" }
+      "result": { "type": "literal", "value": "San Diego, California, United States" }
     },
     {
       "id": "city_blank",

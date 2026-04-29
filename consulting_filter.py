@@ -1,7 +1,8 @@
 """
 Heuristics to skip staffing / body-shop style listings (often low pay or opaque client relationships).
 
-Company **name** still uses the word ``consulting`` (whole word) — e.g. ``X Consulting LLC``.
+Company **name** uses whole-word ``consulting`` (e.g. ``X Consulting LLC``) or ``staffing`` (e.g.
+``Acme Staffing Group``).
 
 In the **description**, bare ``consulting`` is *not* matched: postings often list prior experience in
 ``quantitative consulting``, ``management consulting``, etc., without the employer being a consultancy.
@@ -14,6 +15,7 @@ from __future__ import annotations
 import re
 
 _COMPANY_CONSULTING = re.compile(r"\bconsulting\b", re.IGNORECASE)
+_COMPANY_STAFFING = re.compile(r"\bstaffing\b", re.IGNORECASE)
 _DESC_CONSULTANT = re.compile(r"\bconsultants?\b", re.IGNORECASE)
 _DESC_CONSULTANCY = re.compile(r"\bconsultancy\b", re.IGNORECASE)
 _DESC_CLIENT_COMPANY = re.compile(r"client\s+company", re.IGNORECASE)
@@ -33,6 +35,8 @@ def is_consulting_listing(job: dict) -> bool:
     """True when company or description matches consulting / body-shop style signals."""
     company = str(job.get("company") or "")
     if _COMPANY_CONSULTING.search(company):
+        return True
+    if _COMPANY_STAFFING.search(company):
         return True
     desc = str(job.get("description") or "")
     if _DESC_CONSULTANT.search(desc):

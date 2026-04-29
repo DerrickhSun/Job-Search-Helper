@@ -1,5 +1,5 @@
 """
-LinkedIn Auto-Apply Bot
+Job apply bot: LinkedIn Easy Apply (default) or Greenhouse Recruiting sign-in (``--site greenhouse``).
 Run: python main.py --location "United States"
 Default resume path is resume.pdf in the working directory; use --resume PATH to override.
 """
@@ -27,6 +27,7 @@ from consulting_filter import is_consulting_listing
 from cover_letter import CoverLetterGenerator
 from dspy_lm import configure_dspy
 from form_filler import DEFAULT_HEADSHOT_IMAGE, EasyApplyFiller
+from greenhouse_session import DEFAULT_GREENHOUSE_COOKIE_PATH, run_greenhouse_sign_in_flow
 from helper_browser import run_helper_mode
 from job_records import DEFAULT_LISTINGS_LOG
 from job_searcher import JobSearcher
@@ -84,6 +85,19 @@ def run(args):
 
     if args.debug_jobs_page and args.helper:
         raise SystemExit("error: use either --debug-jobs-page or --helper, not both")
+
+    if args.site == "greenhouse" and (args.debug_jobs_page or args.helper):
+        raise SystemExit(
+            "error: --debug-jobs-page and --helper are for LinkedIn only; use --site linkedin (default) or omit --site."
+        )
+
+    if args.site == "greenhouse":
+        if args.headless:
+            log.warning(
+                "Greenhouse sign-in usually needs a visible browser — use --no-headless if you cannot complete login."
+            )
+        run_greenhouse_sign_in_flow(args)
+        return
 
     if args.debug_jobs_page:
         log.info(
@@ -307,7 +321,20 @@ def run(args):
 def main():
     load_dotenv()
 
-    ap = argparse.ArgumentParser(description="LinkedIn Easy Apply bot")
+    ap = argparse.ArgumentParser(description="Job apply bot (LinkedIn Easy Apply or Greenhouse sign-in)")
+    ap.add_argument(
+        "--site",
+        choices=("linkedin", "greenhouse"),
+        default="linkedin",
+        help="Job board: linkedin (default: Easy Apply pipeline) or greenhouse (open sign-in to capture session).",
+    )
+    ap.add_argument(
+        "--greenhouse-cookies",
+        type=Path,
+        default=DEFAULT_GREENHOUSE_COOKIE_PATH,
+        metavar="PATH",
+        help="Read/write Greenhouse session cookies (default: data/selenium_greenhouse_cookies.json).",
+    )
     ap.add_argument(
         "--resume",
         type=Path,
@@ -551,7 +578,7 @@ def main():
         "--skip-consulting",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Skip jobs when the company name includes consulting (whole word) or the description suggests "
+        help="Skip jobs when the company name includes consulting or staffing (whole word) or the description suggests "
         "a consultancy/staffing employer (consultant, consulting firm/company, consultancy, client company, "
         "etc.; bare 'consulting' in the description is ignored to avoid industry-experience false positives). "
         "Default: on. Use --no-skip-consulting to disable.",
@@ -583,6 +610,10 @@ def main():
         v = (os.environ.get("JOB_APPLIER_HEADLESS") or os.environ.get("HEADLESS") or "").strip().lower()
         args.headless = v in ("1", "true", "yes")
 
+    # nargs="*" with default=None yields None when the flag is omitted — normalize to default queries.
+    if not args.keywords:
+        args.keywords = list(DEFAULT_KEYWORDS)
+
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
         # Selenium/urllib3 log every HTTP round-trip to the local WebDriver at DEBUG — very noisy.
@@ -609,7 +640,7 @@ def main():
         log.info("Re-exported output/applications.csv and output/apply_opened.csv from SQLite.")
         return
 
-    if not args.debug_jobs_page:
+    if not args.debug_jobs_page and args.site == "linkedin":
         cache_p = Path(args.resume_cache)
         need_resume_file = args.force_resume_parse or not cache_p.is_file()
         if need_resume_file and not Path(args.resume).exists():

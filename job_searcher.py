@@ -253,11 +253,17 @@ class JobSearcher:
         ``listings_log_path``, then call ``process_listing(driver, job)``.
 
         ``keywords`` may be a single string or a sequence of queries. After one query runs out of result
-        pages (no Next), the next query is loaded in the same session until ``max_jobs`` is reached or every
-        query is exhausted. Job IDs are deduplicated across the whole session.
+        pages (no Next), the next query is loaded in the same session until ``max_listings`` is reached,
+        ``max_applies`` successful applies is reached (when set with ``apply_counter``), or every query is
+        exhausted. Job IDs are deduplicated across the whole session.
 
-        If ``max_jobs`` is ``None``, there is no cap: the run continues until there are no more result
-        pages or the list is exhausted. Otherwise at most ``max_jobs`` listings are processed.
+        If ``max_listings`` is ``None``, there is no listing cap: the run continues until there are no more
+        result pages, the apply cap is met, or the list is exhausted. Otherwise at most that many listings
+        are processed (each counts once toward ``processed``).
+
+        If ``max_applies`` is set and ``apply_counter`` is provided (e.g. ``{"applied": N}`` mutated by the
+        caller on each successful apply), the run stops as soon as ``applied >= max_applies``, even when
+        ``max_listings`` is not reached.
 
         If ``easy_apply_only`` is true, the search URL includes LinkedIn's Easy Apply filter (``f_LF=f_AL``).
         If false, the search shows all jobs for the keywords/location.
@@ -272,6 +278,7 @@ class JobSearcher:
         listings_log_path = Path(listings_log_path)
         processed = 0
         seen_job_ids: set[str] = set()
+        apply_goal_met = False
         kw_list = normalize_search_keywords(keywords)
 
         try:
@@ -279,7 +286,7 @@ class JobSearcher:
             self._login(driver)
 
             for kw_index, keyword in enumerate(kw_list):
-                if max_jobs is not None and processed >= max_jobs:
+                if max_listings is not None and processed >= max_listings:
                     break
 
                 log.info(
@@ -298,18 +305,18 @@ class JobSearcher:
                 self._pause()
                 time.sleep(1.2)
 
-                while max_jobs is None or processed < max_jobs:
+                while max_listings is None or processed < max_listings:
                     self._wait_job_list(driver)
 
                     has_next = self._has_next_page(driver)
-                    remaining = self._remaining_slots(processed, max_jobs)
+                    remaining = self._remaining_slots(processed, max_listings)
                     # Full pages: LinkedIn usually shows ``jobs_per_results_page`` jobs when Next exists.
                     if has_next:
                         quota = min(self.jobs_per_results_page, remaining)
                     else:
                         quota = remaining
 
-                    cap_msg = "no limit" if max_jobs is None else str(max_jobs)
+                    cap_msg = "no limit" if max_listings is None else str(max_listings)
                     log.info(
                         "Results page: has_next=%s, quota=%d job(s) on this page (%d already processed, cap %s)",
                         has_next,
@@ -335,7 +342,7 @@ class JobSearcher:
                     page_done = 0
                     i = 0
                     while page_done < quota and (
-                        max_jobs is None or processed < max_jobs
+                        max_listings is None or processed < max_listings
                     ):
                         links_now = self._find_job_card_links(driver, expand=False)
                         if i >= len(links_now):
@@ -393,8 +400,22 @@ class JobSearcher:
 
                         page_done += 1
                         processed += 1
+                        if (
+                            max_applies is not None
+                            and apply_counter is not None
+                            and apply_counter.get("applied", 0) >= max_applies
+                        ):
+                            apply_goal_met = True
+                            log.info(
+                                "Reached successful apply cap (%d) — stopping search.",
+                                max_applies,
+                            )
+                            break
 
-                    if max_jobs is not None and processed >= max_jobs:
+                    if apply_goal_met:
+                        break
+
+                    if max_listings is not None and processed >= max_listings:
                         break
 
                     if not has_next:
@@ -423,6 +444,9 @@ class JobSearcher:
                     next_btn.click()
                     self._pause()
                     time.sleep(1.2)
+
+                if apply_goal_met:
+                    break
 
             save_cookies(driver, self.session_file)
             return processed

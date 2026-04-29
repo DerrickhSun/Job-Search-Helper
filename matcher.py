@@ -5,8 +5,11 @@ Two-stage evaluation:
 1) **Hard gates** (``gates_pass``) — both must pass or the job is skipped without a fit score:
    - Education: candidate's highest degree at or above the job's minimum (ordinal scale).
    - Experience: candidate's estimated years >= the job's minimum when the posting states one.
+     If the posting asks for **senior-level** experience but gives **no numeric** years floor, the gate
+     assumes **5 years** (regex backstop + LLM instruction).
 
-   Unstated minima (education ``unspecified`` / years ``-1`` or missing) impose no bar.
+   Unstated minima (education ``unspecified`` / years ``-1`` or missing) impose no bar, except the
+   senior-level-without-number case above.
 
 2) **Fit rating** (``fit_score``) — a float in ``[0, 1]`` from an LLM (skills, roles, domain vs the
    posting). Compared to ``--min-score`` after gates pass. ``score()`` returns this fit when gates pass,
@@ -72,6 +75,12 @@ If the posting lists several explicit year minima (for example per-skill lines l
 experience with Node.js" and "5+ years of work experience with TypeScript"), use the **largest**
 such number as minimum_years_experience — the candidate must meet each stated floor, so the strictest
 single-year bar is the max, not the smallest line item.
+
+Senior level without a number: if the posting requires **senior-level** experience (phrases like
+"senior level experience", "senior-level experience", "experience at the senior level") and **does not**
+anywhere state a numeric minimum years of experience (no "3+ years", "at least 5 years", etc.), set
+minimum_years_experience to **5**. If numeric minima are stated anywhere, use the **largest** such number
+only — do not add 5 on top when explicit year floors already exist.
 
 Do not infer stricter requirements than written. If numbers are ambiguous or clearly only
 nice-to-have, use -1."""
@@ -498,8 +507,27 @@ def _extract_job_requirements_regex(description: str) -> tuple[str, float | None
         req_years_f = max(nums)
     else:
         req_years_f = None
+        # Posting asks for senior-level experience but states no numeric floor → assume 5 years.
+        if _regex_implied_years_senior_level_no_numeric(t):
+            req_years_f = 5.0
 
     return req_edu, req_years_f
+
+
+def _regex_implied_years_senior_level_no_numeric(text_lower: str) -> bool:
+    """
+    True when copy ties **senior level** to **experience** (not merely a job title like "Senior Engineer").
+    Used only when no numeric year minima were found in the description.
+    """
+    if not text_lower or "senior" not in text_lower or "experience" not in text_lower:
+        return False
+    patterns = (
+        r"senior[-\s]+level(?:\s+of)?\s+(?:professional\s+|work\s+)?experience\b",
+        r"(?:professional\s+|work\s+)?experience\s+at\s+(?:a\s+)?(?:the\s+)?senior[-\s]+level\b",
+        r"senior[-\s]+level.{0,80}\b(?:professional\s+|work\s+)?experience\b",
+        r"\b(?:professional\s+|work\s+)?experience\b.{0,80}senior[-\s]+level\b",
+    )
+    return any(re.search(p, text_lower) for p in patterns)
 
 
 def _merge_years_requirements(y_llm: float | None, y_rx: float | None) -> float | None:
