@@ -328,7 +328,7 @@ def run_helper_mode(
     company_blacklist = load_company_blacklist(getattr(args, "company_blacklist", None))
     skip_consulting = bool(getattr(args, "skip_consulting", True))
 
-    query = searcher._jobs_search_query(args.keywords, args.location, args.easy_apply_only)
+    query = searcher._jobs_search_query(args.keywords[0], args.location, args.easy_apply_only)
     search_url = f"https://www.linkedin.com/jobs/search/?{query}"
 
     cmd_q: queue.Queue[str] = queue.Queue()

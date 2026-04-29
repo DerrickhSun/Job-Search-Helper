@@ -16,7 +16,7 @@ import os
 import re
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,18 @@ from job_records import append_listing_record
 log = logging.getLogger(__name__)
 
 _MIN_FIRST_NAME_LEN = 2
+
+
+def normalize_search_keywords(keywords: str | Sequence[str]) -> list[str]:
+    """Strip and drop empties; ``str`` is treated as a single query."""
+    if isinstance(keywords, str):
+        parts = [keywords]
+    else:
+        parts = list(keywords)
+    out = [p.strip() for p in parts if (p or "").strip()]
+    if not out:
+        raise ValueError("At least one non-empty keyword is required")
+    return out
 
 
 def job_id_and_view_url_from_href(href: str) -> tuple[str, str]:
@@ -226,7 +238,7 @@ class JobSearcher:
 
     def run_search_apply_pipeline(
         self,
-        keywords: str,
+        keywords: str | Sequence[str],
         location: str,
         max_jobs: int | None,
         easy_apply_only: bool,
@@ -236,6 +248,10 @@ class JobSearcher:
         """
         One browser session: for each search result, click the card, parse job fields, append a row to
         ``listings_log_path``, then call ``process_listing(driver, job)``.
+
+        ``keywords`` may be a single string or a sequence of queries. After one query runs out of result
+        pages (no Next), the next query is loaded in the same session until ``max_jobs`` is reached or every
+        query is exhausted. Job IDs are deduplicated across the whole session.
 
         If ``max_jobs`` is ``None``, there is no cap: the run continues until there are no more result
         pages or the list is exhausted. Otherwise at most ``max_jobs`` listings are processed.
@@ -253,136 +269,157 @@ class JobSearcher:
         listings_log_path = Path(listings_log_path)
         processed = 0
         seen_job_ids: set[str] = set()
+        kw_list = normalize_search_keywords(keywords)
 
         try:
             load_cookies(driver, self.session_file)
             self._login(driver)
 
-            query = self._jobs_search_query(keywords, location, easy_apply_only)
-            url = f"https://www.linkedin.com/jobs/search/?{query}"
-
-            log.info("Navigating to: %s", url)
-            driver.get(url)
-            self._pause()
-            time.sleep(1.2)
-
-            while max_jobs is None or processed < max_jobs:
-                self._wait_job_list(driver)
-
-                has_next = self._has_next_page(driver)
-                remaining = self._remaining_slots(processed, max_jobs)
-                # Full pages: LinkedIn usually shows ``jobs_per_results_page`` jobs when Next exists.
-                if has_next:
-                    quota = min(self.jobs_per_results_page, remaining)
-                else:
-                    quota = remaining
-
-                cap_msg = "no limit" if max_jobs is None else str(max_jobs)
-                log.info(
-                    "Results page: has_next=%s, quota=%d job(s) on this page (%d already processed, cap %s)",
-                    has_next,
-                    quota,
-                    processed,
-                    cap_msg,
-                )
-
-                if has_next:
-                    self._ensure_job_links_count(driver, quota)
-                else:
-                    self._expand_virtualized_job_list(driver)
-                self._scroll_job_list_to_top(driver)
-
-                n = len(self._find_job_card_links(driver, expand=False))
-                log.info("Found %d job list link(s) in the DOM after loading", n)
-                if n == 0:
-                    log.warning(
-                        "No job list links found (tried /jobs/view/, job-card-container__link, "
-                        "scaffold list + data-occludable-job-id, currentJobId). Scroll the left rail into view."
-                    )
-
-                page_done = 0
-                i = 0
-                while page_done < quota and (
-                    max_jobs is None or processed < max_jobs
-                ):
-                    links_now = self._find_job_card_links(driver, expand=False)
-                    if i >= len(links_now):
-                        if has_next:
-                            self._ensure_job_links_count(driver, quota)
-                            self._scroll_job_list_to_top(driver)
-                            links_now = self._find_job_card_links(driver, expand=False)
-                    if i >= len(links_now):
-                        log.warning(
-                            "Stopping this page at %d/%d job(s): only %d link(s) in the list (has_next=%s).",
-                            page_done,
-                            quota,
-                            len(links_now),
-                            has_next,
-                        )
-                        break
-
-                    job = self._parse_job_at_card_index(driver, i, links=links_now)
-                    i += 1
-                    if not job:
-                        log.debug("Skipping empty parse at card index %d", i - 1)
-                        continue
-
-                    jid = str(job.get("id") or "").strip()
-                    if not jid:
-                        log.debug("Skipping job with no id at index %d", i - 1)
-                        continue
-                    if jid in seen_job_ids:
-                        log.info("Skipping duplicate job id %s (already processed this session)", jid)
-                        continue
-                    seen_job_ids.add(jid)
-
-                    append_listing_record(listings_log_path, job, phase="parsed")
-                    log.info(
-                        "Recorded listing %s — %s at %s (log: %s)",
-                        job.get("id"),
-                        job.get("title"),
-                        job.get("company"),
-                        listings_log_path,
-                    )
-
-                    try:
-                        process_listing(driver, job)
-                    except Exception:
-                        log.exception(
-                            "Pipeline error for %s at %s",
-                            job.get("title"),
-                            job.get("company"),
-                        )
-
-                    page_done += 1
-                    processed += 1
-
+            for kw_index, keyword in enumerate(kw_list):
                 if max_jobs is not None and processed >= max_jobs:
                     break
 
-                if not has_next:
-                    log.info("No Next page control (or disabled) — end of results.")
-                    break
+                log.info(
+                    "Search keyword %d of %d: %r (%d listing(s) processed so far)",
+                    kw_index + 1,
+                    len(kw_list),
+                    keyword,
+                    processed,
+                )
 
-                if page_done < quota:
-                    log.warning(
-                        "Expected %d job(s) on this page before Next, but only processed %d — "
-                        "continuing to next page anyway (virtual list may have fewer mounted links).",
-                        quota,
-                        page_done,
-                    )
+                query = self._jobs_search_query(keyword, location, easy_apply_only)
+                url = f"https://www.linkedin.com/jobs/search/?{query}"
 
-                time.sleep(self.next_page_wait_seconds)
-                next_els = driver.find_elements(By.CSS_SELECTOR, SEL["next_page"])
-                if not next_els:
-                    log.info("No further results pages")
-                    break
-                next_btn = next_els[0]
-                if self.highlight:
-                    focus_element(driver, next_btn, pause=self.step_delay)
-                next_btn.click()
+                log.info("Navigating to: %s", url)
+                driver.get(url)
                 self._pause()
                 time.sleep(1.2)
+
+                while max_jobs is None or processed < max_jobs:
+                    self._wait_job_list(driver)
+
+                    has_next = self._has_next_page(driver)
+                    remaining = self._remaining_slots(processed, max_jobs)
+                    # Full pages: LinkedIn usually shows ``jobs_per_results_page`` jobs when Next exists.
+                    if has_next:
+                        quota = min(self.jobs_per_results_page, remaining)
+                    else:
+                        quota = remaining
+
+                    cap_msg = "no limit" if max_jobs is None else str(max_jobs)
+                    log.info(
+                        "Results page: has_next=%s, quota=%d job(s) on this page (%d already processed, cap %s)",
+                        has_next,
+                        quota,
+                        processed,
+                        cap_msg,
+                    )
+
+                    if has_next:
+                        self._ensure_job_links_count(driver, quota)
+                    else:
+                        self._expand_virtualized_job_list(driver)
+                    self._scroll_job_list_to_top(driver)
+
+                    n = len(self._find_job_card_links(driver, expand=False))
+                    log.info("Found %d job list link(s) in the DOM after loading", n)
+                    if n == 0:
+                        log.warning(
+                            "No job list links found (tried /jobs/view/, job-card-container__link, "
+                            "scaffold list + data-occludable-job-id, currentJobId). Scroll the left rail into view."
+                        )
+
+                    page_done = 0
+                    i = 0
+                    while page_done < quota and (
+                        max_jobs is None or processed < max_jobs
+                    ):
+                        links_now = self._find_job_card_links(driver, expand=False)
+                        if i >= len(links_now):
+                            if has_next:
+                                self._ensure_job_links_count(driver, quota)
+                                self._scroll_job_list_to_top(driver)
+                                links_now = self._find_job_card_links(driver, expand=False)
+                        if i >= len(links_now):
+                            log.warning(
+                                "Stopping this page at %d/%d job(s): only %d link(s) in the list (has_next=%s).",
+                                page_done,
+                                quota,
+                                len(links_now),
+                                has_next,
+                            )
+                            break
+
+                        job = self._parse_job_at_card_index(driver, i, links=links_now)
+                        i += 1
+                        if not job:
+                            log.debug("Skipping empty parse at card index %d", i - 1)
+                            continue
+
+                        jid = str(job.get("id") or "").strip()
+                        if not jid:
+                            log.debug("Skipping job with no id at index %d", i - 1)
+                            continue
+                        if jid in seen_job_ids:
+                            log.info("Skipping duplicate job id %s (already processed this session)", jid)
+                            continue
+                        seen_job_ids.add(jid)
+
+                        append_listing_record(
+                            listings_log_path,
+                            job,
+                            phase="parsed",
+                            extra={"search_keyword": keyword},
+                        )
+                        log.info(
+                            "Recorded listing %s — %s at %s (log: %s)",
+                            job.get("id"),
+                            job.get("title"),
+                            job.get("company"),
+                            listings_log_path,
+                        )
+
+                        try:
+                            process_listing(driver, job)
+                        except Exception:
+                            log.exception(
+                                "Pipeline error for %s at %s",
+                                job.get("title"),
+                                job.get("company"),
+                            )
+
+                        page_done += 1
+                        processed += 1
+
+                    if max_jobs is not None and processed >= max_jobs:
+                        break
+
+                    if not has_next:
+                        log.info(
+                            "No Next page control (or disabled) — end of results for keyword %r.",
+                            keyword,
+                        )
+                        break
+
+                    if page_done < quota:
+                        log.warning(
+                            "Expected %d job(s) on this page before Next, but only processed %d — "
+                            "continuing to next page anyway (virtual list may have fewer mounted links).",
+                            quota,
+                            page_done,
+                        )
+
+                    time.sleep(self.next_page_wait_seconds)
+                    next_els = driver.find_elements(By.CSS_SELECTOR, SEL["next_page"])
+                    if not next_els:
+                        log.info("No further results pages")
+                        break
+                    next_btn = next_els[0]
+                    if self.highlight:
+                        focus_element(driver, next_btn, pause=self.step_delay)
+                    next_btn.click()
+                    self._pause()
+                    time.sleep(1.2)
 
             save_cookies(driver, self.session_file)
             return processed

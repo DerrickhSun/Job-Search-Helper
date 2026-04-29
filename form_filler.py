@@ -8,14 +8,16 @@ Default is a visible window. Use --headless to hide it.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 import re
+import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
 
 from chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies
@@ -334,6 +336,64 @@ class EasyApplyFiller:
         if self.helper_scan_all_tabs:
             return self._assist_context_open_scan_all_tabs(driver)
         return self._assist_context_open_single_tab(driver)
+
+    @staticmethod
+    def _label_is_cover_letter_field(label: str) -> bool:
+        """True when the control is clearly for a cover letter (LinkedIn may pre-fill stale text)."""
+        n = FormFillRulesEngine.normalize_label(label)
+        if not n:
+            return False
+        if "cover letter" in n:
+            return True
+        return "cover" in n and "letter" in n
+
+    def _control_is_cover_letter_field(self, driver: Any, el) -> bool:
+        """Uses field label/aria/placeholder and Easy Apply wrapper text (same idea as file-upload detection)."""
+        if self._label_is_cover_letter_field(self._get_label(driver, el)):
+            return True
+        for xpath in (
+            "./ancestor::div[contains(@class,'jobs-easy-apply-form-element')][1]",
+            "./ancestor::fieldset[1]",
+            "./ancestor::div[contains(@class,'jobs-easy-apply-form')][1]",
+        ):
+            try:
+                wrap = el.find_element(By.XPATH, xpath)
+                if self._label_is_cover_letter_field(wrap.text or ""):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _control_text_snapshot(self, el) -> str:
+        """Best-effort current text (React often mirrors into ``value`` or inner text)."""
+        try:
+            v = (el.get_attribute("value") or "").strip()
+        except Exception:
+            v = ""
+        if v:
+            return v
+        try:
+            return (el.text or "").strip()
+        except Exception:
+            return ""
+
+    def _replace_text_control_value(self, driver: Any, el, text: str) -> None:
+        """Select-all and replace — ``clear()`` alone often leaves LinkedIn’s draft cover letter."""
+        if self.highlight:
+            focus_element(driver, el, pause=0.15)
+        try:
+            el.click()
+        except Exception:
+            pass
+        time.sleep(0.05)
+        try:
+            el.clear()
+        except Exception:
+            pass
+        mod = Keys.COMMAND if sys.platform == "darwin" else Keys.CONTROL
+        el.send_keys(mod, "a")
+        el.send_keys(Keys.BACKSPACE)
+        el.send_keys(text)
 
     def _pause(self) -> None:
         if self.step_delay > 0:
@@ -956,14 +1016,30 @@ class EasyApplyFiller:
             log.warning("No fill root: no LinkedIn Easy Apply modal and no Workday-style apply fields found")
             return False
 
+        filled_cover_letter_as_text = False
+
         for input_el in root.find_elements(By.CSS_SELECTOR, SEL["text_input"]):
             try:
+                label = self._get_label(driver, input_el)
+                if self._control_is_cover_letter_field(driver, input_el):
+                    if not (cover_letter or "").strip():
+                        log.warning(
+                            "Cover letter text field detected but generated cover letter is empty — skipping"
+                        )
+                        continue
+                    if self.highlight:
+                        focus_element(driver, input_el, pause=0.2)
+                    self._replace_text_control_value(driver, input_el, cover_letter)
+                    self._after_field_fill()
+                    filled_cover_letter_as_text = True
+                    log.info("Filled cover letter into text field (replaced any prior / LinkedIn draft text).")
+                    continue
+
                 current = (input_el.get_attribute("value") or "").strip()
                 if current:
                     continue
                 if self._automation_id_is_skipped(input_el):
                     continue
-                label = self._get_label(driver, input_el)
                 if self._label_looks_like_robot_trap(label):
                     continue
                 value = self._answer_text_field(label, resume)
@@ -995,11 +1071,15 @@ class EasyApplyFiller:
 
         for ta in root.find_elements(By.CSS_SELECTOR, SEL["textarea"]):
             try:
-                current = (ta.get_attribute("value") or "").strip()
-                if current:
-                    continue
                 label = self._get_label(driver, ta)
+                is_cover = self._control_is_cover_letter_field(driver, ta)
+                current = self._control_text_snapshot(ta)
+                if current and not is_cover:
+                    continue
+
                 text = self._answer_textarea(label, cover_letter)
+                if text is None and is_cover and (cover_letter or "").strip():
+                    text = cover_letter
                 required = self._element_is_required(ta)
                 if text is None:
                     if required and not assist:
@@ -1015,8 +1095,15 @@ class EasyApplyFiller:
                 if text:
                     if self.highlight:
                         focus_element(driver, ta, pause=0.2)
-                    ta.clear()
-                    ta.send_keys(text)
+                    if is_cover:
+                        self._replace_text_control_value(driver, ta, text)
+                        filled_cover_letter_as_text = True
+                        log.info(
+                            "Filled cover letter into textarea (replaced any prior / LinkedIn draft text)."
+                        )
+                    else:
+                        ta.clear()
+                        ta.send_keys(text)
                     self._after_field_fill()
             except Exception as e:
                 log.debug("Skipping textarea: %s", e)
@@ -1088,6 +1175,11 @@ class EasyApplyFiller:
         for finp in root.find_elements(By.CSS_SELECTOR, 'input[type="file"]'):
             try:
                 if not self._file_input_is_cover_letter_upload(driver, finp):
+                    continue
+                if filled_cover_letter_as_text:
+                    log.info(
+                        "Skipping cover letter file upload — cover letter was already entered as text on this step."
+                    )
                     continue
                 if (finp.get_attribute("value") or "").strip():
                     continue

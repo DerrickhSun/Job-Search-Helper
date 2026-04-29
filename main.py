@@ -1,6 +1,6 @@
 """
 LinkedIn Auto-Apply Bot
-Run: python main.py --keywords "software engineer" --location "United States"
+Run: python main.py --location "United States"
 Default resume path is resume.pdf in the working directory; use --resume PATH to override.
 """
 
@@ -41,6 +41,14 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
+
+# Default search queries: when one runs out of LinkedIn pages, the next is used in the same session.
+DEFAULT_KEYWORDS = (
+    "software engineer",
+    "ai",
+    "data scientist",
+    "data analyst",
+)
 
 
 def _job_searcher_from_args(args, **kwargs):
@@ -83,7 +91,7 @@ def run(args):
             account_first_name=account_first,
         )
         searcher.search(
-            keywords=args.keywords,
+            keywords=args.keywords[0],
             location=args.location,
             max_jobs=max_jobs_cap,
             easy_apply_only=args.easy_apply_only,
@@ -138,7 +146,11 @@ def run(args):
     log.info("Profile: %d skills, %d roles", len(resume["skills"]), len(resume["experience"]))
 
     # 2. Search for jobs (Selenium + Chrome; visible by default)
-    log.info("Searching LinkedIn for: %s in %s", args.keywords, args.location)
+    log.info(
+        "Searching LinkedIn in %s for keyword(s): %s",
+        args.location,
+        "; ".join(repr(k) for k in args.keywords),
+    )
     if args.easy_apply_only:
         log.info("Job search filter: Easy Apply only (LinkedIn f_AL).")
     else:
@@ -179,11 +191,12 @@ def run(args):
     searcher = _job_searcher_from_args(args, account_first_name=account_first)
     if max_jobs_cap is None:
         log.info(
-            "No job listing cap (--max-jobs 0): processing until this search has no more pages or cards."
+            "No job listing cap (--max-jobs 0): processing until every keyword runs out of pages or cards."
         )
     else:
         log.info(
-            "Will evaluate up to %d job listing(s) this run (default cap 100; use --max-jobs 0 for no limit).",
+            "Will evaluate up to %d job listing(s) across all --keywords this run "
+            "(default cap 100; use --max-jobs 0 for no limit).",
             max_jobs_cap,
         )
 
@@ -250,7 +263,7 @@ def run(args):
             log.warning("  ✗ Application failed — check output/screenshots/")
 
     processed = searcher.run_search_apply_pipeline(
-        keywords=args.keywords,
+        keywords=list(args.keywords),
         location=args.location,
         max_jobs=max_jobs_cap,
         easy_apply_only=args.easy_apply_only,
@@ -288,7 +301,15 @@ def main():
         action="store_true",
         help="Always parse --resume from disk and overwrite --resume-cache.",
     )
-    ap.add_argument("--keywords", default="software engineer", help="Job search keywords")
+    ap.add_argument(
+        "--keywords",
+        nargs="*",
+        default=None,
+        metavar="TERM",
+        help="LinkedIn job search queries (space-separated). When one query runs out of result pages, the "
+        "next is used in the same browser session until --max-jobs is reached or all queries are exhausted. "
+        f"Omit this flag to use the default list: {', '.join(DEFAULT_KEYWORDS)}.",
+    )
     ap.add_argument(
         "--location",
         default="United States",
@@ -313,7 +334,7 @@ def main():
         type=int,
         default=100,
         metavar="N",
-        help="Max job listings to walk through per run (default: 100). "
+        help="Max job listings to walk through per run across all --keywords (default: 100). "
         "Use 0 for no limit. LinkedIn shows ~25 per page when more pages exist.",
     )
     ap.add_argument(
@@ -510,6 +531,14 @@ def main():
         "Use when a run was interrupted (Ctrl+C) or you want CSVs to match the DB without re-scraping.",
     )
     args = ap.parse_args()
+
+    if args.keywords is None:
+        args.keywords = list(DEFAULT_KEYWORDS)
+    elif len(args.keywords) == 0:
+        raise SystemExit(
+            "error: --keywords expects one or more terms, e.g. --keywords 'software engineer' or "
+            "--keywords engineer ai (omit --keywords entirely for the default query list)"
+        )
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
