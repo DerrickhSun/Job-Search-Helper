@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "documentation": "Rules drive LinkedIn Easy Apply auto-fill. Within each list, the FIRST matching rule wins. Labels are normalized: lowercased and runs of whitespace collapsed to a single space. Matching: all_substrings = every string must appear as a substring; any_substrings = at least one; all_of_any = list of groups — from each group at least one substring must appear; not_substrings = none of these may appear; starts_with = label must start with this text (after normalization); regex = Python regex (default case-insensitive). Results: screening_yes_no uses answer 'Yes' or 'No'. Text/select results use type literal, name_part, resume_key_list, years_experience_total, cover_letter_full, cover_letter_truncated.",
+  "documentation": "Rules drive LinkedIn Easy Apply auto-fill. Within each list, the FIRST matching rule wins. Labels are normalized: lowercased and runs of whitespace collapsed to a single space. Matching: all_substrings = every string must appear as a substring; any_substrings = at least one; all_of_any = list of groups — from each group at least one substring must appear; not_substrings = none of these may appear; starts_with = label must start with this text (after normalization); regex = Python regex (default case-insensitive). Results: screening_yes_no uses answer 'Yes' or 'No'. Text/select results use type literal, name_part, resume_key_list, years_experience_total, cover_letter_full, cover_letter_truncated. Example: regex \"location\\\\[\" matches Workday-style Location[...] labels.",
   "screening_yes_no": [
     {
       "id": "us_work_auth_without_sponsorship",
@@ -104,6 +104,12 @@
       "id": "phone",
       "match": { "any_substrings": ["phone", "mobile"] },
       "result": { "type": "resume_key_list", "keys": ["phone"] }
+    },
+    {
+      "id": "location_bracket",
+      "comment": "Labels like Location[...] (Workday-style); must run before city_blank if label contains 'city'",
+      "match": { "regex": "location\\[" },
+      "result": { "type": "literal", "value": "San Diego, CA, United States" }
     },
     {
       "id": "city_blank",

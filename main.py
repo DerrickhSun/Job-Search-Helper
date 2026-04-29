@@ -6,8 +6,11 @@ Default resume path is resume.pdf in the working directory; use --resume PATH to
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 # Windows consoles often use cp1252; resume/cover text may contain Unicode (e.g. bullets). UTF-8 avoids
 # UnicodeEncodeError when logging DEBUG lines from third-party libraries (e.g. OpenAI request bodies).
@@ -23,7 +26,7 @@ from company_blacklist import is_company_blacklisted, load_company_blacklist
 from consulting_filter import is_consulting_listing
 from cover_letter import CoverLetterGenerator
 from dspy_lm import configure_dspy
-from form_filler import EasyApplyFiller
+from form_filler import DEFAULT_HEADSHOT_IMAGE, EasyApplyFiller
 from helper_browser import run_helper_mode
 from job_records import DEFAULT_LISTINGS_LOG
 from job_searcher import JobSearcher
@@ -61,8 +64,15 @@ def _job_searcher_from_args(args, **kwargs):
 
 
 def run(args):
-    # 0 = unlimited listings; positive int = cap (default 100).
-    max_jobs_cap: int | None = None if args.max_jobs <= 0 else args.max_jobs
+    if args.headless:
+        log.info("Chrome: headless (no window).")
+    else:
+        log.info("Chrome: visible window (use --headless or JOB_APPLIER_HEADLESS=1 to hide).")
+
+    # 0 = unlimited listings evaluated; positive int = cap on how many cards we open.
+    max_listings_cap: int | None = None if args.max_jobs <= 0 else args.max_jobs
+    # 0 = no cap on successful applies; positive int = stop after that many successful applies.
+    max_applies_cap: int | None = None if args.max_applies <= 0 else args.max_applies
 
     if args.debug_jobs_page and args.helper:
         raise SystemExit("error: use either --debug-jobs-page or --helper, not both")
@@ -85,7 +95,7 @@ def run(args):
         searcher.search(
             keywords=args.keywords,
             location=args.location,
-            max_jobs=max_jobs_cap,
+            max_jobs=max_listings_cap,
             easy_apply_only=args.easy_apply_only,
         )
         log.info("Debug session finished.")
@@ -174,17 +184,26 @@ def run(args):
         apply_review_pause_after_fill_seconds=args.apply_review_pause,
         cover_letter_docx_dir=args.cover_letter_dir,
         form_fill_rules_path=args.form_fill_rules,
+        headshot_image_path=args.headshot,
     )
 
     searcher = _job_searcher_from_args(args, account_first_name=account_first)
-    if max_jobs_cap is None:
+    apply_stats = {"applied": 0}
+    if max_applies_cap is not None:
         log.info(
-            "No job listing cap (--max-jobs 0): processing until this search has no more pages or cards."
+            "Will stop after %d successful Easy Apply(ies) this run (--max-applies; use 0 for no cap).",
+            max_applies_cap,
+        )
+    else:
+        log.info("No successful-apply cap (--max-applies 0).")
+    if max_listings_cap is None:
+        log.info(
+            "No listing cap (--max-jobs 0): may scan many cards until apply cap or end of search."
         )
     else:
         log.info(
-            "Will evaluate up to %d job listing(s) this run (default cap 100; use --max-jobs 0 for no limit).",
-            max_jobs_cap,
+            "Will evaluate at most %d job listing(s) this run (--max-jobs safety cap).",
+            max_listings_cap,
         )
 
     def process_listing(driver, job: dict) -> None:
@@ -239,6 +258,7 @@ def run(args):
         applied_at = tracker.log(job, status=status, score=fit, cover_letter=cover_letter)
 
         if success:
+            apply_stats["applied"] += 1
             log.info("  ✓ Applied successfully!")
             append_applied_job_row(
                 job,
@@ -252,12 +272,19 @@ def run(args):
     processed = searcher.run_search_apply_pipeline(
         keywords=args.keywords,
         location=args.location,
-        max_jobs=max_jobs_cap,
+        max_listings=max_listings_cap,
         easy_apply_only=args.easy_apply_only,
         listings_log_path=args.listings_log,
         process_listing=process_listing,
+        max_applies=max_applies_cap,
+        apply_counter=apply_stats,
     )
-    log.info("Finished search pipeline: %d listing(s) processed (see %s).", processed, args.listings_log)
+    log.info(
+        "Finished search pipeline: %d listing(s) processed, %d successful apply(ies) (see %s).",
+        processed,
+        apply_stats["applied"],
+        args.listings_log,
+    )
 
     # Export summary (same 6-column sheet layout: company, date, LinkedIn job URL, title)
     tracker.export_csv("output/applications.csv")
@@ -266,6 +293,8 @@ def run(args):
 
 
 def main():
+    load_dotenv()
+
     ap = argparse.ArgumentParser(description="LinkedIn Easy Apply bot")
     ap.add_argument(
         "--resume",
@@ -309,12 +338,21 @@ def main():
         'same as the "Past 24 hours" date filter). Use --no-posted-within-24h for any posting date.',
     )
     ap.add_argument(
-        "--max-jobs",
+        "--max-applies",
         type=int,
         default=100,
         metavar="N",
-        help="Max job listings to walk through per run (default: 100). "
-        "Use 0 for no limit. LinkedIn shows ~25 per page when more pages exist.",
+        help="Stop after N successful Easy Applies this run (default: 100). "
+        "Use 0 for no apply cap (run until --max-jobs listings or end of search).",
+    )
+    ap.add_argument(
+        "--max-jobs",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Max job listings to open and evaluate per run (default: 0 = no cap). "
+        "Use with --max-applies as a safety bound (e.g. --max-jobs 800 --max-applies 100). "
+        "LinkedIn shows ~25 listings per page when more pages exist.",
     )
     ap.add_argument(
         "--min-score",
@@ -324,8 +362,11 @@ def main():
     )
     ap.add_argument(
         "--headless",
-        action="store_true",
-        help="Run Chrome in headless mode (no window). Default is a visible browser for debugging.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Run Chrome in headless mode (no window). Omit both flags to follow env: JOB_APPLIER_HEADLESS "
+        "or HEADLESS set to 1/true/yes enables headless; otherwise the browser is visible. "
+        "Use --no-headless to force a visible window even when env is set.",
     )
     ap.add_argument(
         "--step-delay",
@@ -465,6 +506,13 @@ def main():
         "(default: output/coverletters).",
     )
     ap.add_argument(
+        "--headshot",
+        type=Path,
+        default=DEFAULT_HEADSHOT_IMAGE,
+        metavar="PATH",
+        help="PNG/JPEG used when Easy Apply asks for a photo or headshot (default: data/selfInSuit.png).",
+    )
+    ap.add_argument(
         "--form-fill-rules",
         type=Path,
         default=None,
@@ -510,6 +558,10 @@ def main():
         "Use when a run was interrupted (Ctrl+C) or you want CSVs to match the DB without re-scraping.",
     )
     args = ap.parse_args()
+
+    if args.headless is None:
+        v = (os.environ.get("JOB_APPLIER_HEADLESS") or os.environ.get("HEADLESS") or "").strip().lower()
+        args.headless = v in ("1", "true", "yes")
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
