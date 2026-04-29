@@ -26,6 +26,8 @@ from form_fill_rules import FormFillRulesEngine
 
 log = logging.getLogger(__name__)
 
+# Easy Apply “Photo” / headshot steps: ``send_keys`` with an absolute path to this file (if it exists).
+DEFAULT_HEADSHOT_IMAGE = Path("data/selfInSuit.png")
 
 SEL = {
     # Primary apply CTA on the job detail pane (two-pane search or /jobs/view/…).
@@ -104,6 +106,7 @@ class EasyApplyFiller:
         cover_letter_docx_dir: Path | str = "output/coverletters",
         form_fill_rules_path: Path | str | None = None,
         helper_scan_all_tabs: bool = False,
+        headshot_image_path: Path | str | None = None,
     ):
         self.headless = headless
         self.screenshot_dir = Path(screenshot_dir)
@@ -125,6 +128,9 @@ class EasyApplyFiller:
         # stealing). If True, every tab is scanned (needed when Workday opens in a new tab WebDriver did not
         # switch to). WebDriver has no API for “the tab the user clicked last.”
         self.helper_scan_all_tabs = bool(helper_scan_all_tabs)
+        self.headshot_image_path = (
+            Path(headshot_image_path) if headshot_image_path is not None else DEFAULT_HEADSHOT_IMAGE
+        )
 
     @staticmethod
     def _default_content(driver: Any) -> None:
@@ -989,6 +995,72 @@ class EasyApplyFiller:
                 continue
         return False
 
+    def _headshot_path_for_upload(self) -> Path | None:
+        p = self.headshot_image_path
+        if p.is_file():
+            return p.resolve()
+        return None
+
+    def _click_photo_upload_ctas(self, driver: Any, root) -> None:
+        """
+        LinkedIn often shows a visible **Photo** control before the ``input[type=file]`` is usable.
+        Click matching buttons so the file input is present / focused in the DOM.
+        """
+        for el in root.find_elements(By.CSS_SELECTOR, "button, [role='button'], label"):
+            try:
+                if not el.is_displayed() or not el.is_enabled():
+                    continue
+                raw = (el.text or "").strip()
+                text = " ".join(raw.lower().split())
+                aria = (el.get_attribute("aria-label") or "").strip().lower()
+                if not text and not aria:
+                    continue
+                wants = text == "photo" or aria == "photo"
+                if not wants and aria:
+                    wants = ("photo" in aria or "headshot" in aria) and (
+                        "upload" in aria or "add" in aria or "choose" in aria
+                    )
+                if not wants:
+                    continue
+                if self.highlight:
+                    focus_element(driver, el, pause=0.2)
+                el.click()
+                self._after_ui_click()
+                time.sleep(0.35)
+                log.info("Clicked Photo / headshot control to enable file upload")
+            except Exception:
+                continue
+
+    def _file_input_is_photo_upload(self, driver: Any, el) -> bool:
+        """True for headshot / photo widgets (not résumé, not cover letter)."""
+        if self._file_input_is_cover_letter_upload(driver, el):
+            return False
+        label = (self._get_label(driver, el) or "").lower()
+        aria = (el.get_attribute("aria-label") or "").lower()
+        accept = (el.get_attribute("accept") or "").lower()
+        blob = f"{label} {aria}"
+        try:
+            wrap = el.find_element(
+                By.XPATH,
+                "./ancestor::div[contains(@class,'jobs-easy-apply-form-element')][1]",
+            )
+            blob += " " + (wrap.text or "").lower()
+        except Exception:
+            pass
+        if "cover letter" in blob:
+            return False
+        resumeish = ("résumé" in blob or "resume" in blob or " cv" in blob or blob.strip().startswith("cv"))
+        if resumeish and not any(k in blob for k in ("photo", "headshot", "picture", "portrait", "image")):
+            return False
+        if any(k in blob for k in ("photo", "headshot", "portrait")):
+            return True
+        if "picture" in blob and "cover" not in blob:
+            return True
+        if accept and "image" in accept and "pdf" not in accept and "doc" not in accept:
+            if "resume" not in blob and "cv" not in blob and "cover" not in blob:
+                return True
+        return False
+
     def assist_fill_current_modal(self, driver: Any, resume: dict, cover_letter: str, job: dict) -> None:
         """
         Fill whatever we can on the current Easy Apply step **without** clicking Next/Submit.
@@ -1172,10 +1244,10 @@ class EasyApplyFiller:
             except Exception as e:
                 log.debug("Skipping radio group %s: %s", name, e)
 
+        self._click_photo_upload_ctas(driver, root)
+
         for finp in root.find_elements(By.CSS_SELECTOR, 'input[type="file"]'):
             try:
-                if not self._file_input_is_cover_letter_upload(driver, finp):
-                    continue
                 if filled_cover_letter_as_text:
                     log.info(
                         "Skipping cover letter file upload — cover letter was already entered as text on this step."
@@ -1183,17 +1255,33 @@ class EasyApplyFiller:
                     continue
                 if (finp.get_attribute("value") or "").strip():
                     continue
-                if not (cover_letter or "").strip():
-                    log.warning("Cover letter upload requested but generated cover letter is empty — skipping")
+                if self._file_input_is_cover_letter_upload(driver, finp):
+                    if not (cover_letter or "").strip():
+                        log.warning("Cover letter upload requested but generated cover letter is empty — skipping")
+                        continue
+                    safe_id = re.sub(r"[^\w\-.]+", "_", str(job.get("id", "job")))[:120]
+                    docx_path = self.cover_letter_docx_dir / f"cover_{safe_id}.docx"
+                    write_cover_letter_docx(cover_letter, docx_path)
+                    finp.send_keys(str(docx_path.resolve()))
+                    self._after_field_fill()
+                    log.info("Uploaded cover letter as DOCX: %s", docx_path)
                     continue
-                safe_id = re.sub(r"[^\w\-.]+", "_", str(job.get("id", "job")))[:120]
-                docx_path = self.cover_letter_docx_dir / f"cover_{safe_id}.docx"
-                write_cover_letter_docx(cover_letter, docx_path)
-                finp.send_keys(str(docx_path.resolve()))
-                self._after_field_fill()
-                log.info("Uploaded cover letter as DOCX: %s", docx_path)
+                if self._file_input_is_photo_upload(driver, finp):
+                    photo_path = self._headshot_path_for_upload()
+                    if photo_path is None:
+                        msg = (
+                            f"Photo upload field present but headshot file not found: {self.headshot_image_path}"
+                        )
+                        if self._element_is_required(finp) and not assist:
+                            log.warning("%s — abandoning", msg)
+                            return False
+                        log.warning("%s — skipping", msg)
+                        continue
+                    finp.send_keys(str(photo_path))
+                    self._after_field_fill()
+                    log.info("Uploaded headshot for photo field: %s", photo_path)
             except Exception as e:
-                log.warning("Cover letter file upload failed: %s", e)
+                log.warning("File upload failed: %s", e)
 
         return True
 

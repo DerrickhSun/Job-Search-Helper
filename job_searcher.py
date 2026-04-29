@@ -240,10 +240,13 @@ class JobSearcher:
         self,
         keywords: str | Sequence[str],
         location: str,
-        max_jobs: int | None,
+        max_listings: int | None,
         easy_apply_only: bool,
         listings_log_path: Path | str,
         process_listing: Callable[[Any, dict], None],
+        *,
+        max_applies: int | None = None,
+        apply_counter: dict[str, int] | None = None,
     ) -> int:
         """
         One browser session: for each search result, click the card, parse job fields, append a row to

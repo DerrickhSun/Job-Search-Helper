@@ -1,47 +1,185 @@
 ,company,,date,url,title
-,Intelliswift - An LTTS Company,,04/22/2026,https://www.linkedin.com/jobs/view/4402706727/,Full-Stack Data Engineer
-,BayOne Solutions,,04/22/2026,https://www.linkedin.com/jobs/view/4404441434/,Junior Java Backend Developer(GC/USC)
-,Joveo AI,,04/22/2026,https://www.linkedin.com/jobs/view/4404997615/,Fresher Java Developer
-,Helic & Co.,,04/22/2026,https://www.linkedin.com/jobs/view/4405267599/,Junior Software Engineer
-,Allied OneSource,,04/22/2026,https://www.linkedin.com/jobs/view/4405244770/,Associate Software Engineer
-,Durin,,04/22/2026,https://www.linkedin.com/jobs/view/4402498049/,Software Engineer
-,"Akraya, Inc.",,04/22/2026,https://www.linkedin.com/jobs/view/4405298828/,Python Developer :26-01167
-,Temu,,04/22/2026,https://www.linkedin.com/jobs/view/4404296459/,Java Engineer (Data Privacy)
-,"IDR, Inc.",,04/22/2026,https://www.linkedin.com/jobs/view/4405263952/,Production AI Software Engineer I
-,Insight Global,,04/22/2026,https://www.linkedin.com/jobs/view/4404441737/,Software Engineer
-,Joveo AI,,04/22/2026,https://www.linkedin.com/jobs/view/4405207868/,Software Developer (Remote)
-,Temu,,04/22/2026,https://www.linkedin.com/jobs/view/4404297425/,Java Engineer (Order System)
-,Initi8 Recruitment,,04/22/2026,https://www.linkedin.com/jobs/view/4402469688/,Software Engineer (Founding Team / 0–3 Years Experience)
-,Wilson Brown,,04/22/2026,https://www.linkedin.com/jobs/view/4405412454/,Backend Software Engineer
-,VelociSense,,04/22/2026,https://www.linkedin.com/jobs/view/4405416930/,Software Engineer
-,Kforce Inc,,04/22/2026,https://www.linkedin.com/jobs/view/4405272823/,Software Developer
-,CodeX Tech-IT LLC,,04/22/2026,https://www.linkedin.com/jobs/view/4405408478/,Junior Java Developer
-,Intelliswift - An LTTS Company,,04/22/2026,https://www.linkedin.com/jobs/view/4404451601/,Full Stack Engineer (React/Node)
-,PRI Global,,04/22/2026,https://www.linkedin.com/jobs/view/4404449826/,Software Engineer (payments infrastructure)
-,"TalentBurst, an Inc 5000 company",,04/22/2026,https://www.linkedin.com/jobs/view/4402814693/,Software Development Engineer
-,Joveo AI,,04/22/2026,https://www.linkedin.com/jobs/view/4405213172/,Fresher Software Engineer
-,Asha Health (YC F24),,04/22/2026,https://www.linkedin.com/jobs/view/4404700618/,"Software Engineer, AI x Healthcare"
-,Zetheta Algorithms Private Limited,,04/22/2026,https://www.linkedin.com/jobs/view/4405499674/,Software Engineer
-,TrickCV,,04/26/2026,https://www.linkedin.com/jobs/view/4404628914/,Junior Software Engineer
-,Tree Top Staffing LLC,,04/26/2026,https://www.linkedin.com/jobs/view/4407139191/,Software Developer
-,Tavus,,04/26/2026,https://www.linkedin.com/jobs/view/4407128620/,Forward Deployed Engineer
-,The Law Offices of Jibrael S. Hindi,,04/26/2026,https://www.linkedin.com/jobs/view/4407129499/,Software Developer
-,Insight Global,,04/26/2026,https://www.linkedin.com/jobs/view/4405797025/,Software Engineer
-,SynergisticIT,,04/26/2026,https://www.linkedin.com/jobs/view/4405931750/,junior data scientist/Data engineer/Machine learning Engineer/Software developer-remote
-,Berkley Hunt,,04/26/2026,https://www.linkedin.com/jobs/view/4391771354/,Founding Software Engineer
-,dm drogerie markt Makedonija,,04/26/2026,https://www.linkedin.com/jobs/view/4407139345/,Full Stack Engineer/Full Stack Developer
-,SynergisticIT,,04/26/2026,https://www.linkedin.com/jobs/view/4405938144/,Junior data scientist /Java developer
-,SynergisticIT,,04/26/2026,https://www.linkedin.com/jobs/view/4405916808/,junior java devops developer/Data engineer
-,Tech In Black And White,,04/26/2026,https://www.linkedin.com/jobs/view/4406897688/,AI Adoption Lead
-,CBTS,,04/26/2026,https://www.linkedin.com/jobs/view/4405029778/,"Platform Engineer IV(Remote, no third party, only W2)"
-,Prime Platform,,04/26/2026,https://www.linkedin.com/jobs/view/4404638752/,Junior Developer/DevOps Engineer
-,Crossing Hurdles,,04/26/2026,https://www.linkedin.com/jobs/view/4384256671/,Software Engineer - Python | Remote
-,SynergisticIT,,04/26/2026,https://www.linkedin.com/jobs/view/4405926747/,Junior Java Spring boot developer/Data Scientist
-,scalr,,04/26/2026,https://www.linkedin.com/jobs/view/4404642349/,AI Engineer
-,dynamism,,04/26/2026,https://www.linkedin.com/jobs/view/4406893754/,Forward Deployed Engineer
-,Zetheta Algorithms Private Limited,,04/26/2026,https://www.linkedin.com/jobs/view/4407124486/,Software Engineer
-,DEEP Measures,,04/26/2026,https://www.linkedin.com/jobs/view/4407139406/,AI Agent Engineer Intern
-,Ava group Inc,,04/26/2026,https://www.linkedin.com/jobs/view/4405910035/,Java and Python Developer
-,Clarier.ai,,04/26/2026,https://www.linkedin.com/jobs/view/4406862711/,Software Engineer
-,Joblet-AI,,04/26/2026,https://www.linkedin.com/jobs/view/4407151090/,Staff Software Engineer
-,"VIREON FILMS, LLC",,04/26/2026,https://www.linkedin.com/jobs/view/4407114670/,Alexa Skills Developer
+,Bookspert,,04/19/2026,https://www.linkedin.com/jobs/view/4392907972/,Software Engineer
+,Odiin.,,04/19/2026,https://www.linkedin.com/jobs/view/4360964095/,Quantitative Developer
+,Joveo Ai,,04/19/2026,https://www.linkedin.com/jobs/view/4403823358/,Graduate Software Engineer
+,Stealth Startup,,04/19/2026,https://www.linkedin.com/jobs/view/4400181873/,Python Engineer [32877]
+,Joveo Ai,,04/19/2026,https://www.linkedin.com/jobs/view/4403817507/,Graduate Developer
+,Helic & Co.,,04/19/2026,https://www.linkedin.com/jobs/view/4402975753/,Junior Software Engineer
+,CodeGeniusRecruit,,04/19/2026,https://www.linkedin.com/jobs/view/4398793107/,Software Engineer (Python) - Remote
+,Joveo Ai,,04/19/2026,https://www.linkedin.com/jobs/view/4403824314/,Fresher Python Developer
+,Crossing Hurdles,,04/19/2026,https://www.linkedin.com/jobs/view/4399619823/,AI / ML Engineer | Remote
+,"Schepmont Group, LLC",,04/19/2026,https://www.linkedin.com/jobs/view/4403519629/,Full Stack Developer (Remote)
+,Singapore Space Summit,,04/19/2026,https://www.linkedin.com/jobs/view/4403304507/,Junior Software Engineer
+,CodeGeniusRecruit,,04/19/2026,https://www.linkedin.com/jobs/view/4402382078/,Software Engineer | Remote
+,Stealth Startup,,04/19/2026,https://www.linkedin.com/jobs/view/4400189011/,Backend Developer [33003]
+,Terra,,04/19/2026,https://www.linkedin.com/jobs/view/4401785077/,Analytics Engineer
+,Anson McCade,,04/19/2026,https://www.linkedin.com/jobs/view/4398217962/,Quantitative Developer
+,Information Consulting Services,,04/19/2026,https://www.linkedin.com/jobs/view/4402996387/,Associate Generative AI Engineer
+,Safety Project,,04/19/2026,https://www.linkedin.com/jobs/view/4404002486/,Software Developer
+,Crossing Hurdles,,04/19/2026,https://www.linkedin.com/jobs/view/4399601448/,Software Engineer (C++) | Remote
+,Joveo Ai,,04/19/2026,https://www.linkedin.com/jobs/view/4403822370/,Fresher Full Stack Developer
+,Crossing Hurdles,,04/19/2026,https://www.linkedin.com/jobs/view/4399629718/,AI Engineer | Remote
+,Curate Partners,,04/19/2026,https://www.linkedin.com/jobs/view/4400620831/,Java/Python Engineer
+,Zetheta Algorithms Private Limited,,04/19/2026,https://www.linkedin.com/jobs/view/4403869234/,Software Engineer Intern
+,Intellect Group,,04/19/2026,https://www.linkedin.com/jobs/view/4390539100/,Software Engineer
+,ImpetusIT,,04/19/2026,https://www.linkedin.com/jobs/view/4402340320/,Java Software Engineer
+,Crossing Hurdles,,04/19/2026,https://www.linkedin.com/jobs/view/4395443161/,Machine Engineer Data Labeler | $30/hr Remote
+,Stealth Startup,,04/19/2026,https://www.linkedin.com/jobs/view/4399396993/,Full Stack Developer [33002]
+,TrustNet Technologies,,04/19/2026,https://www.linkedin.com/jobs/view/4306226923/,AI Engineer
+,Glocomms,,04/19/2026,https://www.linkedin.com/jobs/view/4400132002/,Full Stack Engineer
+,Temu,,04/19/2026,https://www.linkedin.com/jobs/view/4398776222/,Java Engineer (Data Privacy)
+,CodeGeniusRecruit,,04/19/2026,https://www.linkedin.com/jobs/view/4402706432/,Full Stack Engineer | Remote
+,Delmar Nord,,04/19/2026,https://www.linkedin.com/jobs/view/4404003419/,Software/Support Engineer | Quant Fund
+,Besty AI,,04/19/2026,https://www.linkedin.com/jobs/view/4398563160/,Founding AI Engineer at AI Startup
+,Career Search Partners,,04/19/2026,https://www.linkedin.com/jobs/view/4402342284/,Software Engineer
+,"Asset Strategies Group, LLC",,04/19/2026,https://www.linkedin.com/jobs/view/4388488301/,Software Developer (Full Stack)
+,Kovari,,04/19/2026,https://www.linkedin.com/jobs/view/4394238853/,"Founding Software Engineer, Robot Learning"
+,A1,,04/19/2026,https://www.linkedin.com/jobs/view/4388261563/,"Software Engineer, Desktop"
+,True Scout Partners,,04/19/2026,https://www.linkedin.com/jobs/view/4403507581/,Software Engineer
+,L&T Technology Services,,04/19/2026,https://www.linkedin.com/jobs/view/4402318197/,Junior Software Engineer
+,dynamism,,04/19/2026,https://www.linkedin.com/jobs/view/4403430364/,AI Engineer
+,SpaceNav,,04/19/2026,https://www.linkedin.com/jobs/view/4381361867/,Software Engineer in Test
+,A1,,04/19/2026,https://www.linkedin.com/jobs/view/4388943441/,"Member of Technical Staff, Machine Learning"
+,Beauty & Hair,,04/19/2026,https://www.linkedin.com/jobs/view/4400004561/,Software Engineer
+,Brand Payments,,04/19/2026,https://www.linkedin.com/jobs/view/4396333535/,AI Enablement and Modernization Engineer
+,AUTOPILOT,,04/19/2026,https://www.linkedin.com/jobs/view/4399908581/,Software Engineer
+,BioSensics,,04/19/2026,https://www.linkedin.com/jobs/view/4379953287/,Software Engineer
+,BeaconFire Inc.,,04/19/2026,https://www.linkedin.com/jobs/view/4400876001/,Java Software Engineer
+,dynamism,,04/19/2026,https://www.linkedin.com/jobs/view/4403437211/,AI Engineer
+,BCforward,,04/19/2026,https://www.linkedin.com/jobs/view/4402672386/,Software Engineer
+,Cassidy,,04/19/2026,https://www.linkedin.com/jobs/view/4403471043/,Full Stack Software Engineer
+,Amaris Consulting,,04/19/2026,https://www.linkedin.com/jobs/view/4400855476/,Software / Machine Learning Engineer
+,Kovari,,04/19/2026,https://www.linkedin.com/jobs/view/4394280212/,Founding Robotics Engineer
+,Torque Technologies LLC,,04/19/2026,https://www.linkedin.com/jobs/view/4400437219/,Software Engineer
+,Stealth Startup,,04/19/2026,https://www.linkedin.com/jobs/view/4400822287/,Machine Learning Engineer [32990]
+,Pegasystems,,04/19/2026,https://www.linkedin.com/jobs/view/4401092100/,Data Engineer (Entry- to Mid-level)
+,CostlyInfra,,04/20/2026,https://www.linkedin.com/jobs/view/4401662495/,Software Engineer
+,Joveo Ai,,04/20/2026,https://www.linkedin.com/jobs/view/4404046364/,Fresher Python Developer
+,Helic & Co.,,04/20/2026,https://www.linkedin.com/jobs/view/4404363133/,Junior Software Engineer
+,Joveo Ai,,04/21/2026,https://www.linkedin.com/jobs/view/4404042573/,Fresher Java Developer
+,BayOne Solutions,,04/21/2026,https://www.linkedin.com/jobs/view/4403637232/,Junior Java Backend Developer(GC/USC)
+,Unisys,,04/21/2026,https://www.linkedin.com/jobs/view/4401666085/,Software Engineer
+,BrothersTech,,04/21/2026,https://www.linkedin.com/jobs/view/4401638404/,Full Stack Engineer
+,Electrify America,,04/21/2026,https://www.linkedin.com/jobs/view/4401684085/,Contract Software Engineer I - Backend
+,evoke,,04/21/2026,https://www.linkedin.com/jobs/view/4404076429/,Software Engineer | Elite AI Start-Up
+,Selby Jennings,,04/21/2026,https://www.linkedin.com/jobs/view/4404359756/,Junior C++ Software Developer
+,Goliath Partners,,04/21/2026,https://www.linkedin.com/jobs/view/4404324898/,Software Engineer
+,TekDoors Inc.,,04/21/2026,https://www.linkedin.com/jobs/view/4403659139/,AI ML Engineer
+,Joveo Ai,,04/21/2026,https://www.linkedin.com/jobs/view/4404053326/,Fresher Full Stack Developer
+,Mondrian Alpha,,04/21/2026,https://www.linkedin.com/jobs/view/4401637541/,Junior Front Office Developer (Python) – Global Hedge Fund
+,RKTech Corp.,,04/21/2026,https://www.linkedin.com/jobs/view/4403909535/,Hiring in the US: Machine Learning Engineer (Python / AI / LLM / Computer Vision)
+,AssetWorks Inc,,04/21/2026,https://www.linkedin.com/jobs/view/4404338484/,Software Engineer Intern
+,Entegee,,04/21/2026,https://www.linkedin.com/jobs/view/4403660371/,Software Engineer
+,Radley James,,04/21/2026,https://www.linkedin.com/jobs/view/4404050550/,Quantitative Developer
+,Goliath Partners,,04/21/2026,https://www.linkedin.com/jobs/view/4404317616/,Full Stack Engineer
+,Stash Talent Services,,04/21/2026,https://www.linkedin.com/jobs/view/4404504688/,Software Engineer
+,Robert Half,,04/21/2026,https://www.linkedin.com/jobs/view/4403979395/,Software Engineer
+,Joveo AI,,04/21/2026,https://www.linkedin.com/jobs/view/4404572009/,Software Developer (Remote)
+,CostlyInfra,,04/21/2026,https://www.linkedin.com/jobs/view/4401985945/,Python Developer
+,Quanta Manufacturing Fremont,,04/21/2026,https://www.linkedin.com/jobs/view/4404224592/,Software Engineer
+,Crossing Hurdles,,04/21/2026,https://www.linkedin.com/jobs/view/4403960365/,Software Developer (Java) | Remote
+,5V Tech,,04/21/2026,https://www.linkedin.com/jobs/view/4403984921/,C++ Software Engineer
+,BrothersTech,,04/21/2026,https://www.linkedin.com/jobs/view/4401950591/,Artificial Intelligence Intern
+,Bee Talent Solutions,,04/21/2026,https://www.linkedin.com/jobs/view/4404883480/,Software Engineer I – Production AI (Developer Support)
+,Alexander Chapman,,04/21/2026,https://www.linkedin.com/jobs/view/4404811460/,Software Engineer
+,CodeGeniusRecruit,,04/21/2026,https://www.linkedin.com/jobs/view/4403932885/,Python Developer | Remote
+,Net2Source (N2S),,04/21/2026,https://www.linkedin.com/jobs/view/4404811263/,Java Full Stack Developer
+,Helic & Co.,,04/21/2026,https://www.linkedin.com/jobs/view/4404874415/,Junior Software Engineer
+,Joveo AI,,04/21/2026,https://www.linkedin.com/jobs/view/4404589861/,Fresher Java Developer
+,BayOne Solutions,,04/21/2026,https://www.linkedin.com/jobs/view/4403982350/,Junior Java Backend Developer(GC/USC)
+,Crossing Hurdles,,04/21/2026,https://www.linkedin.com/jobs/view/4403971006/,Java Developer | Remote
+,BCforward,,04/21/2026,https://www.linkedin.com/jobs/view/4404836125/,Python Developer
+,CodeGeniusRecruit,,04/21/2026,https://www.linkedin.com/jobs/view/4403932754/,Software Engineer | Remote
+,IVIDTEK INC,,04/21/2026,https://www.linkedin.com/jobs/view/4401957540/,Software Engineer
+,Diligente Technologies,,04/21/2026,https://www.linkedin.com/jobs/view/4402528364/,Python Developer
+,"Access Search, Inc.",,04/21/2026,https://www.linkedin.com/jobs/view/4404830091/,Software Engineer
+,"Kelly Science, Engineering, Technology & Telecom",,04/21/2026,https://www.linkedin.com/jobs/view/4404210216/,Java Software Engineer
+,Motion Recruitment,,04/21/2026,https://www.linkedin.com/jobs/view/4404847140/,Full Stack Engineer
+,Conquer AI,,04/21/2026,https://www.linkedin.com/jobs/view/4401939225/,Software Engineer
+,"Infopro Learning, Inc",,04/21/2026,https://www.linkedin.com/jobs/view/4404824889/,Full Stack Engineer -- SINDC5785109
+,Joveo AI,,04/21/2026,https://www.linkedin.com/jobs/view/4404573602/,Fresher Software Engineer
+,SMARTFOX,,04/21/2026,https://www.linkedin.com/jobs/view/4404823767/,Data Engineer
+,SII Group USA,,04/21/2026,https://www.linkedin.com/jobs/view/4404946209/,Data Engineer
+,Kforce Inc,,04/21/2026,https://www.linkedin.com/jobs/view/4404825628/,Full Stack Software Engineer
+,Accure Inc.,,04/23/2026,https://www.linkedin.com/jobs/view/4405616180/,Artificial Intelligence Engineer
+,Prismera,,04/23/2026,https://www.linkedin.com/jobs/view/4405447855/,Founding AI/ML Engineer
+,BayOne Solutions,,04/23/2026,https://www.linkedin.com/jobs/view/4404797118/,Junior Java Backend Developer(GC/USC)
+,Joveo AI,,04/23/2026,https://www.linkedin.com/jobs/view/4405626933/,Fresher Java Developer
+,A4Assist,,04/23/2026,https://www.linkedin.com/jobs/view/4405030863/,Software Engineer
+,CodeGeniusRecruit,,04/23/2026,https://www.linkedin.com/jobs/view/4403201501/,Software Engineer (Python) - Remote
+,CostlyInfra,,04/23/2026,https://www.linkedin.com/jobs/view/4403267646/,Full Stack Engineer
+,Toro Science,,04/23/2026,https://www.linkedin.com/jobs/view/4405409460/,Artificial Intelligence Engineer
+,Helic & Co.,,04/23/2026,https://www.linkedin.com/jobs/view/4405804289/,Junior Software Engineer
+,Mindlance,,04/23/2026,https://www.linkedin.com/jobs/view/4405668730/,AI/ML Software Engineer
+,IEEE PES-HAC,,04/23/2026,https://www.linkedin.com/jobs/view/4403266641/,ENTRY LEVEL SOFTWARE DEVELOPE
+,Joveo AI,,04/23/2026,https://www.linkedin.com/jobs/view/4405624783/,Fresher Full Stack Developer
+,Signature IT World Inc,,04/23/2026,https://www.linkedin.com/jobs/view/4403246455/,Python Developer
+,CodeGeniusRecruit,,04/23/2026,https://www.linkedin.com/jobs/view/4402899584/,Backend Engineer (Python) - Remote
+,BayOne Solutions,,04/24/2026,https://www.linkedin.com/jobs/view/4406637597/,Junior Java Backend Developer(GC/USC)
+,Wonderschool,,04/24/2026,https://www.linkedin.com/jobs/view/4406127370/,Early Career Software Engineer – Applied AI
+,Helic & Co.,,04/24/2026,https://www.linkedin.com/jobs/view/4406621299/,Junior Software Engineer
+,Acceler8 Talent,,04/24/2026,https://www.linkedin.com/jobs/view/4403714735/,Software Engineer
+,BayOne Solutions,,04/24/2026,https://www.linkedin.com/jobs/view/4405043548/,AI Software Engineers – Python & LLMs
+,Goliath Partners,,04/24/2026,https://www.linkedin.com/jobs/view/4406387817/,Software Engineer
+,Intelliswift - An LTTS Company,,04/24/2026,https://www.linkedin.com/jobs/view/4405062047/,Software Engineer – Data Collection
+,ImpetusIT,,04/24/2026,https://www.linkedin.com/jobs/view/4405082065/,Full Stack Engineer with react and Java
+,Cygnus Professionals Inc.,,04/24/2026,https://www.linkedin.com/jobs/view/4406637551/,Java Developer (W2 only)
+,PTR Global,,04/24/2026,https://www.linkedin.com/jobs/view/4406625486/,AI Engineer
+,CyberCoders,,04/25/2026,https://www.linkedin.com/jobs/view/4404129322/,Full-Stack Engineer
+,Crossing Hurdles,,04/25/2026,https://www.linkedin.com/jobs/view/4405745143/,AI / ML Engineer | Remote
+,CostlyInfra,,04/25/2026,https://www.linkedin.com/jobs/view/4404145549/,Software Engineer (Remote)
+,Crossing Hurdles,,04/25/2026,https://www.linkedin.com/jobs/view/4405743185/,AI Engineer | Remote
+,Crossing Hurdles,,04/25/2026,https://www.linkedin.com/jobs/view/4405746095/,Applied AI Engineer | Remote
+,dynamism,,04/25/2026,https://www.linkedin.com/jobs/view/4406863624/,Founding Forward Deployed Engineer
+,New York Technology Partners,,04/25/2026,https://www.linkedin.com/jobs/view/4406821437/,Big data Engineer
+,Ava Group Inc,,04/25/2026,https://www.linkedin.com/jobs/view/4405905132/,Java and Python Developer
+,Nxt Level,,04/25/2026,https://www.linkedin.com/jobs/view/4406884510/,Founding Forward Deployed Engineer (AI)
+,Helic & Co.,,04/25/2026,https://www.linkedin.com/jobs/view/4406867587/,Cloud Engineer
+,Techgene Solutions,,04/27/2026,https://www.linkedin.com/jobs/view/4405143923/,Python Developer
+,Robert Half,,04/27/2026,https://www.linkedin.com/jobs/view/4405994244/,Artificial Intelligence Engineer
+,VBeyond Corporation,,04/27/2026,https://www.linkedin.com/jobs/view/4407463934/,Data Engineer
+,The Emerald Recruiting Group,,04/27/2026,https://www.linkedin.com/jobs/view/4404670169/,Machine Learning Researcher
+,BayOne Solutions,,04/27/2026,https://www.linkedin.com/jobs/view/4406208507/,Junior Java Backend Developer(GC/USC)
+,Great Value Hiring,,04/27/2026,https://www.linkedin.com/jobs/view/4406229696/,Junior Game Developer (Java / libGDX)
+,GSAKNC Group.,,04/27/2026,https://www.linkedin.com/jobs/view/4406236396/,Software Engineer
+,"Global Technical Talent, an Inc. 5000 Company",,04/27/2026,https://www.linkedin.com/jobs/view/4402810385/,Software Engineer - Developer
+,Largeton Group,,04/27/2026,https://www.linkedin.com/jobs/view/4407425108/,Python ETL Engineer
+,Crossing Hurdles,,04/27/2026,https://www.linkedin.com/jobs/view/4385204590/,Machine Learning Engineer | $80/hr Remote
+,AceStack,,04/27/2026,https://www.linkedin.com/jobs/view/4406211096/,"AI Developer : Tampa, FL _Onsite _Full tile Permanent"
+,My3Tech,,04/27/2026,https://www.linkedin.com/jobs/view/4405153938/,Apriso Developer only US candidates
+,Inceed,,04/27/2026,https://www.linkedin.com/jobs/view/4406242027/,DevOps Engineer
+,DeepRoute.ai,,04/27/2026,https://www.linkedin.com/jobs/view/4407541130/,Machine Learning Engineer (Model Efficiency & Interpretability)
+,ERISA Recovery,,04/28/2026,https://www.linkedin.com/jobs/view/4408011162/,Junior AI Software Engineer
+,"Infosoft, Inc.",,04/28/2026,https://www.linkedin.com/jobs/view/4407894391/,LLMs AI Development Engineer (Python)
+,Maxonic Inc.,,04/28/2026,https://www.linkedin.com/jobs/view/4406583928/,Python Developer – LLM / AI Applications
+,Cloud Bridge Solutions Inc,,04/28/2026,https://www.linkedin.com/jobs/view/4406539880/,AI/ML Engineer
+,Career Movement,,04/28/2026,https://www.linkedin.com/jobs/view/4406594769/,Artificial Intelligence Engineer
+,CostlyInfra,,04/28/2026,https://www.linkedin.com/jobs/view/4405195368/,Java Software Engineer (Remote)
+,Mindlance,,04/28/2026,https://www.linkedin.com/jobs/view/4408007971/,Python Full Stack Developer
+,Addison Group,,04/28/2026,https://www.linkedin.com/jobs/view/4406559325/,Artificial Intelligence Engineer
+,BayOne Solutions,,04/28/2026,https://www.linkedin.com/jobs/view/4406538865/,Junior Java Backend Developer(GC/USC)
+,NeuBird AI,,04/28/2026,https://www.linkedin.com/jobs/view/4406579391/,Artificial Intelligence Engineer
+,Crossing Hurdles,,04/28/2026,https://www.linkedin.com/jobs/view/4406525873/,AI Engineer | Remote
+,Harrison Clarke,,04/28/2026,https://www.linkedin.com/jobs/view/4407832740/,Machine Learning Engineer
+,Goliath Partners,,04/28/2026,https://www.linkedin.com/jobs/view/4407876512/,Software Engineer
+,Centraprise,,04/28/2026,https://www.linkedin.com/jobs/view/4406553972/,Software engineer - LabView And Python
+,BCforward,,04/28/2026,https://www.linkedin.com/jobs/view/4407893481/,Full stack Java Developer
+,Arbor TekSystems,,04/28/2026,https://www.linkedin.com/jobs/view/4406593360/,Artificial Intelligence Engineer
+,AMD,,04/28/2026,https://www.linkedin.com/jobs/view/4405190913/,Software Development Engineer
+,Tekgence Inc,,04/28/2026,https://www.linkedin.com/jobs/view/4406542836/,"C3.AI, Machine Learning"
+,DeepRec.ai,,04/28/2026,https://www.linkedin.com/jobs/view/4407872915/,AI Data Engineer
+,Prestige Staffing,,04/28/2026,https://www.linkedin.com/jobs/view/4405582665/,Applied ML Engineer - Computer Vision
+,TEKFORTUNE INC,,04/28/2026,https://www.linkedin.com/jobs/view/4407544280/,Generative AI Engineer
+,RandomTrees,,04/28/2026,https://www.linkedin.com/jobs/view/4405579505/,Artificial Intelligence Engineer
+,BCforward,,04/28/2026,https://www.linkedin.com/jobs/view/4408059875/,Systems Engineer (Python or C++)
+,Envision Technology Solutions,,04/28/2026,https://www.linkedin.com/jobs/view/4406536815/,Agentic AI Engineer (Agentic AI / LLM Systems) - In person in Palo Alto CA
+,Droisys,,04/28/2026,https://www.linkedin.com/jobs/view/4406906209/,Artificial Intelligence Consultant
+,Crossing Hurdles,,04/28/2026,https://www.linkedin.com/jobs/view/4406283821/,Machine Learning Researcher | Remote
+,VBeyond Corporation,,04/28/2026,https://www.linkedin.com/jobs/view/4407865620/,Data Engineer
+,Inservio,,04/28/2026,https://www.linkedin.com/jobs/view/4407893469/,Software Engineer Intern
+,DOCSY AI,,04/28/2026,https://www.linkedin.com/jobs/view/4408063512/,Java Software Engineer
+,Mastech Digital,,04/28/2026,https://www.linkedin.com/jobs/view/4405587195/,Data Engineer
+,RSC Solutions,,04/28/2026,https://www.linkedin.com/jobs/view/4406575019/,Developer - SQL
+,AMD,,04/28/2026,https://www.linkedin.com/jobs/view/4397977370/,Software Development Engineer  – Performance Optimization
+,Compunnel Inc.,,04/28/2026,https://www.linkedin.com/jobs/view/4407895954/,"Data Engineer (Python, SQL, AWS)-- SHADC5784192"
+,eHub Global Inc,,04/28/2026,https://www.linkedin.com/jobs/view/4407883897/,SOAR & JIRA Development Engineer

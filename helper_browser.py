@@ -323,6 +323,7 @@ def run_helper_mode(
         cover_letter_docx_dir=args.cover_letter_dir,
         form_fill_rules_path=getattr(args, "form_fill_rules", None),
         helper_scan_all_tabs=bool(getattr(args, "helper_scan_all_tabs", False)),
+        headshot_image_path=getattr(args, "headshot", None),
     )
 
     company_blacklist = load_company_blacklist(getattr(args, "company_blacklist", None))
