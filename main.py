@@ -27,6 +27,7 @@ from consulting_filter import is_consulting_listing
 from cover_letter import CoverLetterGenerator
 from dspy_lm import configure_dspy
 from form_filler import DEFAULT_HEADSHOT_IMAGE, EasyApplyFiller
+from greenhouse_fill_rules import DEFAULT_GREENHOUSE_RULES_PATH
 from greenhouse_session import DEFAULT_GREENHOUSE_COOKIE_PATH, run_greenhouse_sign_in_flow
 from helper_browser import run_helper_mode
 from job_records import DEFAULT_LISTINGS_LOG
@@ -326,7 +327,10 @@ def main():
         "--site",
         choices=("linkedin", "greenhouse"),
         default="linkedin",
-        help="Job board: linkedin (default: Easy Apply pipeline) or greenhouse (open sign-in to capture session).",
+        help="Job board: linkedin (default: Easy Apply pipeline) or greenhouse (MyGreenhouse sign-in → jobs; "
+        "see https://my.greenhouse.io/users/sign_in). With greenhouse, the email field is prefilled from "
+        "--resume-cache JSON when ``email`` is set there; on the first opened job, a cover letter DOCX is "
+        "generated (same as LinkedIn) and attached when a Cover Letter upload field exists.",
     )
     ap.add_argument(
         "--greenhouse-cookies",
@@ -334,6 +338,51 @@ def main():
         default=DEFAULT_GREENHOUSE_COOKIE_PATH,
         metavar="PATH",
         help="Read/write Greenhouse session cookies (default: data/selenium_greenhouse_cookies.json).",
+    )
+    ap.add_argument(
+        "--greenhouse-login-max-seconds",
+        type=float,
+        default=600.0,
+        metavar="SEC",
+        help="Max time to wait for MyGreenhouse /dashboard after opening sign-in (default: 600).",
+    )
+    ap.add_argument(
+        "--greenhouse-scroll-max-rounds",
+        type=int,
+        default=50,
+        metavar="N",
+        help="Max scroll-load iterations on MyGreenhouse /jobs (default: 50). Stops earlier when job count and "
+        "page height stop growing.",
+    )
+    ap.add_argument(
+        "--greenhouse-scroll-pause",
+        type=float,
+        default=1.2,
+        metavar="SEC",
+        help="Seconds to wait after each scroll on MyGreenhouse /jobs before checking page height (default: 1.2).",
+    )
+    ap.add_argument(
+        "--greenhouse-prompt-before-close",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="After the Greenhouse flow, wait for Enter in this terminal before closing Chrome (default: on). "
+        "Use --no-greenhouse-prompt-before-close for unattended runs.",
+    )
+    ap.add_argument(
+        "--greenhouse-date-posted",
+        type=str,
+        default=None,
+        metavar="VALUE",
+        help="MyGreenhouse jobs URL ``date_posted`` filter (e.g. past_ten_days). If unset: past_ten_days when "
+        "--posted-within-24h is on (default), otherwise the date filter is omitted from the URL.",
+    )
+    ap.add_argument(
+        "--greenhouse-fill-rules",
+        type=Path,
+        default=DEFAULT_GREENHOUSE_RULES_PATH,
+        metavar="PATH",
+        help="JSON rules for Greenhouse application fields (checkbox groups, etc.); same match keys as "
+        "data/form_fill_rules.json (default: data/greenhouse_fill_rules.json).",
     )
     ap.add_argument(
         "--resume",
@@ -363,12 +412,14 @@ def main():
         metavar="TERM",
         help="LinkedIn job search queries (space-separated). When one query runs out of result pages, the "
         "next is used in the same browser session until --max-jobs is reached or all queries are exhausted. "
-        f"Omit this flag to use the default list: {', '.join(DEFAULT_KEYWORDS)}.",
+        f"Omit this flag to use the default list: {', '.join(DEFAULT_KEYWORDS)}. "
+        "With --site greenhouse, all terms are joined into one ``query=``; ``--location`` and date filters are also applied.",
     )
     ap.add_argument(
         "--location",
         default="United States",
-        help='LinkedIn job search location (default: "United States" — country-wide, not remote-only).',
+        help='LinkedIn job search location (default: "United States"). With --site greenhouse, becomes the '
+        "MyGreenhouse ``location=`` query param; United States also adds US ``lat``/``lon``/``country_short_name``.",
     )
     ap.add_argument(
         "--easy-apply-only",
@@ -382,7 +433,9 @@ def main():
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Restrict the LinkedIn search to jobs posted in the past 24 hours (default: on; URL f_TPR=r86400, "
-        'same as the "Past 24 hours" date filter). Use --no-posted-within-24h for any posting date.',
+        'same as the "Past 24 hours" date filter). Use --no-posted-within-24h for any posting date. '
+        "With --site greenhouse, when --greenhouse-date-posted is unset, on adds ``date_posted=past_ten_days`` "
+        "to the jobs URL; off omits ``date_posted``.",
     )
     ap.add_argument(
         "--max-applies",

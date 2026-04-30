@@ -17,6 +17,46 @@ log = logging.getLogger(__name__)
 DEFAULT_RULES_PATH = Path(__file__).resolve().parent / "data" / "form_fill_rules.json"
 
 
+def label_matches(normalized_label: str, spec: dict[str, Any]) -> bool:
+    """
+    Return whether a normalized form label/question string satisfies ``spec``.
+
+    Used by LinkedIn :class:`FormFillRulesEngine` and Greenhouse :class:`GreenhouseFillRulesEngine`.
+    """
+    if not spec:
+        return False
+    n = normalized_label
+    if spec.get("all_substrings"):
+        for s in spec["all_substrings"]:
+            if s not in n:
+                return False
+    if spec.get("any_substrings"):
+        if not any(s in n for s in spec["any_substrings"]):
+            return False
+    if spec.get("all_of_any"):
+        for group in spec["all_of_any"]:
+            if not group:
+                return False
+            if not any(s in n for s in group):
+                return False
+    if spec.get("not_substrings"):
+        if any(s in n for s in spec["not_substrings"]):
+            return False
+    if spec.get("starts_with") is not None:
+        sw = str(spec["starts_with"]).lower()
+        if not n.startswith(sw):
+            return False
+    if spec.get("regex"):
+        flags = re.I if spec.get("regex_ignore_case", True) else 0
+        try:
+            if not re.search(spec["regex"], n, flags):
+                return False
+        except re.error as e:
+            log.warning("Invalid regex in form rules: %s (%s)", spec.get("regex"), e)
+            return False
+    return True
+
+
 class FormFillRulesEngine:
     """Loads JSON rules and resolves answers for text inputs, textareas, selects, and Yes/No screening."""
 
@@ -41,38 +81,7 @@ class FormFillRulesEngine:
         return re.sub(r"\s+", " ", (label or "").lower()).strip()
 
     def _matches(self, normalized_label: str, spec: dict[str, Any]) -> bool:
-        if not spec:
-            return False
-        n = normalized_label
-        if spec.get("all_substrings"):
-            for s in spec["all_substrings"]:
-                if s not in n:
-                    return False
-        if spec.get("any_substrings"):
-            if not any(s in n for s in spec["any_substrings"]):
-                return False
-        if spec.get("all_of_any"):
-            for group in spec["all_of_any"]:
-                if not group:
-                    return False
-                if not any(s in n for s in group):
-                    return False
-        if spec.get("not_substrings"):
-            if any(s in n for s in spec["not_substrings"]):
-                return False
-        if spec.get("starts_with") is not None:
-            sw = str(spec["starts_with"]).lower()
-            if not n.startswith(sw):
-                return False
-        if spec.get("regex"):
-            flags = re.I if spec.get("regex_ignore_case", True) else 0
-            try:
-                if not re.search(spec["regex"], n, flags):
-                    return False
-            except re.error as e:
-                log.warning("Invalid regex in form_fill_rules: %s (%s)", spec.get("regex"), e)
-                return False
-        return True
+        return label_matches(normalized_label, spec)
 
     def screening_yes_no(self, label: str) -> str | None:
         """Returns ``\"Yes\"``, ``\"No\"``, or ``None`` if no screening rule matches."""

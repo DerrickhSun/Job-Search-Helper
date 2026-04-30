@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "documentation": "Rules for Greenhouse application forms (job-boards embed / MyGreenhouse apply). Within each list, the FIRST matching rule wins. For checkbox_groups, match is evaluated against the fieldset legend text only (normalized: lowercased, whitespace collapsed). Match keys mirror data/form_fill_rules.json: all_substrings, any_substrings, all_of_any, not_substrings, starts_with, regex (+ regex_ignore_case). choose_label is the visible option label beside the checkbox (normalized equality).",
+  "checkbox_groups": [
+    {
+      "id": "hear_about_opportunity",
+      "comment": "How did you hear — applying via MyGreenhouse job search / board",
+      "match": {
+        "all_substrings": ["how did you hear"],
+        "any_substrings": ["opportunity", "career"]
+      },
+      "choose_label": "Job Board"
+    }
+  ]
+}
