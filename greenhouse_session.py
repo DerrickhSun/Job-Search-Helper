@@ -419,6 +419,38 @@ def collect_my_greenhouse_view_job_hrefs(driver: Any) -> list[str]:
     return out
 
 
+def _try_click_apply_button_fallback(driver: Any, *, timeout_s: float = 12) -> bool:
+    """
+    Fallback when MyGreenhouse autofill is unavailable: click a visible **Apply** button once.
+    """
+    lo = (
+        "translate(normalize-space(.), "
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+    )
+    apply_xpath = (
+        f"//button[normalize-space({lo})='apply'] | "
+        f"//a[normalize-space({lo})='apply'] | "
+        f"//*[@role='button'][normalize-space({lo})='apply']"
+    )
+    wait = WebDriverWait(driver, max(3.0, float(timeout_s)))
+    try:
+        el = wait.until(EC.element_to_be_clickable((By.XPATH, apply_xpath)))
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+            time.sleep(0.15)
+        except Exception:
+            pass
+        driver.execute_script("arguments[0].click();", el)
+        log.info("Clicked Apply button fallback (no Autofill with MyGreenhouse control found).")
+        time.sleep(1.2)
+        return True
+    except TimeoutException:
+        return False
+    except Exception as e:
+        log.debug("Greenhouse Apply-button fallback click failed: %s", e)
+        return False
+
+
 def _try_click_mygreenhouse_autofill(driver: Any, *, timeout_s: float = 28) -> bool:
     """
     On a Greenhouse job application page, click **Autofill with MyGreenhouse** once.
@@ -483,7 +515,9 @@ def _try_click_mygreenhouse_autofill(driver: Any, *, timeout_s: float = 28) -> b
             return True
     except Exception as e:
         log.debug("MyGreenhouse autofill script fallback: %s", e)
-    return False
+
+    # Some listings have only a plain "Apply" control (no MyGreenhouse autofill entry point).
+    return _try_click_apply_button_fallback(driver)
 
 
 def visit_first_greenhouse_job_and_autofill(driver: Any, view_job_hrefs: list[str]) -> str | None:
@@ -506,8 +540,8 @@ def visit_first_greenhouse_job_and_autofill(driver: Any, view_job_hrefs: list[st
     time.sleep(2.0)
     if not _try_click_mygreenhouse_autofill(driver):
         log.warning(
-            "Did not find a clickable Autofill with MyGreenhouse control on the page — "
-            "complete autofill manually if it appears after load."
+            "Did not find a clickable Autofill with MyGreenhouse or Apply control on the page — "
+            "complete start-apply manually if it appears after load."
         )
     return first
 
@@ -757,12 +791,27 @@ def run_greenhouse_sign_in_flow(args) -> None:
     try:
         driver = build_chrome(headless=args.headless)
         load_greenhouse_cookies(driver, path)
+
+        def _save_greenhouse_session_snapshot(note: str) -> None:
+            """
+            Persist the current MyGreenhouse session cookies as soon as login state is confirmed.
+            This reduces re-login friction if later steps fail mid-run.
+            """
+            try:
+                driver.get(f"{MY_GREENHOUSE_ORIGIN}/")
+                time.sleep(0.4)
+                save_cookies(driver, path)
+                log.info("Saved Greenhouse cookies (%s): %s", note, path.resolve())
+            except Exception as e:
+                log.warning("Could not save Greenhouse cookies (%s): %s", note, e)
+
         log.info("Opening MyGreenhouse sign-in (candidates): %s", GREENHOUSE_SIGN_IN_URL)
         driver.get(GREENHOUSE_SIGN_IN_URL)
         time.sleep(1.0)
 
         if _is_candidate_dashboard(driver.current_url or ""):
             log.info("Already on dashboard (session from cookies).")
+            _save_greenhouse_session_snapshot("dashboard already active")
         else:
             cache_path = Path(getattr(args, "resume_cache", DEFAULT_RESUME_CACHE_PATH))
             profile_email = _read_resume_profile_email(cache_path)
@@ -787,6 +836,7 @@ def run_greenhouse_sign_in_flow(args) -> None:
                 )
                 save_cookies(driver, path)
                 return
+            _save_greenhouse_session_snapshot("dashboard reached after sign-in")
 
         jobs_url = my_greenhouse_jobs_search_url(args)
         log.info("Opening MyGreenhouse job search: %s", jobs_url)
