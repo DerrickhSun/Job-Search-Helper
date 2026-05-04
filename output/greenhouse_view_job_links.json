@@ -1,34 +1,232 @@
 [
-  "https://job-boards.greenhouse.io/rebuildmanufacturing/jobs/4689755005?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/vantagescore/jobs/4236196009?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/xai/jobs/5124616007?gh_src=my.greenhouse.search",
-  "https://lattice.com/job?gh_jid=8527013002&gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/federato/jobs/5204058008?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/turing/jobs/5985543004?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/netdocuments/jobs/5196933008?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/medeloop/jobs/4236722009?gh_src=my.greenhouse.search",
-  "https://braincorp.com/open-positions?gh_jid=8531769002&gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/liveviewtechnologiesinc/jobs/5193984008?gh_src=my.greenhouse.search",
-  "https://careers.route.com/job-board?gh_jid=7712285003&gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/clarityinnovates/jobs/5120686007?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/trace3/jobs/7769383?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/sigmacomputing/jobs/7714438003?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/sigmacomputing/jobs/7714437003?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/sigmacomputing/jobs/7714440003?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/sigmacomputing/jobs/7714439003?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/bandwidth/jobs/7844136?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/midihealth/jobs/4687972005?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/midihealth/jobs/4687987005?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/onxmaps/jobs/4675041006?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/faradayfuture/jobs/7714065003?gh_src=my.greenhouse.search",
-  "https://www.rubrik.com/company/careers/departments/job.7844075?gh_jid=7844075&gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/parsecautomationcorp/jobs/5199253008?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/fschumacherco/jobs/5198609008?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/synack/jobs/7783318?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/deepintent/jobs/5979052004?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/sayari/jobs/4222358009?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/trovohealth/jobs/5197283008?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/verse/jobs/5196721008?gh_src=my.greenhouse.search",
-  "https://job-boards.greenhouse.io/raft/jobs/5973324004?gh_src=my.greenhouse.search",
-  "https://www.crossriver.com/greenhouse?gh_jid=7709838003&gh_src=my.greenhouse.search"
+  {
+    "url": "https://job-boards.greenhouse.io/clarityinnovates/jobs/5125081007?gh_src=my.greenhouse.search",
+    "title": "Software Engineer",
+    "company": "Clarity Innovations"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/defenseunicorns/jobs/5125804007?gh_src=my.greenhouse.search",
+    "title": "Software Engineer",
+    "company": "Defense Unicorns"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/navtechnologies/jobs/5985843004?gh_src=my.greenhouse.search",
+    "title": "Software Engineer",
+    "company": "Nav"
+  },
+  {
+    "url": "https://www.dealpath.com/job-post/?gh_jid=7875769&gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer",
+    "company": "Dealpath"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/omadahealth/jobs/7822840?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer",
+    "company": "Omada Health"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/armada/jobs/5206617008?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer",
+    "company": "Armada"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/sovrn/jobs/7872979?gh_src=my.greenhouse.search",
+    "title": "Principal Software Engineer",
+    "company": "Sovrn"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/systemstechnologyresearch/jobs/4678221006?gh_src=my.greenhouse.search",
+    "title": "Principal Software Engineer",
+    "company": "STR"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/schonfeld/jobs/7843962?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer",
+    "company": "Schonfeld"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/raft/jobs/5982793004?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer",
+    "company": "Raft Company Website"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/simplisafe/jobs/7871346?gh_src=my.greenhouse.search",
+    "title": "Staff Software Engineer",
+    "company": "SimpliSafe"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/fireworksai/jobs/4236670009?gh_src=my.greenhouse.search",
+    "title": "AI Native Account Executive",
+    "company": "Fireworks AI"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/oldcastlebuildingenvelope/jobs/4238154009?gh_src=my.greenhouse.search",
+    "title": "AI Intern \u2013 Data, Analytics & AI",
+    "company": "Oldcastle BuildingEnvelope"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/yipitdata/jobs/7875686?gh_src=my.greenhouse.search",
+    "title": "AI Engineer",
+    "company": "YipitData"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/cargomatic/jobs/5207803008?gh_src=my.greenhouse.search",
+    "title": "AI Engineer",
+    "company": "Cargomatic"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/togetherai/jobs/5123203007?gh_src=my.greenhouse.search",
+    "title": "Technical Account Manager (TAM), AI Factory",
+    "company": "Together AI"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/globalizationpartners/jobs/7720641003?gh_src=my.greenhouse.search",
+    "title": "AI, Intern",
+    "company": "G-P"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/arizeai/jobs/5980312004?gh_src=my.greenhouse.search",
+    "title": "DevSecOps Engineer (TypeScript & Agentic AI)",
+    "company": "Arize AI"
+  },
+  {
+    "url": "https://www.elixirr.com/careers/careers-listing/job/?gh_jid=7865747&gh_src=my.greenhouse.search",
+    "title": "AI Architect",
+    "company": "Elixirr Consulting"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/manifoldbio/jobs/5127283007?gh_src=my.greenhouse.search",
+    "title": "AI Product Manager",
+    "company": "Manifold Bio"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/granum/jobs/8533249002?gh_src=my.greenhouse.search",
+    "title": "AI Outcomes Engineer",
+    "company": "Granum"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/turing/jobs/5984688004?gh_src=my.greenhouse.search",
+    "title": "AI Engineering Lead",
+    "company": "Turing"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/boxinc/jobs/7862815?gh_src=my.greenhouse.search",
+    "title": "AI Partnerships",
+    "company": "Box"
+  },
+  {
+    "url": "https://careers.whop.com/?gh_jid=5126033007&gh_src=my.greenhouse.search",
+    "title": "Data Scientist",
+    "company": "Whop"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/yipitdata/jobs/7875658?gh_src=my.greenhouse.search",
+    "title": "Data Scientist",
+    "company": "YipitData"
+  },
+  {
+    "url": "https://www.alchemer.com/jobs?gh_jid=7872317&gh_src=my.greenhouse.search",
+    "title": "Data Scientist",
+    "company": "Alchemer"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/artefactus/jobs/8531475002?gh_src=my.greenhouse.search",
+    "title": "Senior Data Scientist",
+    "company": "Artefact US"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/empowerpharmacy/jobs/4234851009?gh_src=my.greenhouse.search",
+    "title": "Staff Data Scientist",
+    "company": "Empower Pharmacy"
+  },
+  {
+    "url": "https://boards.greenhouse.io/honor/jobs/8531886002?gh_jid=8531886002&gh_src=my.greenhouse.search",
+    "title": "Staff Data Scientist",
+    "company": "Honor"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/heartflowinc/jobs/5978358004?gh_src=my.greenhouse.search",
+    "title": "Staff Data Scientist",
+    "company": "Heartflow"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/inspiren/jobs/5123394007?gh_src=my.greenhouse.search",
+    "title": "Senior Data Scientist",
+    "company": "Inspiren"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/hiddenlayer/jobs/5121589007?gh_src=my.greenhouse.search",
+    "title": "Data Scientist",
+    "company": "HiddenLayer"
+  },
+  {
+    "url": "https://ironbow-com.sandbox.hs-sites.com/job-details?gh_jid=5120608007&gh_src=my.greenhouse.search",
+    "title": "Data Scientist",
+    "company": "Iron Bow Technologies"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/grvty/jobs/4234330009?gh_src=my.greenhouse.search",
+    "title": "Data Scientist - Senior",
+    "company": "GRVTY"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/grvty/jobs/4234325009?gh_src=my.greenhouse.search",
+    "title": "Data Scientist - Senior",
+    "company": "GRVTY"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/qgenda/jobs/5194500008?gh_src=my.greenhouse.search",
+    "title": "Data Analyst",
+    "company": "QGenda"
+  },
+  {
+    "url": "https://boards.greenhouse.io/hippo70/jobs/8526803002?gh_jid=8526803002&gh_src=my.greenhouse.search",
+    "title": "Data Analyst",
+    "company": "Hippo Insurance"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/clearlinktechnologiesllc/jobs/4677911006?gh_src=my.greenhouse.search",
+    "title": "Financial Data Analyst",
+    "company": "Clearlink Technologies, LLC"
+  },
+  {
+    "url": "https://www.equipmentshare.com/careers/openings/?gh_jid=7871627&gh_src=my.greenhouse.search",
+    "title": "Data Analyst - People",
+    "company": "EquipmentShare"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/schonfeld/jobs/7843959?gh_src=my.greenhouse.search",
+    "title": "Market Data Analyst",
+    "company": "Schonfeld"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/taketwo/jobs/7868566?gh_src=my.greenhouse.search",
+    "title": "Data Governance Analyst",
+    "company": "Take-Two Interactive Software, Inc."
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/ascellahealth/jobs/4236664009?gh_src=my.greenhouse.search",
+    "title": "Data Analyst - Pharmacy",
+    "company": "AscellaHealth"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/loenbro/jobs/4234367009?gh_src=my.greenhouse.search",
+    "title": "Data Analyst",
+    "company": "Loenbro"
+  },
+  {
+    "url": "https://senecaholdings.com/jobs/?gh_jid=4689632005&gh_src=my.greenhouse.search",
+    "title": "Data Analyst",
+    "company": "Seneca Holdings"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/renaissancelearning-nam/jobs/5178070008?gh_src=my.greenhouse.search",
+    "title": "Data Integration Analyst II",
+    "company": "Renaissance Learning North America"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/doximity/jobs/7787892?gh_src=my.greenhouse.search",
+    "title": "Data Analyst, Reporting Partnerships",
+    "company": "Doximity"
+  }
 ]

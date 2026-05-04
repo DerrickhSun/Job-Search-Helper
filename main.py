@@ -27,11 +27,10 @@ from consulting_filter import is_consulting_listing
 from cover_letter import CoverLetterGenerator
 from dspy_lm import configure_dspy
 from form_filler import DEFAULT_HEADSHOT_IMAGE, EasyApplyFiller
-from greenhouse_fill_rules import DEFAULT_GREENHOUSE_RULES_PATH
 from greenhouse_session import DEFAULT_GREENHOUSE_COOKIE_PATH, run_greenhouse_sign_in_flow
 from helper_browser import run_helper_mode
 from job_records import DEFAULT_LISTINGS_LOG
-from job_searcher import JobSearcher
+from job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher
 from matcher import JobMatcher, print_job_fit_debug
 from resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 from resume_parser import ResumeParser, first_name_from_resume
@@ -46,14 +45,6 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
-
-# Default search queries: when one runs out of LinkedIn pages, the next is used in the same session.
-DEFAULT_KEYWORDS = (
-    "software engineer",
-    "ai",
-    "data scientist",
-    "data analyst",
-)
 
 
 def _job_searcher_from_args(args, **kwargs):
@@ -322,15 +313,22 @@ def run(args):
 def main():
     load_dotenv()
 
-    ap = argparse.ArgumentParser(description="Job apply bot (LinkedIn Easy Apply or Greenhouse sign-in)")
+    ap = argparse.ArgumentParser(
+        description="Job tools: LinkedIn Easy Apply pipeline, or Greenhouse MyGreenhouse application helper."
+    )
     ap.add_argument(
         "--site",
         choices=("linkedin", "greenhouse"),
         default="linkedin",
-        help="Job board: linkedin (default: Easy Apply pipeline) or greenhouse (MyGreenhouse sign-in → jobs; "
-        "see https://my.greenhouse.io/users/sign_in). With greenhouse, the email field is prefilled from "
-        "--resume-cache JSON when ``email`` is set there; on the first opened job, a cover letter DOCX is "
-        "generated (same as LinkedIn) and attached when a Cover Letter upload field exists.",
+        help="Job board: linkedin (default: Easy Apply pipeline) or greenhouse — **application helper** "
+        "(MyGreenhouse sign-in → jobs; see https://my.greenhouse.io/users/sign_in). Runs one job search per "
+        "``--keywords`` phrase (merged), then opens collected **View job** "
+        "URLs in order, skips listings that fail education/experience gates (same JobMatcher as LinkedIn), runs "
+        "autofill, cover letter DOCX upload when the field exists, and ``checkbox_groups`` rules. By default, "
+        "after each helped job this terminal prompts: **n** records to `output/assisted_applications.csv` "
+        "(same columns as `applications.csv`) then scans for the next gate-passing listing; **s** scans without "
+        "recording; Enter or **q** stops. Use --no-greenhouse-manual-next-listing to stop after the first passing "
+        "job only. Email is prefilled from --resume-cache when ``email`` is set there.",
     )
     ap.add_argument(
         "--greenhouse-cookies",
@@ -345,6 +343,14 @@ def main():
         default=600.0,
         metavar="SEC",
         help="Max time to wait for MyGreenhouse /dashboard after opening sign-in (default: 600).",
+    )
+    ap.add_argument(
+        "--greenhouse-jobs-ready-max-seconds",
+        type=float,
+        default=90.0,
+        metavar="SEC",
+        help="After opening MyGreenhouse /jobs, max time to wait for at least one **View job** link before "
+        "scrolling to load more (default: 90).",
     )
     ap.add_argument(
         "--greenhouse-scroll-max-rounds",
@@ -362,6 +368,24 @@ def main():
         help="Seconds to wait after each scroll on MyGreenhouse /jobs before checking page height (default: 1.2).",
     )
     ap.add_argument(
+        "--greenhouse-gate-probe-max-listings",
+        type=int,
+        default=0,
+        metavar="N",
+        help="When probing **View job** listings for education/experience gates, visit at most N URLs in order "
+        "(0 = no cap, use the full collected list; default: 0).",
+    )
+    ap.add_argument(
+        "--greenhouse-manual-next-listing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Greenhouse helper: after each listing that passes gates and gets autofill / cover / checkbox rules, "
+        "prompt in this terminal — **n** (+ Enter) if you submitted an application (append a row to "
+        "`output/assisted_applications.csv`, same columns as `applications.csv`), then scan for the next "
+        "gate-passing job; **s** to continue without recording; Enter or **q** to stop (default: on). "
+        "Use --no-greenhouse-manual-next-listing to exit after the first passing job without prompts.",
+    )
+    ap.add_argument(
         "--greenhouse-prompt-before-close",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -375,14 +399,6 @@ def main():
         metavar="VALUE",
         help="MyGreenhouse jobs URL ``date_posted`` filter (e.g. past_ten_days). If unset: past_ten_days when "
         "--posted-within-24h is on (default), otherwise the date filter is omitted from the URL.",
-    )
-    ap.add_argument(
-        "--greenhouse-fill-rules",
-        type=Path,
-        default=DEFAULT_GREENHOUSE_RULES_PATH,
-        metavar="PATH",
-        help="JSON rules for Greenhouse application fields (checkbox groups, etc.); same match keys as "
-        "data/form_fill_rules.json (default: data/greenhouse_fill_rules.json).",
     )
     ap.add_argument(
         "--resume",
@@ -412,8 +428,9 @@ def main():
         metavar="TERM",
         help="LinkedIn job search queries (space-separated). When one query runs out of result pages, the "
         "next is used in the same browser session until --max-jobs is reached or all queries are exhausted. "
-        f"Omit this flag to use the default list: {', '.join(DEFAULT_KEYWORDS)}. "
-        "With --site greenhouse, all terms are joined into one ``query=``; ``--location`` and date filters are also applied.",
+        f"Omit this flag to use the default list: {', '.join(DEFAULT_JOB_SEARCH_KEYWORDS)}. "
+        "With --site greenhouse, each term is its own MyGreenhouse ``query=`` (searched one-by-one; results are merged); "
+        "``--location`` and date filters apply to every search.",
     )
     ap.add_argument(
         "--location",
@@ -617,7 +634,10 @@ def main():
         type=Path,
         default=None,
         metavar="PATH",
-        help="JSON rules for screening questions and field fills (default: data/form_fill_rules.json).",
+        help="JSON rules for LinkedIn Easy Apply and Greenhouse (``--site greenhouse``): screening, text "
+        "fields, textareas, selects, and ``checkbox_groups`` for Greenhouse fieldsets (default: "
+        "data/form_fill_rules.json). Greenhouse uses ``apply_source=greenhouse`` for "
+        "``choose_label_from_apply_source`` (e.g. how you heard); LinkedIn uses ``linkedin``.",
     )
     ap.add_argument(
         "--company-blacklist",
@@ -665,7 +685,7 @@ def main():
 
     # nargs="*" with default=None yields None when the flag is omitted — normalize to default queries.
     if not args.keywords:
-        args.keywords = list(DEFAULT_KEYWORDS)
+        args.keywords = list(DEFAULT_JOB_SEARCH_KEYWORDS)
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)

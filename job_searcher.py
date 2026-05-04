@@ -31,6 +31,14 @@ from job_records import append_listing_record
 
 log = logging.getLogger(__name__)
 
+# Used when ``--keywords`` is omitted (LinkedIn pipeline and Greenhouse MyGreenhouse multi-search).
+DEFAULT_JOB_SEARCH_KEYWORDS: tuple[str, ...] = (
+    "software engineer",
+    "ai",
+    "data scientist",
+    "data analyst",
+)
+
 _MIN_FIRST_NAME_LEN = 2
 
 

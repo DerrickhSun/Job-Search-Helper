@@ -13,10 +13,30 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from apply_sheets import applied_sheet_row, format_apply_date_mdy
 
 log = logging.getLogger(__name__)
+
+
+def normalize_greenhouse_job_url(url: str) -> str:
+    """
+    Canonical comparison key for Greenhouse-related job URLs: scheme + host + path (lowercased),
+    no query string or fragment — so the same job with different ``gh_src`` / token params still matches
+    rows already stored in the applications DB.
+    """
+    u = (url or "").strip()
+    if not u:
+        return ""
+    try:
+        p = urlparse(u)
+        scheme = (p.scheme or "https").lower()
+        netloc = (p.netloc or "").lower()
+        path = (p.path or "").rstrip("/")
+        return f"{scheme}://{netloc}{path}".lower()
+    except Exception:
+        return u.lower()
 
 
 class ApplicationTracker:
@@ -48,6 +68,35 @@ class ApplicationTracker:
                 (job_id,),
             ).fetchone()
         return row is not None
+
+    def recorded_greenhouse_job_url_keys(
+        self, *, statuses: tuple[str, ...] = ("applied", "apply_opened")
+    ) -> frozenset[str]:
+        """
+        Normalized Greenhouse-style ``url`` values already logged for the given statuses.
+
+        Used to skip MyGreenhouse search cards that point at jobs you have already applied to (or opened
+        for external apply), since Greenhouse does not dedupe like LinkedIn.
+        """
+        if not statuses:
+            return frozenset()
+        placeholders = ",".join("?" * len(statuses))
+        keys: set[str] = set()
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT url FROM applications
+                WHERE url != '' AND status IN ({placeholders})
+                """,
+                statuses,
+            ).fetchall()
+        for (u,) in rows:
+            if not u or not isinstance(u, str) or "greenhouse" not in u.lower():
+                continue
+            k = normalize_greenhouse_job_url(u)
+            if k:
+                keys.add(k)
+        return frozenset(keys)
 
     def last_status_for_job(self, job_id: str) -> str | None:
         """Latest stored status for this LinkedIn job id, or None if never logged."""
