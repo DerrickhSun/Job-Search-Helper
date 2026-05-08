@@ -326,7 +326,8 @@ def main():
         "URLs in order, skips listings that fail education/experience gates (same JobMatcher as LinkedIn), runs "
         "autofill, cover letter DOCX upload when the field exists, and ``checkbox_groups`` rules. By default, "
         "after each helped job this terminal prompts: **n** records to `output/assisted_applications.csv` "
-        "(same columns as `applications.csv`) then scans for the next gate-passing listing; **s** scans without "
+        "(same columns as `applications.csv`; dedupe also uses `output/assisted_applications_history.csv`) "
+        "then scans for the next gate-passing listing; **s** scans without "
         "recording; Enter or **q** stops. Use --no-greenhouse-manual-next-listing to stop after the first passing "
         "job only. Email is prefilled from --resume-cache when ``email`` is set there.",
     )
@@ -381,7 +382,8 @@ def main():
         default=True,
         help="Greenhouse helper: after each listing that passes gates and gets autofill / cover / checkbox rules, "
         "prompt in this terminal — **n** (+ Enter) if you submitted an application (append a row to "
-        "`output/assisted_applications.csv`, same columns as `applications.csv`), then scan for the next "
+        "`output/assisted_applications.csv`, same columns as `applications.csv`; prior rows in "
+        "`output/assisted_applications_history.csv` still count for skip dedupe), then scan for the next "
         "gate-passing job; **s** to continue without recording; Enter or **q** to stop (default: on). "
         "Use --no-greenhouse-manual-next-listing to exit after the first passing job without prompts.",
     )

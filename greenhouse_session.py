@@ -38,6 +38,7 @@ GREENHOUSE_DASHBOARD_URL = f"{MY_GREENHOUSE_ORIGIN}/dashboard"
 DEFAULT_GREENHOUSE_COOKIE_PATH = Path("data/selenium_greenhouse_cookies.json")
 DEFAULT_APPLICATIONS_DB = Path("data/applications.db")
 ASSISTED_GREENHOUSE_CSV = Path("output/assisted_applications.csv")
+ASSISTED_GREENHOUSE_HISTORY_CSV = Path("output/assisted_applications_history.csv")
 
 # Harvest job description from embedded boards (same priority idea as EasyApplyFiller).
 GREENHOUSE_DESCRIPTION_IFRAME_SELECTORS: tuple[str, ...] = (
@@ -177,34 +178,42 @@ def _harvest_greenhouse_job_from_open_tabs(driver: Any) -> dict[str, str]:
     return best
 
 
-def _skip_keys_from_assisted_greenhouse_csv() -> set[str]:
-    """Normalized Greenhouse URLs already logged in ``output/assisted_applications.csv`` (manual ``n`` rows)."""
-    if not ASSISTED_GREENHOUSE_CSV.is_file():
+def _skip_keys_from_assisted_applications_csv_path(path: Path) -> set[str]:
+    """Normalized job URL keys from one assisted-applications CSV (current or history archive)."""
+    if not path.is_file():
         return set()
     keys: set[str] = set()
     try:
-        with ASSISTED_GREENHOUSE_CSV.open(newline="", encoding="utf-8") as f:
+        with path.open(newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
             for row in reader:
                 if not row or len(row) < 5:
                     continue
-                if (row[1] or "").strip().lower() == "company" and row[0] == "":
+                if (row[1] or "").strip().lower() == "company" and (row[0] or "").strip() == "":
                     continue
                 url = (row[4] or "").strip()
-                if "greenhouse" not in url.lower():
+                if not url:
                     continue
                 k = normalize_greenhouse_job_url(url)
                 if k:
                     keys.add(k)
     except Exception as e:
-        log.debug("Could not read %s for dedupe: %s", ASSISTED_GREENHOUSE_CSV, e)
+        log.debug("Could not read %s for dedupe: %s", path, e)
     return keys
+
+
+def _skip_keys_from_assisted_greenhouse_csv() -> set[str]:
+    """Normalized URLs from ``assisted_applications.csv`` and ``assisted_applications_history.csv`` (manual ``n``)."""
+    return _skip_keys_from_assisted_applications_csv_path(ASSISTED_GREENHOUSE_CSV) | _skip_keys_from_assisted_applications_csv_path(
+        ASSISTED_GREENHOUSE_HISTORY_CSV
+    )
 
 
 def load_greenhouse_skip_url_keys(db_path: Path | str | None = None) -> frozenset[str]:
     """
     Normalized Greenhouse job ``url`` keys to skip when collecting listings: ``applied`` / ``apply_opened``
-    rows in the applications database plus URLs already recorded in ``output/assisted_applications.csv``.
+    rows in the applications database plus URLs in ``output/assisted_applications.csv`` and
+    ``output/assisted_applications_history.csv`` (archived manual ``n`` rows).
     """
     keys: set[str] = set(_skip_keys_from_assisted_greenhouse_csv())
     p = Path(db_path) if db_path is not None else DEFAULT_APPLICATIONS_DB
