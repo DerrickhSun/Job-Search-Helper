@@ -23,6 +23,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from chrome_driver import build_chrome, save_cookies
 from cover_letter import CoverLetterGenerator, write_cover_letter_docx
 from greenhouse_fill_rules import DEFAULT_GREENHOUSE_RULES_PATH, GreenhouseFillRulesEngine
+from matcher import JobMatcher, print_job_fit_debug
 from resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 
 log = logging.getLogger(__name__)
@@ -31,6 +32,20 @@ MY_GREENHOUSE_ORIGIN = "https://my.greenhouse.io"
 GREENHOUSE_SIGN_IN_URL = f"{MY_GREENHOUSE_ORIGIN}/users/sign_in"
 GREENHOUSE_DASHBOARD_URL = f"{MY_GREENHOUSE_ORIGIN}/dashboard"
 DEFAULT_GREENHOUSE_COOKIE_PATH = Path("data/selenium_greenhouse_cookies.json")
+
+
+def _load_resume_for_greenhouse(args: Any) -> dict[str, Any] | None:
+    cache = Path(getattr(args, "resume_cache", DEFAULT_RESUME_CACHE_PATH))
+    resume_pdf = Path(getattr(args, "resume", DEFAULT_RESUME_FILE))
+    try:
+        return load_or_build_resume(
+            resume_pdf if resume_pdf.is_file() else None,
+            cache,
+            force_reparse=bool(getattr(args, "force_resume_parse", False)),
+        )
+    except Exception as e:
+        log.warning("Could not load resume for Greenhouse: %s", e)
+        return None
 
 
 def _location_is_united_states(location: str) -> bool:
@@ -651,29 +666,33 @@ def _upload_file_to_greenhouse_cover_letter_input(driver: Any, docx_path: Path, 
     return False
 
 
-def maybe_upload_greenhouse_cover_letter(driver: Any, args: Any, view_job_hrefs: list[str]) -> None:
+def maybe_upload_greenhouse_cover_letter(
+    driver: Any,
+    args: Any,
+    view_job_hrefs: list[str],
+    *,
+    resume: dict[str, Any] | None = None,
+    job: dict[str, Any] | None = None,
+) -> None:
     """
     On the current Greenhouse application page, generate a cover letter (same generator as LinkedIn) and
     attach the DOCX via the **Cover Letter** file field.
+
+    Pass ``resume`` and ``job`` when already loaded (e.g. after gate checks) to avoid duplicate work.
     """
     if not view_job_hrefs:
         return
     listing = (view_job_hrefs[0] or "").strip()
     if not listing:
         return
-    cache = Path(getattr(args, "resume_cache", DEFAULT_RESUME_CACHE_PATH))
-    resume_pdf = Path(getattr(args, "resume", DEFAULT_RESUME_FILE))
-    try:
-        resume = load_or_build_resume(
-            resume_pdf if resume_pdf.is_file() else None,
-            cache,
-            force_reparse=bool(getattr(args, "force_resume_parse", False)),
-        )
-    except Exception as e:
-        log.warning("Skipping Greenhouse cover letter: could not load resume (%s).", e)
+    if resume is None:
+        resume = _load_resume_for_greenhouse(args)
+    if resume is None:
+        log.warning("Skipping Greenhouse cover letter: could not load resume.")
         return
     try:
-        job = _scrape_greenhouse_job_for_cover_letter(driver, listing)
+        if job is None:
+            job = _scrape_greenhouse_job_for_cover_letter(driver, listing)
         cover_text = CoverLetterGenerator().generate(resume, job)
     except Exception as e:
         log.warning("Skipping Greenhouse cover letter: generation failed: %s", e)
@@ -783,6 +802,10 @@ def run_greenhouse_sign_in_flow(args) -> None:
     resume cache (same pipeline as LinkedIn), attach it to the **Cover Letter** file field when present,
     apply ``data/greenhouse_fill_rules.json`` checkbox rules when present, save cookies, then (by default)
     wait for Enter before closing Chrome.
+
+    Hard gates (education + minimum years), same as LinkedIn ``JobMatcher.gates_pass``, run before cover letter
+    generation and checkbox automation; if they fail, those steps are skipped (browser stays on the page for
+    manual review).
     """
     path = Path(args.greenhouse_cookies)
     max_wait = float(getattr(args, "greenhouse_login_max_seconds", 600.0))
@@ -858,8 +881,32 @@ def run_greenhouse_sign_in_flow(args) -> None:
             log.warning("Could not write %s: %s", out_path, e)
         first_opened = visit_first_greenhouse_job_and_autofill(driver, view_job_hrefs)
         if first_opened:
-            maybe_upload_greenhouse_cover_letter(driver, args, [first_opened])
-            maybe_apply_greenhouse_checkbox_rules(driver, args)
+            resume = _load_resume_for_greenhouse(args)
+            if resume is None:
+                log.warning(
+                    "Skipping Greenhouse gates / cover letter / checkbox rules — resume profile unavailable."
+                )
+            else:
+                job = _scrape_greenhouse_job_for_cover_letter(driver, first_opened)
+                matcher = JobMatcher()
+                if not matcher.gates_pass(resume, job):
+                    log.info(
+                        "Skipping Greenhouse cover letter and checkbox rules "
+                        "(education or experience requirements not met): %s at %s",
+                        job.get("title"),
+                        job.get("company"),
+                    )
+                    print_job_fit_debug(
+                        job.get("company"),
+                        job.get("title"),
+                        None,
+                        note="gates_failed_greenhouse",
+                    )
+                else:
+                    maybe_upload_greenhouse_cover_letter(
+                        driver, args, [first_opened], resume=resume, job=job
+                    )
+                    maybe_apply_greenhouse_checkbox_rules(driver, args)
         save_cookies(driver, path)
         log.info("Greenhouse session saved (%s).", path.resolve())
     finally:

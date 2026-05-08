@@ -97,6 +97,7 @@ def run(args):
             log.warning(
                 "Greenhouse sign-in usually needs a visible browser — use --no-headless if you cannot complete login."
             )
+        configure_dspy()
         run_greenhouse_sign_in_flow(args)
         return
 
