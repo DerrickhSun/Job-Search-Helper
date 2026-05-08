@@ -1,7 +1,12 @@
 """
-LinkedIn Easy Apply label → answer rules loaded from ``data/form_fill_rules.json``.
+Form fill rules loaded from ``data/form_fill_rules.json``.
 
-Edit that file to add or change matching behavior without changing Python code.
+Used for LinkedIn Easy Apply (text inputs, textareas, selects, screening yes/no) and for Greenhouse
+application pages (``checkbox_groups``: fieldset legend → option label to select). Pass ``apply_source``
+(``\"linkedin\"`` vs ``\"greenhouse\"``) when constructing the engine so ``choose_label_from_apply_source``
+can pick the right **How did you hear** option. ``text_inputs`` may use ``literal_fallbacks`` (``values[]``)
+or ``literal_from_apply_source`` (same ``when`` map as checkbox_groups). Edit the JSON to change behavior
+without changing Python code.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ def label_matches(normalized_label: str, spec: dict[str, Any]) -> bool:
     """
     Return whether a normalized form label/question string satisfies ``spec``.
 
-    Used by LinkedIn :class:`FormFillRulesEngine` and Greenhouse :class:`GreenhouseFillRulesEngine`.
+    Used by :class:`FormFillRulesEngine` for LinkedIn and Greenhouse rule matching.
     """
     if not spec:
         return False
@@ -60,8 +65,9 @@ def label_matches(normalized_label: str, spec: dict[str, Any]) -> bool:
 class FormFillRulesEngine:
     """Loads JSON rules and resolves answers for text inputs, textareas, selects, and Yes/No screening."""
 
-    def __init__(self, rules_path: Path | str | None = None) -> None:
+    def __init__(self, rules_path: Path | str | None = None, *, apply_source: str | None = None) -> None:
         self._path = Path(rules_path) if rules_path else DEFAULT_RULES_PATH
+        self._apply_source = (apply_source or "").strip().lower() or None
         self._data: dict[str, Any] = self._load()
 
     def _load(self) -> dict[str, Any]:
@@ -118,8 +124,59 @@ class FormFillRulesEngine:
             return None
         if t == "years_experience_total":
             return str(max(1, len(resume.get("experience", [])) * 2))
+        if t == "literal_fallbacks":
+            for v in result.get("values") or []:
+                s = str(v).strip()
+                if s:
+                    return s
+            return None
+        if t == "literal_from_apply_source":
+            m = result.get("when") or result.get("by_apply_source") or {}
+            if not isinstance(m, dict) or not m:
+                return None
+            src = self._apply_source or "linkedin"
+            if src not in ("greenhouse", "linkedin"):
+                src = "linkedin"
+            raw = m.get(src)
+            if raw is None or not str(raw).strip():
+                raw = m.get("default") or m.get("linkedin")
+            if raw is None:
+                return None
+            return str(raw).strip()
         log.warning("Unknown text_inputs result type: %s", t)
         return None
+
+    def _text_result_candidates(self, result: dict[str, Any], resume: dict[str, Any]) -> list[str]:
+        """All values to try for a ``text_inputs`` rule, in order (used for ``literal_fallbacks``)."""
+        t = (result.get("type") or "").strip()
+        if t == "literal_fallbacks":
+            out: list[str] = []
+            for v in result.get("values") or []:
+                s = str(v).strip()
+                if s:
+                    out.append(s)
+            return out
+        one = self._apply_text_result(result, resume)
+        if one is None:
+            return []
+        s = str(one).strip()
+        return [s] if s else []
+
+    def text_input_fill_candidates(self, label: str, resume: dict[str, Any]) -> list[str]:
+        """
+        Ordered strings to type for this label. Screening yes/no resolves to a single candidate; otherwise
+        the first matching ``text_inputs`` rule supplies one or more values (``literal_fallbacks``).
+        """
+        s = self.screening_yes_no(label)
+        if s is not None:
+            return [s]
+        n = self.normalize_label(label)
+        if not n:
+            return []
+        for rule in self._data.get("text_inputs", []):
+            if self._matches(n, rule.get("match", {})):
+                return self._text_result_candidates(rule.get("result", {}), resume)
+        return []
 
     def _apply_textarea_result(self, result: dict[str, Any], cover_letter: str) -> str | None:
         t = (result.get("type") or "").strip()
@@ -134,16 +191,8 @@ class FormFillRulesEngine:
         return None
 
     def answer_text_field(self, label: str, resume: dict[str, Any]) -> str | None:
-        s = self.screening_yes_no(label)
-        if s is not None:
-            return s
-        n = self.normalize_label(label)
-        if not n:
-            return None
-        for rule in self._data.get("text_inputs", []):
-            if self._matches(n, rule.get("match", {})):
-                return self._apply_text_result(rule.get("result", {}), resume)
-        return None
+        c = self.text_input_fill_candidates(label, resume)
+        return c[0] if c else None
 
     def answer_textarea(self, label: str, cover_letter: str) -> str | None:
         s = self.screening_yes_no(label)
@@ -171,4 +220,37 @@ class FormFillRulesEngine:
                     return self._apply_literal(r)
                 log.warning("Unknown selects result: %s", r)
                 return None
+        return None
+
+    def has_checkbox_groups(self) -> bool:
+        """True when the JSON defines at least one ``checkbox_groups`` entry (Greenhouse fieldsets)."""
+        return bool(self._data.get("checkbox_groups"))
+
+    def checkbox_group_choice(self, fieldset_legend_text: str) -> str | None:
+        """
+        Greenhouse ``fieldset.checkbox``: first matching ``checkbox_groups`` rule wins.
+
+        ``match`` is evaluated on the fieldset ``legend`` text (normalized like other rules).
+        Returns ``choose_label`` / ``option_label``, or a label from ``choose_label_from_apply_source``
+        (keys ``greenhouse`` | ``linkedin``, plus optional ``default``) when the engine was constructed
+        with ``apply_source=…`` (``linkedin`` is the default when unset).
+        """
+        n = self.normalize_label(fieldset_legend_text)
+        if not n:
+            return None
+        for rule in self._data.get("checkbox_groups", []):
+            if label_matches(n, rule.get("match", {})):
+                src_map = rule.get("choose_label_from_apply_source")
+                if isinstance(src_map, dict) and src_map:
+                    src = self._apply_source or "linkedin"
+                    if src not in ("greenhouse", "linkedin"):
+                        src = "linkedin"
+                    raw = src_map.get(src)
+                    if raw is None or not str(raw).strip():
+                        raw = src_map.get("default") or src_map.get("linkedin")
+                    ch = str(raw or "").strip()
+                    return ch or None
+                raw = rule.get("choose_label") or rule.get("option_label") or ""
+                ch = str(raw).strip()
+                return ch or None
         return None

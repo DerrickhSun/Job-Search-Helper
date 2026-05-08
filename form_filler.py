@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
@@ -76,6 +77,16 @@ WORKDAY_URL_SUBSTRINGS: tuple[str, ...] = (
     "myworkday.com",
 )
 
+# Greenhouse-hosted job application (company career site or ``boards.greenhouse.io`` embed, often in an iframe).
+# Distinct from LinkedIn Easy Apply; used by ``_resolve_fill_root`` and helper assist context detection.
+GREENHOUSE_APPLY_FIELD_MARKERS: tuple[str, ...] = (
+    "input.input__single-line",
+    "input.input.input__single-line",
+    'input[id^="question_"]',
+    "div.field-wrapper input.input",
+    "div.text-input-wrapper input.input",
+)
+
 # Honeypot / anti-bot fields — never fill (label often contains "website" and would match website rules).
 WORKDAY_SKIP_AUTOMATION_IDS: frozenset[str] = frozenset(
     {
@@ -122,7 +133,8 @@ class EasyApplyFiller:
             0.0, float(apply_review_pause_after_fill_seconds)
         )
         self._rules = FormFillRulesEngine(
-            Path(form_fill_rules_path) if form_fill_rules_path else None
+            Path(form_fill_rules_path) if form_fill_rules_path else None,
+            apply_source="linkedin",
         )
         # Helper mode: if False, only the current WebDriver tab is checked (no tab switching; avoids focus
         # stealing). If True, every tab is scanned (needed when Workday opens in a new tab WebDriver did not
@@ -212,6 +224,68 @@ class EasyApplyFiller:
         except Exception:
             return False
 
+    def _greenhouse_apply_markers_present(self, driver: Any) -> bool:
+        """True when the current document looks like a Greenhouse job application (embedded board)."""
+        for sel in GREENHOUSE_APPLY_FIELD_MARKERS:
+            try:
+                if driver.find_elements(By.CSS_SELECTOR, sel):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _find_greenhouse_job_application_body(self, driver: Any, depth: int = 0) -> Any | None:
+        """
+        Return ``body`` in the document or nested ``iframe`` / ``frame`` that contains Greenhouse apply fields.
+
+        On success, ``driver`` is left focused on that document (possibly nested). On failure, returns ``None``
+        with ``driver`` back at the starting context of the failed branch (same pattern as Workday).
+        """
+        if depth > 10:
+            return None
+        if self._greenhouse_apply_markers_present(driver):
+            return driver.find_element(By.TAG_NAME, "body")
+
+        # Prefer known Greenhouse job-board iframes (e.g. Webflow ``#grnhse_iframe``) before scanning every
+        # iframe — career pages often embed many frames (Termly, HubSpot, …) and the apply form is isolated.
+        priority_iframe_selectors = (
+            "iframe#grnhse_iframe",
+            "iframe[id='grnhse_iframe']",
+            "iframe[src*='job-boards.greenhouse.io']",
+            "iframe[src*='boards.greenhouse.io/embed']",
+            "iframe[src*='greenhouse.io/embed/job_app']",
+        )
+        for sel in priority_iframe_selectors:
+            for fr in driver.find_elements(By.CSS_SELECTOR, sel):
+                try:
+                    driver.switch_to.frame(fr)
+                except Exception:
+                    continue
+                inner = self._find_greenhouse_job_application_body(driver, depth + 1)
+                if inner is not None:
+                    return inner
+                try:
+                    driver.switch_to.parent_frame()
+                except Exception:
+                    self._default_content(driver)
+                    return None
+
+        frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+        for fr in frames:
+            try:
+                driver.switch_to.frame(fr)
+            except Exception:
+                continue
+            inner = self._find_greenhouse_job_application_body(driver, depth + 1)
+            if inner is not None:
+                return inner
+            try:
+                driver.switch_to.parent_frame()
+            except Exception:
+                self._default_content(driver)
+                return None
+        return None
+
     def _find_workday_fill_body(self, driver: Any, depth: int = 0) -> Any | None:
         """
         Return ``body`` in the document or nested ``iframe``/``frame`` that contains Workday markers.
@@ -240,8 +314,9 @@ class EasyApplyFiller:
 
     def _resolve_fill_root(self, driver: Any) -> Any | None:
         """
-        LinkedIn: visible ``.jobs-easy-apply-modal``. Workday / similar: ``body`` in the document or
-        nested iframe stack that contains Workday field markers (see ``WORKDAY_FIELD_MARKERS``).
+        LinkedIn: visible ``.jobs-easy-apply-modal``. Workday: ``body`` in the document or nested iframes
+        when ``WORKDAY_FIELD_MARKERS`` match. Greenhouse: ``body`` when embedded apply fields match
+        (``input.input__single-line``, ``input[id^="question_"]``, etc.), including inside iframes.
         Leaves ``driver`` inside the iframe when the form lives there.
         """
         self._default_content(driver)
@@ -257,6 +332,14 @@ class EasyApplyFiller:
         self._default_content(driver)
         if self._url_looks_like_workday_jobs(driver) and self._workday_apply_shell_present_js(driver):
             return driver.find_element(By.TAG_NAME, "body")
+        gh = self._find_greenhouse_job_application_body(driver, 0)
+        if gh is not None:
+            log.debug(
+                "Fill root: Greenhouse embedded job application (url=%s)",
+                (driver.current_url or "")[:160],
+            )
+            return gh
+        self._default_content(driver)
         u = (driver.current_url or "").lower()
         if "workday" in u or "myworkdayjobs" in u:
             log.debug(
@@ -277,7 +360,11 @@ class EasyApplyFiller:
             return True
         wd = self._find_workday_fill_body(driver, 0)
         self._default_content(driver)
-        return wd is not None
+        if wd is not None:
+            return True
+        gh = self._find_greenhouse_job_application_body(driver, 0)
+        self._default_content(driver)
+        return gh is not None
 
     def _assist_context_open_scan_all_tabs(self, driver: Any) -> bool:
         """
@@ -315,6 +402,15 @@ class EasyApplyFiller:
                 self._default_content(driver)
                 if wd is not None:
                     log.debug("assist_context: Workday form in iframe on tab %s", h[-8:])
+                    return True
+                gh = self._find_greenhouse_job_application_body(driver, 0)
+                self._default_content(driver)
+                if gh is not None:
+                    log.debug(
+                        "assist_context: Greenhouse embedded apply on tab %s url=%s",
+                        h[-8:],
+                        (driver.current_url or "")[:100],
+                    )
                     return True
             except Exception as e:
                 log.debug("assist_context: tab scan skip: %s", e)
@@ -383,14 +479,149 @@ class EasyApplyFiller:
         except Exception:
             return ""
 
-    def _replace_text_control_value(self, driver: Any, el, text: str) -> None:
-        """Select-all and replace — ``clear()`` alone often leaves LinkedIn’s draft cover letter."""
-        if self.highlight:
-            focus_element(driver, el, pause=0.15)
+    @staticmethod
+    def _js_pointer_activate(driver: Any, el) -> None:
+        """
+        Scroll into view and dispatch mouse + focus events.
+
+        Some embedded apply UIs (Greenhouse-style wrappers) ignore a bare Selenium ``click()`` on the
+        ``input`` until the visible chrome receives a real activation sequence.
+        """
         try:
-            el.click()
+            driver.execute_script(
+                """
+                const el = arguments[0];
+                if (!el || !el.ownerDocument) return;
+                el.scrollIntoView({block: 'center', inline: 'nearest'});
+                const view = el.ownerDocument.defaultView;
+                const opts = { bubbles: true, cancelable: true, view: view };
+                try {
+                  el.dispatchEvent(new MouseEvent('mousedown', opts));
+                  el.dispatchEvent(new MouseEvent('mouseup', opts));
+                  el.dispatchEvent(new MouseEvent('click', opts));
+                } catch (e) {}
+                try { el.focus(); } catch (e2) {}
+                """,
+                el,
+            )
         except Exception:
             pass
+
+    def _click_labelish(self, driver: Any, lab) -> None:
+        """Activate + click a label (or label-like) element."""
+        self._js_pointer_activate(driver, lab)
+        try:
+            lab.click()
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].click();", lab)
+            except Exception:
+                pass
+        time.sleep(0.1)
+
+    def _activate_text_control_before_fill(self, driver: Any, input_el) -> None:
+        """
+        Click/focus the field chrome before ``send_keys``.
+
+        Embedded Greenhouse often places ``<label for=…>`` as a **sibling** of the ``input`` inside
+        ``div.input-wrapper`` (label first, then input). An ``ancestor::label`` XPath never matches that
+        pattern — we must hit ``label[for=id]`` or ``preceding-sibling::label`` first, then wrappers
+        (``input-wrapper--active``), then the input.
+        """
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_el)
+        except Exception:
+            pass
+        time.sleep(0.06)
+
+        iid = ""
+        try:
+            iid = (input_el.get_attribute("id") or "").strip()
+        except Exception:
+            pass
+
+        # 1) Label associated by @for (Greenhouse: sibling label inside .input-wrapper)
+        if iid:
+            try:
+                for lab in input_el.find_elements(
+                    By.XPATH,
+                    f'./ancestor::div[contains(@class,"input-wrapper")][1]//label[@for="{iid}"]',
+                ):
+                    try:
+                        if lab.is_displayed():
+                            self._click_labelish(driver, lab)
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            try:
+                for lab in driver.find_elements(By.CSS_SELECTOR, f'label[for="{iid}"]'):
+                    try:
+                        if lab.is_displayed():
+                            self._click_labelish(driver, lab)
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        # 2) Sibling labels (same parent as input — common GH / Webflow embed)
+        for sib_xp in ("./preceding-sibling::label[1]", "./following-sibling::label[1]"):
+            try:
+                lab = input_el.find_element(By.XPATH, sib_xp)
+                if lab.is_displayed():
+                    self._click_labelish(driver, lab)
+            except (NoSuchElementException, Exception):
+                continue
+
+        wrapper_xpaths = (
+            "./ancestor::div[contains(@class,'input-wrapper')][1]",
+            "./ancestor::div[contains(@class,'text-input-wrapper')][1]",
+            "./ancestor::div[contains(@class,'field-wrapper')][1]",
+            "./ancestor::div[contains(@class,'single-line-text')][1]",
+            "./ancestor::div[contains(@class,'textarea-wrapper')][1]",
+        )
+        for xp in wrapper_xpaths:
+            try:
+                wrap = input_el.find_element(By.XPATH, xp)
+                if not wrap.is_displayed():
+                    continue
+                self._js_pointer_activate(driver, wrap)
+                try:
+                    wrap.click()
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].click();", wrap)
+                    except Exception:
+                        pass
+                time.sleep(0.12)
+            except (NoSuchElementException, Exception):
+                continue
+
+        self._js_pointer_activate(driver, input_el)
+        try:
+            driver.execute_script("arguments[0].focus();", input_el)
+        except Exception:
+            pass
+        try:
+            input_el.click()
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].click();", input_el)
+            except Exception:
+                pass
+        try:
+            ActionChains(driver).move_to_element(input_el).pause(0.05).click().perform()
+        except Exception:
+            pass
+        time.sleep(0.1)
+
+    def _replace_text_control_value(self, driver: Any, el, text: str) -> None:
+        """Select-all and replace — ``clear()`` alone often leaves LinkedIn’s draft cover letter."""
+        self._activate_text_control_before_fill(driver, el)
+        if self.highlight:
+            focus_element(driver, el, pause=0.12)
         time.sleep(0.05)
         try:
             el.clear()
@@ -662,7 +893,7 @@ class EasyApplyFiller:
                         return True
                 except Exception:
                     continue
-        return False
+            return False
 
     def _dismiss_easy_apply_modal_if_open(self, driver: Any, context: str = "") -> None:
         """
@@ -1099,8 +1330,6 @@ class EasyApplyFiller:
                             "Cover letter text field detected but generated cover letter is empty — skipping"
                         )
                         continue
-                    if self.highlight:
-                        focus_element(driver, input_el, pause=0.2)
                     self._replace_text_control_value(driver, input_el, cover_letter)
                     self._after_field_fill()
                     filled_cover_letter_as_text = True
@@ -1114,14 +1343,14 @@ class EasyApplyFiller:
                     continue
                 if self._label_looks_like_robot_trap(label):
                     continue
-                value = self._answer_text_field(label, resume)
                 required = self._element_is_required(input_el)
-                if value is None and assist and "email" in (label or "").lower():
-                    log.debug(
-                        "Assist: email field label matched rules but no value (set email in data/resume_profile.json): %r",
-                        label[:120],
-                    )
-                if value is None:
+                candidates = self._rules.text_input_fill_candidates(label, resume)
+                if not candidates:
+                    if assist and "email" in (label or "").lower():
+                        log.debug(
+                            "Assist: email field label matched rules but no value (set email in data/resume_profile.json): %r",
+                            label[:120],
+                        )
                     if required and not assist:
                         log.warning(
                             "No rule for required text field (job %s) label=%r — abandoning",
@@ -1132,12 +1361,48 @@ class EasyApplyFiller:
                     if required and assist:
                         log.debug("Assist: leaving required text field empty (no rule) label=%r", label)
                     continue
-                if value:
+                filled = False
+                for try_val in candidates:
+                    if not try_val:
+                        continue
+                    self._activate_text_control_before_fill(driver, input_el)
                     if self.highlight:
-                        focus_element(driver, input_el, pause=0.2)
-                    input_el.clear()
-                    input_el.send_keys(value)
+                        focus_element(driver, input_el, pause=0.12)
+                    try:
+                        input_el.clear()
+                    except Exception:
+                        pass
+                    input_el.send_keys(try_val)
                     self._after_field_fill()
+                    time.sleep(0.28)
+                    after = (input_el.get_attribute("value") or "").strip()
+                    if after:
+                        filled = True
+                        if len(candidates) > 1 and try_val != candidates[0]:
+                            log.info(
+                                "Text field accepted fallback value for label=%r (tried %d option(s)).",
+                                (label or "")[:100],
+                                candidates.index(try_val) + 1,
+                            )
+                        break
+                    try:
+                        input_el.clear()
+                    except Exception:
+                        pass
+                if not filled and len(candidates) > 1:
+                    log.debug(
+                        "All rule values left field empty after fill attempts label=%r",
+                        (label or "")[:120],
+                    )
+                if not filled and required and not assist:
+                    log.warning(
+                        "Required text field stayed empty after rule fill attempts (job %s) label=%r — abandoning",
+                        job.get("id"),
+                        label,
+                    )
+                    return False
+                if not filled and required and assist:
+                    log.debug("Assist: required text field still empty after candidates label=%r", (label or "")[:120])
             except Exception as e:
                 log.debug("Skipping text field: %s", e)
 
@@ -1165,8 +1430,6 @@ class EasyApplyFiller:
                         log.debug("Assist: leaving required textarea empty (no rule) label=%r", label)
                     continue
                 if text:
-                    if self.highlight:
-                        focus_element(driver, ta, pause=0.2)
                     if is_cover:
                         self._replace_text_control_value(driver, ta, text)
                         filled_cover_letter_as_text = True
@@ -1174,6 +1437,9 @@ class EasyApplyFiller:
                             "Filled cover letter into textarea (replaced any prior / LinkedIn draft text)."
                         )
                     else:
+                        self._activate_text_control_before_fill(driver, ta)
+                        if self.highlight:
+                            focus_element(driver, ta, pause=0.12)
                         ta.clear()
                         ta.send_keys(text)
                     self._after_field_fill()
@@ -1343,12 +1609,13 @@ class EasyApplyFiller:
                 labels = driver.find_elements(By.CSS_SELECTOR, f'label[for="{el_id}"]')
                 if labels:
                     t = (labels[0].text or "").strip()
+                    t = re.sub(r"\s*\*+\s*$", "", t).strip()
                     if t:
                         return t
 
             aria = (element.get_attribute("aria-label") or "").strip()
             if aria:
-                return aria
+                return re.sub(r"\s*\*+\s*$", "", aria).strip()
 
             pl = (element.get_attribute("placeholder") or "").strip()
             if pl:

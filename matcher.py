@@ -5,8 +5,8 @@ Two-stage evaluation:
 1) **Hard gates** (``gates_pass``) — both must pass or the job is skipped without a fit score:
    - Education: candidate's highest degree at or above the job's minimum (ordinal scale).
    - Experience: candidate's estimated years >= the job's minimum when the posting states one.
-     If the posting asks for **senior-level** experience but gives **no numeric** years floor, the gate
-     assumes **5 years** (regex backstop + LLM instruction).
+     If the posting asks for **senior-level** experience (or **Senior** in the job title) but gives **no numeric**
+     years floor, the gate assumes **5 years** (regex backstop + LLM instruction).
 
    Unstated minima (education ``unspecified`` / years ``-1`` or missing) impose no bar, except the
    senior-level-without-number case above.
@@ -67,7 +67,8 @@ Rules:
 - Map high school diploma / GED → high_school
 
 minimum_years_experience — a non-negative number: the smallest years-of-experience requirement stated
-(e.g. "3+ years of experience" → 3, "at least 5 years" → 5).
+(e.g. "3+ years of experience" → 3, "at least 5 years" → 5, "3-5 years of professional experience" → 3,
+"5–7 years of work experience" → 5). Treat the left number in an M–N range as the stated minimum floor.
 If the posting does not state any minimum years of professional/work experience, use -1. (-1 means
 **no minimum years** — any amount of experience, including zero, passes this gate.)
 
@@ -79,7 +80,9 @@ single-year bar is the max, not the smallest line item.
 Senior level without a number: if the posting requires **senior-level** experience (phrases like
 "senior level experience", "senior-level experience", "experience at the senior level") and **does not**
 anywhere state a numeric minimum years of experience (no "3+ years", "at least 5 years", etc.), set
-minimum_years_experience to **5**. If numeric minima are stated anywhere, use the **largest** such number
+minimum_years_experience to **5**. The same **5** applies when the **job title** contains the word **Senior**
+as a role level (e.g. "Senior Software Engineer") and there is still no numeric years floor in the title or
+description. If numeric minima are stated anywhere, use the **largest** such number
 only — do not add 5 on top when explicit year floors already exist.
 
 Do not infer stricter requirements than written. If numbers are ambiguous or clearly only
@@ -151,7 +154,7 @@ class JobMatcher:
     def gates_pass(self, resume: dict, job: dict) -> bool:
         """
         True when education and experience minima from the posting are satisfied (or unstated).
-        On LLM failure, uses regex heuristics on the description (same as historical fallback).
+        On LLM failure, uses regex heuristics on the description and title (same as historical fallback).
         """
         try:
             return self._gates_pass_llm(resume, job)
@@ -199,7 +202,9 @@ class JobMatcher:
 
         req_edu_llm = _normalize_education_token(getattr(result, "minimum_education", None))
         req_years_llm = _parse_years_requirement(getattr(result, "minimum_years_experience", None))
-        req_edu_rx, req_years_rx = _extract_job_requirements_regex(desc_full)
+        req_edu_rx, req_years_rx = _extract_job_requirements_regex(
+            desc_full, str(job.get("title") or "")
+        )
 
         req_edu = _merge_education_requirements(req_edu_llm, req_edu_rx)
         req_years = _merge_years_requirements(req_years_llm, req_years_rx)
@@ -274,7 +279,8 @@ class JobMatcher:
 
     def _gates_pass_regex(self, resume: dict, job: dict) -> bool:
         desc = job.get("description") or ""
-        req_edu, req_years = _extract_job_requirements_regex(desc)
+        title = str(job.get("title") or "")
+        req_edu, req_years = _extract_job_requirements_regex(desc, title)
         cand_edu = _highest_education_rank(resume)
         cand_years = _estimate_years_experience(resume)
         ok_edu = _education_gate(cand_edu, req_edu)
@@ -461,15 +467,24 @@ def _estimate_years_experience(resume: dict) -> float:
     return estimate
 
 
-def _extract_job_requirements_regex(description: str) -> tuple[str, float | None]:
+def _extract_job_requirements_regex(description: str, title: str | None = None) -> tuple[str, float | None]:
     """
     Rough fallback: infer minimum education and years from keywords.
 
-    Years patterns include ``N(+)? years of experience``, ``N(+)? years of work experience``,
+    ``title`` and ``description`` are combined so numeric floors and **Senior**-in-title heuristics apply
+    consistently (LinkedIn, Greenhouse, and regex-only fallback).
+
+    Years patterns include ``N(+)? years of experience`` (with optional *professional / work / relevant*
+    before *experience*), ``M–N years of … experience`` (minimum ``M``), ``N(+)? years of work experience``,
     ``N(+)? years of <phrase> experience`` (domain-specific tenure implies at least ``N`` years overall),
     and a few ``minimum/over`` forms.
     """
-    t = (description or "").lower()
+    parts: list[str] = []
+    if (title or "").strip():
+        parts.append(str(title).strip())
+    if (description or "").strip():
+        parts.append(str(description).strip())
+    t = " ".join(parts).lower() if parts else ""
     req_edu = "unspecified"
     if re.search(r"\b(ph\.?d|doctorate|doctoral)\b", t):
         req_edu = "doctorate"
@@ -480,26 +495,35 @@ def _extract_job_requirements_regex(description: str) -> tuple[str, float | None
     elif "associate" in t:
         req_edu = "associate"
 
-    req_years: float | None = None
+    # Optional words between "of" and "experience" (e.g. "professional", "hands-on") so we still catch
+    # "5 years of professional experience" and "3-5 years of professional experience".
+    _of_exp = r"of\s+(?:professional\s+|work\s+|relevant\s+|hands-on\s+)?experience\b"
+    # Avoid treating the second bound in "3-5 years …" as a separate "5 years …" floor.
+    _yr_lead = r"(?:^|[^0-9\-–])(\d+)\s*\+?\s*years?"
     nums: list[float] = []
     for m in re.finditer(
         r"(?:at least|minimum|min\.?|over)\s+(\d+)\s*\+?\s*years?\s+(?:of\s+)?(?:work|professional|relevant)?",
         t,
     ):
         nums.append(float(m.group(1)))
-    # "N years of experience" / "N+ years of experience" (optional + after the digit)
-    for m in re.finditer(r"(\d+)\s*\+?\s*years?\s+of\s+experience\b", t):
+    # "N years of experience" / "N+ years of experience" / "N years of professional experience"
+    for m in re.finditer(rf"{_yr_lead}\s+{_of_exp}", t):
         nums.append(float(m.group(1)))
     # LinkedIn / poster lines: "N+ years of work experience with …" (before "with" clause)
-    for m in re.finditer(r"(\d+)\s*\+?\s*years?\s+of\s+work\s+experience\b", t):
+    for m in re.finditer(rf"{_yr_lead}\s+of\s+work\s+experience\b", t):
         nums.append(float(m.group(1)))
     # "N years of <domain> experience" — domain-specific tenure implies at least N years overall
     for m in re.finditer(
-        r"(\d+)\s*\+?\s*years?\s+of\s+(?!experience\b)(.+?)\s+experience\b",
+        rf"{_yr_lead}\s+of\s+(?!experience\b)(.+?)\s+experience\b",
         t,
     ):
         nums.append(float(m.group(1)))
-    for m in re.finditer(r"(\d+)\s*[-–]\s*(\d+)\s*years?\s+of\s+experience", t):
+    for m in re.finditer(rf"(\d+)\s*[-–]\s*(\d+)\s*years?\s+{_of_exp}", t):
+        nums.append(float(m.group(1)))
+    for m in re.finditer(
+        r"(\d+)\s*[-–]\s*(\d+)\s*years?\s+of\s+(?!experience\b)(.+?)\s+experience\b",
+        t,
+    ):
         nums.append(float(m.group(1)))
     if nums:
         # Use the strictest (largest) detected floor so we do not under-read the posting when
@@ -510,14 +534,23 @@ def _extract_job_requirements_regex(description: str) -> tuple[str, float | None
         # Posting asks for senior-level experience but states no numeric floor → assume 5 years.
         if _regex_implied_years_senior_level_no_numeric(t):
             req_years_f = 5.0
+        elif _title_has_senior_role_word(title):
+            req_years_f = 5.0
 
     return req_edu, req_years_f
 
 
+def _title_has_senior_role_word(title: str | None) -> bool:
+    """True when the job title uses **Senior** as a role level (whole word), e.g. Senior Engineer."""
+    if not (title or "").strip():
+        return False
+    return bool(re.search(r"\bsenior\b", title, re.IGNORECASE))
+
+
 def _regex_implied_years_senior_level_no_numeric(text_lower: str) -> bool:
     """
-    True when copy ties **senior level** to **experience** (not merely a job title like "Senior Engineer").
-    Used only when no numeric year minima were found in the description.
+    True when copy ties **senior level** to **experience** in the posting body (not satisfied by title alone).
+    Used only when no numeric year minima were found in the combined title + description text.
     """
     if not text_lower or "senior" not in text_lower or "experience" not in text_lower:
         return False
