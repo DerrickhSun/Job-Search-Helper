@@ -2,11 +2,16 @@
 Job Matcher
 Two-stage evaluation:
 
-1) **Hard gates** (``gates_pass``) — both must pass or the job is skipped without a fit score:
+1) **Hard gates** (``gates_pass``) — all must pass or the job is skipped without a fit score:
    - Education: candidate's highest degree at or above the job's minimum (ordinal scale).
    - Experience: candidate's estimated years >= the job's minimum when the posting states one.
      If the posting asks for **senior-level** experience (or **Senior** in the job title) but gives **no numeric**
      years floor, the gate assumes **5 years** (regex backstop + LLM instruction).
+   - **Clearance (regex):** evaluation is **per line** (split on newlines in description + title) so patterns
+     cannot span unrelated sentences. If **any one line** contains ``active`` … ``clearance`` (both words on
+     that same line) and that **same line** does **not** contain ``eligible`` or ``valid`` as whole words, the
+     job is skipped (treated as requiring an already-held clearance with no eligible/valid-clearance wording
+     on that line).
 
    Unstated minima (education ``unspecified`` / years ``-1`` or missing) impose no bar, except the
    senior-level-without-number case above.
@@ -95,7 +100,8 @@ Consider technology overlap, similar past responsibilities, and domain alignment
 
 Guidance: 0.85+ excellent match; 0.65–0.84 solid match; 0.45–0.64 possible but weaker; below 0.45 poor fit.
 
-Do NOT downgrade the score for degree level or minimum years of experience — those are evaluated separately.
+Do NOT downgrade the score for degree level, minimum years of experience, or clearance wording —
+those are evaluated in hard gates separately.
 
 Return fit_score as a single number between 0.0 and 1.0 inclusive."""
 
@@ -153,7 +159,7 @@ class JobMatcher:
 
     def gates_pass(self, resume: dict, job: dict) -> bool:
         """
-        True when education and experience minima from the posting are satisfied (or unstated).
+        True when education, experience, and clearance heuristics from the posting are satisfied (or unstated).
         On LLM failure, uses regex heuristics on the description and title (same as historical fallback).
         """
         try:
@@ -226,16 +232,19 @@ class JobMatcher:
 
         ok_edu = _education_gate(cand_edu, req_edu)
         ok_exp = _experience_gate(cand_years, req_years)
+        ok_clear = _clearance_eligibility_gate_passes(job)
 
         r = _as_str_list(getattr(result, "rationale", None))
         log.debug(
-            "Gates: candidate edu_rank=%s years≈%.1f | required edu=%s years=%s | edu_ok=%s exp_ok=%s | %s",
+            "Gates: candidate edu_rank=%s years≈%.1f | required edu=%s years=%s | "
+            "edu_ok=%s exp_ok=%s clear_ok=%s | %s",
             cand_edu,
             cand_years,
             req_edu,
             req_years,
             ok_edu,
             ok_exp,
+            ok_clear,
             r,
         )
 
@@ -246,11 +255,11 @@ class JobMatcher:
             if req_years is not None and req_years >= 0
             else "unspecified"
         )
-        if ok_edu and ok_exp:
+        if ok_edu and ok_exp and ok_clear:
             log.info(
                 "Gates passed [llm+regex] %s%r at %r | eff min yrs=%s min edu=%s | "
                 "candidate yrs≈%.1f (date-span/roles heuristic; see _estimate_years_experience) "
-                "edu=%s (rank %d)",
+                "edu=%s (rank %d) | clearance_gate=ok",
                 jlabel,
                 job.get("title", ""),
                 job.get("company", ""),
@@ -262,13 +271,14 @@ class JobMatcher:
             )
             return True
         log.info(
-            "Gates failed [llm+regex] %s%r at %r | edu_ok=%s exp_ok=%s | "
+            "Gates failed [llm+regex] %s%r at %r | edu_ok=%s exp_ok=%s clear_ok=%s | "
             "need min edu %s min yrs %s | have edu %s (rank %s) yrs≈%.1f",
             jlabel,
             job.get("title", ""),
             job.get("company", ""),
             ok_edu,
             ok_exp,
+            ok_clear,
             req_edu,
             need_y,
             EDU_ORDER[cand_edu],
@@ -285,14 +295,16 @@ class JobMatcher:
         cand_years = _estimate_years_experience(resume)
         ok_edu = _education_gate(cand_edu, req_edu)
         ok_exp = _experience_gate(cand_years, req_years)
+        ok_clear = _clearance_eligibility_gate_passes(job)
         log.debug(
-            "Fallback gates: cand edu=%s yrs≈%.1f req edu=%s yrs=%s -> edu_ok=%s exp_ok=%s",
+            "Fallback gates: cand edu=%s yrs≈%.1f req edu=%s yrs=%s -> edu_ok=%s exp_ok=%s clear_ok=%s",
             cand_edu,
             cand_years,
             req_edu,
             req_years,
             ok_edu,
             ok_exp,
+            ok_clear,
         )
         jid = job.get("id", "")
         jlabel = f"id={jid} " if jid else ""
@@ -301,10 +313,10 @@ class JobMatcher:
             if req_years is not None and req_years >= 0
             else "unspecified"
         )
-        if ok_edu and ok_exp:
+        if ok_edu and ok_exp and ok_clear:
             log.info(
                 "Gates passed [regex_fallback] %s%r at %r | min yrs=%s min edu=%s | "
-                "candidate yrs≈%.1f edu=%s (rank %d)",
+                "candidate yrs≈%.1f edu=%s (rank %d) | clearance_gate=ok",
                 jlabel,
                 job.get("title", ""),
                 job.get("company", ""),
@@ -316,13 +328,14 @@ class JobMatcher:
             )
             return True
         log.info(
-            "Gates failed [regex_fallback] %s%r at %r | edu_ok=%s exp_ok=%s | "
+            "Gates failed [regex_fallback] %s%r at %r | edu_ok=%s exp_ok=%s clear_ok=%s | "
             "need min edu %s min yrs %s | have edu %s (rank %s) yrs≈%.1f",
             jlabel,
             job.get("title", ""),
             job.get("company", ""),
             ok_edu,
             ok_exp,
+            ok_clear,
             req_edu,
             need_y,
             EDU_ORDER[cand_edu],
@@ -345,6 +358,36 @@ def _experience_gate(candidate_years: float, required_years: float | None) -> bo
     if required_years is None or required_years < 0:
         return True
     return candidate_years >= float(required_years)
+
+
+_RE_ACTIVE_THEN_CLEARANCE_SAME_LINE = re.compile(r"\bactive\b.*\bclearance\b", re.IGNORECASE)
+_RE_ELIGIBLE_OR_VALID_SAME_LINE = re.compile(r"\b(eligible|valid)\b", re.IGNORECASE)
+
+
+def _clearance_eligibility_gate_passes(job: dict) -> bool:
+    """
+    False (skip job) when **one line** (newline-delimited slice of title + description) contains
+    ``active`` … ``clearance`` on that line **and** that **same line** contains **neither** whole-word
+    ``eligible`` nor whole-word ``valid`` (either word on that line is enough to pass the gate for that line).
+
+    Matching never spans lines, so a clearance phrase on one line and ``eligible`` on another does not rescue
+    the line — only wording on the **same** line counts.
+    """
+    blob = f"{job.get('description') or ''}\n{job.get('title') or ''}"
+    for raw_line in blob.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not _RE_ACTIVE_THEN_CLEARANCE_SAME_LINE.search(line):
+            continue
+        if _RE_ELIGIBLE_OR_VALID_SAME_LINE.search(line):
+            continue
+        log.info(
+            "Clearance gate: skip — same line has active…clearance without 'eligible' or 'valid': %s",
+            line[:240] + ("…" if len(line) > 240 else ""),
+        )
+        return False
+    return True
 
 
 def _normalize_education_token(raw: Any) -> str:

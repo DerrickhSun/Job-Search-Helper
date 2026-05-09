@@ -653,8 +653,11 @@ def main():
         "--skip-consulting",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Skip jobs when the company name includes consulting or staffing (whole word) or the description suggests "
+        help="Skip jobs when the company name includes consulting or staffing (whole word), talent (whole word), "
+        "the substring ``IT`` (capital I + T only, case-sensitive — matches body-shop style names, not the word "
+        "'it' in lowercase), or the description suggests "
         "a consultancy/staffing employer (consultant, consulting firm/company, consultancy, client company, "
+        "singular ``our client`` but not ``our clients``, "
         "etc.; bare 'consulting' in the description is ignored to avoid industry-experience false positives). "
         "Default: on. Use --no-skip-consulting to disable.",
     )
