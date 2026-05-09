@@ -32,6 +32,7 @@ from helper_browser import run_helper_mode
 from job_records import DEFAULT_LISTINGS_LOG
 from job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher
 from matcher import JobMatcher, print_job_fit_debug
+from output_paths import migrate_legacy_root_archive_files
 from resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 from resume_parser import ResumeParser, first_name_from_resume
 from tracker import ApplicationTracker
@@ -313,6 +314,7 @@ def run(args):
 
 def main():
     load_dotenv()
+    migrate_legacy_root_archive_files()
 
     ap = argparse.ArgumentParser(
         description="Job tools: LinkedIn Easy Apply pipeline, or Greenhouse MyGreenhouse application helper."
@@ -327,7 +329,7 @@ def main():
         "URLs in order, skips listings that fail education/experience gates (same JobMatcher as LinkedIn), runs "
         "autofill, cover letter DOCX upload when the field exists, and ``checkbox_groups`` rules. By default, "
         "after each helped job this terminal prompts: **n** records to `output/assisted_applications.csv` "
-        "(same columns as `applications.csv`; dedupe also uses `output/assisted_applications_history.csv`) "
+        "(same columns as `applications.csv`; dedupe also uses `output/archive/assisted_applications_history.csv`) "
         "then scans for the next gate-passing listing; **s** scans without "
         "recording; Enter or **q** stops. Use --no-greenhouse-manual-next-listing to stop after the first passing "
         "job only. Email is prefilled from --resume-cache when ``email`` is set there.",
@@ -384,7 +386,7 @@ def main():
         help="Greenhouse helper: after each listing that passes gates and gets autofill / cover / checkbox rules, "
         "prompt in this terminal — **n** (+ Enter) if you submitted an application (append a row to "
         "`output/assisted_applications.csv`, same columns as `applications.csv`; prior rows in "
-        "`output/assisted_applications_history.csv` still count for skip dedupe), then scan for the next "
+        "`output/archive/assisted_applications_history.csv` still count for skip dedupe), then scan for the next "
         "gate-passing job; **s** to continue without recording; Enter or **q** to stop (default: on). "
         "Use --no-greenhouse-manual-next-listing to exit after the first passing job without prompts.",
     )
@@ -654,8 +656,11 @@ def main():
         "--skip-consulting",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Skip jobs when the company name includes consulting or staffing (whole word) or the description suggests "
+        help="Skip jobs when the company name includes consulting or staffing (whole word), talent (whole word), "
+        "the substring ``IT`` (capital I + T only, case-sensitive — matches body-shop style names, not the word "
+        "'it' in lowercase), or the description suggests "
         "a consultancy/staffing employer (consultant, consulting firm/company, consultancy, client company, "
+        "singular ``our client`` but not ``our clients``, "
         "etc.; bare 'consulting' in the description is ignored to avoid industry-experience false positives). "
         "Default: on. Use --no-skip-consulting to disable.",
     )

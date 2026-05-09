@@ -4,6 +4,8 @@ Logs every job to SQLite and exports CSV in the same 6-column layout as Google S
 (A empty, B company, C empty, D date, E job URL, F title):
 
 - ``applications.csv`` — status ``applied`` (manual ``r`` / successful auto-applies)
+- ``output/archive/applications_archive.csv`` — optional archive (see ``archive_applications.py``); LinkedIn
+  ``already_applied`` also matches job ids found in column E of this file
 - ``apply_opened.csv`` — status ``apply_opened`` (helper: external apply tab opened)
 - ``consulting`` — skipped for staffing / consulting heuristics (see ``consulting_filter``)
 """
@@ -11,13 +13,22 @@ Logs every job to SQLite and exports CSV in the same 6-column layout as Google S
 import csv
 import logging
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from apply_sheets import applied_sheet_row, format_apply_date_mdy
+from apply_sheets import (
+    applied_sheet_row,
+    format_apply_date_mdy,
+    linkedin_job_ids_from_applications_sheet_csvs,
+)
+from output_paths import APPLICATIONS_ARCHIVE_CSV, APPLICATIONS_CSV
 
 log = logging.getLogger(__name__)
+
+DEFAULT_APPLICATIONS_SHEET_CSV = APPLICATIONS_CSV
+DEFAULT_APPLICATIONS_ARCHIVE_CSV = APPLICATIONS_ARCHIVE_CSV
 
 
 def normalize_greenhouse_job_url(url: str) -> str:
@@ -40,9 +51,23 @@ def normalize_greenhouse_job_url(url: str) -> str:
 
 
 class ApplicationTracker:
-    def __init__(self, db_path: str = "data/applications.db"):
+    def __init__(
+        self,
+        db_path: str = "data/applications.db",
+        *,
+        linkedin_sheet_export_paths: Sequence[Path | str] | None = None,
+    ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(exist_ok=True)
+        self._linkedin_sheet_export_paths: tuple[Path, ...] = tuple(
+            Path(p)
+            for p in (
+                linkedin_sheet_export_paths
+                if linkedin_sheet_export_paths is not None
+                else (DEFAULT_APPLICATIONS_SHEET_CSV, DEFAULT_APPLICATIONS_ARCHIVE_CSV)
+            )
+        )
+        self._linkedin_ids_from_sheet_exports: frozenset[str] | None = None
         self._init_db()
 
     def _init_db(self):
@@ -61,13 +86,29 @@ class ApplicationTracker:
                 )
             """)
 
+    def _linkedin_applied_ids_from_sheet_exports(self) -> frozenset[str]:
+        if self._linkedin_ids_from_sheet_exports is None:
+            self._linkedin_ids_from_sheet_exports = linkedin_job_ids_from_applications_sheet_csvs(
+                self._linkedin_sheet_export_paths
+            )
+        return self._linkedin_ids_from_sheet_exports
+
+    def invalidate_linkedin_sheet_export_cache(self) -> None:
+        """Clear cached ids if ``applications.csv`` / ``output/archive/`` files change during a long run."""
+        self._linkedin_ids_from_sheet_exports = None
+
     def already_applied(self, job_id: str) -> bool:
+        jid = (job_id or "").strip()
+        if not jid:
+            return False
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT id FROM applications WHERE id = ? AND status = 'applied'",
-                (job_id,),
+                (jid,),
             ).fetchone()
-        return row is not None
+        if row is not None:
+            return True
+        return jid in self._linkedin_applied_ids_from_sheet_exports()
 
     def recorded_greenhouse_job_url_keys(
         self, *, statuses: tuple[str, ...] = ("applied", "apply_opened")
