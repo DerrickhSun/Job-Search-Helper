@@ -225,6 +225,20 @@ def load_greenhouse_skip_url_keys(db_path: Path | str | None = None) -> frozense
     return frozenset(keys)
 
 
+def _load_resume_for_greenhouse(args: Any) -> dict[str, Any] | None:
+    cache = Path(getattr(args, "resume_cache", DEFAULT_RESUME_CACHE_PATH))
+    resume_pdf = Path(getattr(args, "resume", DEFAULT_RESUME_FILE))
+    try:
+        return load_or_build_resume(
+            resume_pdf if resume_pdf.is_file() else None,
+            cache,
+            force_reparse=bool(getattr(args, "force_resume_parse", False)),
+        )
+    except Exception as e:
+        log.warning("Could not load resume for Greenhouse: %s", e)
+        return None
+
+
 def _location_is_united_states(location: str) -> bool:
     low = (location or "").strip().lower()
     if not low:
@@ -1555,28 +1569,23 @@ def maybe_upload_greenhouse_cover_letter(
     """
     On the current Greenhouse application page, generate a cover letter (same generator as LinkedIn) and
     attach the DOCX via the **Cover Letter** file field.
-
-    When ``company_from_search_card`` / ``title_from_search_card`` are set (from MyGreenhouse job cards),
-    they override missing or generic values from the apply page scrape.
-
-    Pass ``resume`` from :func:`_load_resume_for_greenhouse` to avoid reloading the profile for each listing;
-    when omitted, the resume is loaded from ``--resume`` / ``--resume-cache`` here.
     """
-    listing = (listing_url or "").strip()
+    if not view_job_hrefs:
+        return
+    listing = (view_job_hrefs[0] or "").strip()
     if not listing:
         return
-    if resume is None:
-        cache = Path(getattr(args, "resume_cache", DEFAULT_RESUME_CACHE_PATH))
-        resume_pdf = Path(getattr(args, "resume", DEFAULT_RESUME_FILE))
-        try:
-            resume = load_or_build_resume(
-                resume_pdf if resume_pdf.is_file() else None,
-                cache,
-                force_reparse=bool(getattr(args, "force_resume_parse", False)),
-            )
-        except Exception as e:
-            log.warning("Skipping Greenhouse cover letter: could not load resume (%s).", e)
-            return
+    cache = Path(getattr(args, "resume_cache", DEFAULT_RESUME_CACHE_PATH))
+    resume_pdf = Path(getattr(args, "resume", DEFAULT_RESUME_FILE))
+    try:
+        resume = load_or_build_resume(
+            resume_pdf if resume_pdf.is_file() else None,
+            cache,
+            force_reparse=bool(getattr(args, "force_resume_parse", False)),
+        )
+    except Exception as e:
+        log.warning("Skipping Greenhouse cover letter: could not load resume (%s).", e)
+        return
     try:
         job = _scrape_greenhouse_job_for_cover_letter(
             driver,
@@ -1728,15 +1737,12 @@ def _pause_until_user_closes_browser() -> None:
 
 def run_greenhouse_sign_in_flow(args) -> None:
     """
-    **Greenhouse application helper** session: open Chrome on MyGreenhouse sign-in, wait until ``/dashboard``,
-    open ``/jobs?query=…`` **once per** ``--keywords`` phrase (same location / date filters), merge distinct
-    **View job** rows (URL plus
-    company/title from each search card when available), write them to
-    JSON, then :func:`run_greenhouse_application_helper` — gate filtering, autofill, cover letter DOCX, and
-    ``checkbox_groups`` rules, with terminal prompts after each helped job by default (``n`` = you applied and
-    record to ``output/assisted_applications.csv``, then scan for the next gate-passing listing; ``s`` = continue
-    without recording; Enter / ``q`` = stop). Finally (by
-    default) wait for Enter before quit, save cookies to ``--greenhouse-cookies``, and close Chrome.
+    Open Chrome on MyGreenhouse sign-in, wait until ``/dashboard``, then open ``/jobs?query=…`` using
+    ``--keywords``, scroll to load lazy results, collect **View job** URLs, write them to JSON, open the
+    **first** job page and click **Autofill with MyGreenhouse** (prototype), generate a cover letter from the
+    resume cache (same pipeline as LinkedIn), attach it to the **Cover Letter** file field when present,
+    apply ``data/greenhouse_fill_rules.json`` checkbox rules when present, save cookies, then (by default)
+    wait for Enter before closing Chrome.
     """
     path = Path(args.greenhouse_cookies)
     max_wait = float(getattr(args, "greenhouse_login_max_seconds", 600.0))
