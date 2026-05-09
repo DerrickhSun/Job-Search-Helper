@@ -11,8 +11,11 @@ Environment (optional if you pass CLI flags):
 
 from __future__ import annotations
 
+import csv
 import logging
 import os
+import re
+from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -71,6 +74,58 @@ def applied_sheet_row(job: dict[str, Any], date_mdy: str | None = None) -> list[
         (job.get("url") or "").strip(),
         (job.get("title") or "").strip(),
     ]
+
+
+def _is_applications_sheet_header_row(row: list[str]) -> bool:
+    if not row or len(row) < 2:
+        return False
+    return (row[0] or "").strip() == "" and (row[1] or "").strip().lower() == "company"
+
+
+_SHEET_LINKEDIN_VIEW_ID_RE = re.compile(r"/jobs/view/(\d+)", re.I)
+_SHEET_LINKEDIN_CURRENT_JOB_ID_RE = re.compile(r"[\?&]currentJobId=(\d+)", re.I)
+
+
+def linkedin_job_id_from_sheet_job_url(url: str) -> str | None:
+    """
+    Parse LinkedIn numeric job id from column E of the applications sheet export
+    (``/jobs/view/ID`` or ``currentJobId=`` on ``linkedin.com``).
+    """
+    u = (url or "").strip()
+    if not u or "linkedin.com" not in u.lower():
+        return None
+    m = _SHEET_LINKEDIN_VIEW_ID_RE.search(u)
+    if m:
+        return m.group(1)
+    m = _SHEET_LINKEDIN_CURRENT_JOB_ID_RE.search(u)
+    if m:
+        return m.group(1)
+    return None
+
+
+def linkedin_job_ids_from_applications_sheet_csvs(paths: Sequence[Path | str]) -> frozenset[str]:
+    """
+    Collect LinkedIn job ids from one or more CSV files in the sheet layout
+    (``output/applications.csv``, ``output/archive/applications_archive.csv``, etc.).
+    """
+    out: set[str] = set()
+    for raw in paths:
+        p = Path(raw)
+        if not p.is_file():
+            continue
+        try:
+            with p.open(newline="", encoding="utf-8") as f:
+                for row in csv.reader(f):
+                    if not row or len(row) < 5:
+                        continue
+                    if _is_applications_sheet_header_row(row):
+                        continue
+                    jid = linkedin_job_id_from_sheet_job_url(row[4])
+                    if jid:
+                        out.add(jid)
+        except Exception as e:
+            log.warning("Could not read %s for LinkedIn apply dedupe: %s", p.resolve(), e)
+    return frozenset(out)
 
 
 def append_applied_job_row(

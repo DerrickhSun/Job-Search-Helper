@@ -27,6 +27,10 @@ from dspy_lm import configure_dspy
 from form_fill_rules import DEFAULT_RULES_PATH, FormFillRulesEngine
 from job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS
 from matcher import JobMatcher, print_job_fit_debug
+from output_paths import (
+    ASSISTED_APPLICATIONS_CSV as ASSISTED_GREENHOUSE_CSV,
+    ASSISTED_APPLICATIONS_HISTORY_CSV as ASSISTED_GREENHOUSE_HISTORY_CSV,
+)
 from resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 from tracker import ApplicationTracker, normalize_greenhouse_job_url
 
@@ -37,8 +41,6 @@ GREENHOUSE_SIGN_IN_URL = f"{MY_GREENHOUSE_ORIGIN}/users/sign_in"
 GREENHOUSE_DASHBOARD_URL = f"{MY_GREENHOUSE_ORIGIN}/dashboard"
 DEFAULT_GREENHOUSE_COOKIE_PATH = Path("data/selenium_greenhouse_cookies.json")
 DEFAULT_APPLICATIONS_DB = Path("data/applications.db")
-ASSISTED_GREENHOUSE_CSV = Path("output/assisted_applications.csv")
-ASSISTED_GREENHOUSE_HISTORY_CSV = Path("output/assisted_applications_history.csv")
 
 # Harvest job description from embedded boards (same priority idea as EasyApplyFiller).
 GREENHOUSE_DESCRIPTION_IFRAME_SELECTORS: tuple[str, ...] = (
@@ -203,7 +205,7 @@ def _skip_keys_from_assisted_applications_csv_path(path: Path) -> set[str]:
 
 
 def _skip_keys_from_assisted_greenhouse_csv() -> set[str]:
-    """Normalized URLs from ``assisted_applications.csv`` and ``assisted_applications_history.csv`` (manual ``n``)."""
+    """Normalized URLs from active assisted CSV and ``output/archive/assisted_applications_history.csv`` (manual ``n``)."""
     return _skip_keys_from_assisted_applications_csv_path(ASSISTED_GREENHOUSE_CSV) | _skip_keys_from_assisted_applications_csv_path(
         ASSISTED_GREENHOUSE_HISTORY_CSV
     )
@@ -213,7 +215,7 @@ def load_greenhouse_skip_url_keys(db_path: Path | str | None = None) -> frozense
     """
     Normalized Greenhouse job ``url`` keys to skip when collecting listings: ``applied`` / ``apply_opened``
     rows in the applications database plus URLs in ``output/assisted_applications.csv`` and
-    ``output/assisted_applications_history.csv`` (archived manual ``n`` rows).
+    ``output/archive/assisted_applications_history.csv`` (archived manual ``n`` rows).
     """
     keys: set[str] = set(_skip_keys_from_assisted_greenhouse_csv())
     p = Path(db_path) if db_path is not None else DEFAULT_APPLICATIONS_DB

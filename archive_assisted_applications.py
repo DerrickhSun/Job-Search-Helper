@@ -1,5 +1,5 @@
 """
-Append rows from ``output/assisted_applications.csv`` into ``output/assisted_applications_history.csv``,
+Append rows from ``output/assisted_applications.csv`` into ``output/archive/assisted_applications_history.csv``,
 then reset the active file to header-only.
 
 Run from repo root: ``python archive_assisted_applications.py``
@@ -8,10 +8,13 @@ Run from repo root: ``python archive_assisted_applications.py``
 from __future__ import annotations
 
 import csv
-from pathlib import Path
 
-ASSISTED = Path("output/assisted_applications.csv")
-HISTORY = Path("output/assisted_applications_history.csv")
+from output_paths import (
+    ASSISTED_APPLICATIONS_HISTORY_CSV as HISTORY,
+    ASSISTED_APPLICATIONS_CSV as ASSISTED,
+    migrate_legacy_root_archive_files,
+)
+
 HEADER = ("", "company", "", "date", "url", "title")
 
 
@@ -22,6 +25,7 @@ def _is_header_row(row: list[str]) -> bool:
 
 
 def main() -> None:
+    migrate_legacy_root_archive_files()
     ASSISTED.parent.mkdir(parents=True, exist_ok=True)
     HISTORY.parent.mkdir(parents=True, exist_ok=True)
 
