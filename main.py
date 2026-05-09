@@ -7,6 +7,7 @@ Default resume path is resume.pdf in the working directory; use --resume PATH to
 import argparse
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ if sys.platform == "win32":
             pass
 
 from apply_sheets import append_applied_job_row
+from chrome_driver import build_chrome, load_cookies, save_cookies
 from company_blacklist import is_company_blacklisted, load_company_blacklist
 from consulting_filter import is_consulting_listing
 from cover_letter import CoverLetterGenerator
@@ -208,6 +210,14 @@ def run(args):
     )
 
     searcher = _job_searcher_from_args(args, account_first_name=account_first)
+    company_lookup_driver = None
+    if args.skip_consulting:
+        company_lookup_driver = build_chrome(headless=args.headless)
+        try:
+            load_cookies(company_lookup_driver, searcher.session_file)
+        except Exception:
+            log.debug("Company lookup driver: cookie load failed", exc_info=True)
+
     apply_stats = {"applied": 0}
     if max_applies_cap is not None:
         log.info(
@@ -237,7 +247,27 @@ def run(args):
         if args.skip_consulting and is_consulting_listing(job):
             log.info("Skipping (consulting / staffing indicators): %s at %s", job["title"], job["company"])
             tracker.log(job, status="consulting", score=0.0)
+            if searcher.dismiss_current_job(driver, reason="consulting-signals", job_id=str(job.get("id") or "")):
+                log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
             return
+        if args.skip_consulting and company_lookup_driver is not None:
+            company_link = searcher.selected_job_company_link(driver)
+            if company_link:
+                # LinkedIn often gives /life URL; normalize to /about/ for consistent industry/overview fields.
+                m = re.search(r"(https://www\.linkedin\.com/company/[^/]+)", company_link, re.IGNORECASE)
+                normalized_link = f"{m.group(1)}/about/" if m else company_link
+                if searcher.company_page_looks_consulting(company_lookup_driver, normalized_link):
+                    log.info(
+                        "Skipping (company page indicates consulting/recruiting): %s at %s",
+                        job["title"],
+                        job["company"],
+                    )
+                    tracker.log(job, status="consulting", score=0.0)
+                    if searcher.dismiss_current_job(
+                        driver, reason="company-page-signals", job_id=str(job.get("id") or "")
+                    ):
+                        log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+                    return
         if not job.get("easy_apply"):
             log.info(
                 "Skipping (no Easy Apply on card — external apply not implemented yet): %s at %s",
@@ -255,6 +285,8 @@ def run(args):
             )
             print_job_fit_debug(job.get("company"), job.get("title"), None, note="gates_failed")
             tracker.log(job, status="skipped", score=0.0)
+            if searcher.dismiss_current_job(driver, reason="gates-failed", job_id=str(job.get("id") or "")):
+                log.info("  → Dismissed on LinkedIn to avoid revisiting this non-qualifying listing.")
             return
 
         fit = matcher.fit_score(resume, job)
@@ -289,16 +321,24 @@ def run(args):
         else:
             log.warning("  ✗ Application failed — check output/screenshots/")
 
-    processed = searcher.run_search_apply_pipeline(
-        keywords=list(args.keywords),
-        location=args.location,
-        max_listings=max_listings_cap,
-        easy_apply_only=args.easy_apply_only,
-        listings_log_path=args.listings_log,
-        process_listing=process_listing,
-        max_applies=max_applies_cap,
-        apply_counter=apply_stats,
-    )
+    try:
+        processed = searcher.run_search_apply_pipeline(
+            keywords=list(args.keywords),
+            location=args.location,
+            max_listings=max_listings_cap,
+            easy_apply_only=args.easy_apply_only,
+            listings_log_path=args.listings_log,
+            process_listing=process_listing,
+            max_applies=max_applies_cap,
+            apply_counter=apply_stats,
+        )
+    finally:
+        if company_lookup_driver is not None:
+            try:
+                save_cookies(company_lookup_driver, searcher.session_file)
+            except Exception:
+                log.debug("Company lookup driver: cookie save failed", exc_info=True)
+            company_lookup_driver.quit()
     log.info(
         "Finished search pipeline: %d listing(s) processed, %d successful apply(ies) (see %s).",
         processed,

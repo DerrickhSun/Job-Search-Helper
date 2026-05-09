@@ -864,6 +864,138 @@ class JobSearcher:
             log.debug("Error parsing job list link %d: %s", index, e)
             return None
 
+    def dismiss_current_job(self, driver, *, reason: str | None = None, job_id: str | None = None) -> bool:
+        """
+        Dismiss a LinkedIn job card from the left rail.
+
+        If ``job_id`` is provided, targets that exact ``data-occludable-job-id`` row first.
+        Returns True when a dismiss button was found/clicked, otherwise False.
+        """
+        selectors: list[str] = []
+        jid = (job_id or "").strip()
+        if jid:
+            selectors.extend(
+                (
+                    f'li[data-occludable-job-id="{jid}"] button[aria-label^="Dismiss "][aria-label$=" job"]',
+                    f'li[data-occludable-job-id="{jid}"] button.job-card-container__action',
+                )
+            )
+        selectors.extend(
+            (
+                # Fallback to active/selected row when no explicit id match is available.
+                'li.scaffold-layout__list-item--active button[aria-label^="Dismiss "][aria-label$=" job"]',
+                'li.jobs-search-results__list-item--active button[aria-label^="Dismiss "][aria-label$=" job"]',
+                'li[aria-current="true"] button[aria-label^="Dismiss "][aria-label$=" job"]',
+                # Last resort: any visible dismiss action button.
+                'button.job-card-container__action[aria-label^="Dismiss "][aria-label$=" job"]',
+                'button[class*="job-card-container__action"][aria-label*="Dismiss"][aria-label$=" job"]',
+            )
+        )
+
+        btn = None
+        for css in selectors:
+            try:
+                matches = driver.find_elements(By.CSS_SELECTOR, css)
+            except Exception:
+                matches = []
+            if matches:
+                btn = matches[0]
+                break
+
+        if btn is None:
+            log.debug(
+                "LinkedIn dismiss: no dismiss button found (reason=%s, job_id=%s)",
+                reason or "n/a",
+                jid or "n/a",
+            )
+            return False
+
+        try:
+            if self.highlight:
+                focus_element(driver, btn, pause=self.step_delay)
+            btn.click()
+        except Exception:
+            # LinkedIn overlays can intercept clicks; JS click is a practical fallback.
+            try:
+                driver.execute_script("arguments[0].click();", btn)
+            except Exception:
+                log.debug("LinkedIn dismiss: click failed (reason=%s)", reason or "n/a", exc_info=True)
+                return False
+
+        time.sleep(0.35)
+        log.info(
+            "Dismissed LinkedIn job card%s%s",
+            f" ({reason})" if reason else "",
+            f" [job_id={jid}]" if jid else "",
+        )
+        return True
+
+    def selected_job_company_link(self, driver) -> str:
+        """
+        Return the selected job's company LinkedIn URL from the detail pane, or empty string.
+        """
+        selectors = (
+            ".job-details-jobs-unified-top-card__company-name a[href]",
+            ".jobs-unified-top-card__company-name a[href]",
+            "a[data-test-app-aware-link][href*='/company/']",
+            "a[href*='linkedin.com/company/']",
+        )
+        for css in selectors:
+            try:
+                matches = driver.find_elements(By.CSS_SELECTOR, css)
+            except Exception:
+                matches = []
+            for el in matches:
+                href = (el.get_attribute("href") or "").strip()
+                if "linkedin.com/company/" in href:
+                    return href
+        return ""
+
+    def company_page_looks_consulting(self, company_driver, company_url: str) -> bool:
+        """
+        True when company page industry contains consulting/recruiting signals.
+
+        Industry signals: ``consult``, ``recruit``
+        """
+        url = (company_url or "").strip()
+        if not url:
+            return False
+        try:
+            company_driver.get(url)
+            time.sleep(1.1)
+        except Exception:
+            log.debug("Company lookup: failed to open %s", url, exc_info=True)
+            return False
+
+        industry_text = ""
+        for css in (
+            ".org-top-card-summary-info-list__info-item",
+            ".organization-top-card-summary-info-list__info-item",
+        ):
+            try:
+                els = company_driver.find_elements(By.CSS_SELECTOR, css)
+            except Exception:
+                els = []
+            for el in els:
+                t = (el.text or "").strip()
+                if t:
+                    industry_text = t
+                    break
+            if industry_text:
+                break
+
+        industry_l = industry_text.lower()
+        industry_hit = bool("consult" in industry_l or "recruit" in industry_l)
+
+        if industry_hit:
+            log.info(
+                "Company lookup flagged consulting signals (industry_hit=%s): %s",
+                industry_hit,
+                url,
+            )
+            return True
+        return False
+
     def parse_current_job_from_detail_pane(self, driver) -> dict | None:
         """
         Best-effort job dict from the **currently selected** listing (URL + right-hand detail pane).
