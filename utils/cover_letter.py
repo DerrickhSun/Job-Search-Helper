@@ -1,9 +1,9 @@
 """
 Cover Letter Generator
-Uses a DSPy ChainOfThought module to write a tailored 3-paragraph cover letter for each job.
+Uses a DSPy ChainOfThought module to write a tailored four-paragraph cover letter for each job.
 
 Optional ``example_cover_letter`` on the resume dict: a cover letter the candidate has already used or
-sent before. The model may reuse its wording, role descriptions, and employers when that field is set
+sent before. The model may reuse its tone, structure, and wording when that field is set
 (see ``COVER_INSTRUCTION``). Optional ``projects``: list of ``{title, dates, description}`` (same shape
 as produced by :class:`utils.resume_parser.ResumeParser`) is passed through to the model for grounding.
 """
@@ -37,6 +37,58 @@ def normalize_cover_letter_dashes(text: str) -> str:
     return t
 
 
+# First line must introduce the applicant by name, then the apply-for clause.
+_COVER_OPENING_OK = re.compile(
+    r"My name is\b.+,?\s*and\s+(?:I am writing to apply for|I write to apply for)\b",
+    re.IGNORECASE,
+)
+
+# Legacy apply-only opening (no "My name is") — removed when prepending the canonical intro.
+_LEGACY_APPLY_START = re.compile(
+    r"^\s*(?:"
+    r"I am writing to apply for\b"
+    r"|I write to apply for\b"
+    r"|I am applying for\b"
+    r"|I am writing to express interest in\b"
+    r")[^.!?]*[.!?]\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _canonical_opening_line(applicant_name: str, job_title: str, job_company: str) -> str:
+    name = (applicant_name or "").strip() or "Candidate"
+    title = (job_title or "").strip() or "this position"
+    company = (job_company or "").strip() or "your organization"
+    return f"My name is {name}, and I am writing to apply for the {title} position at {company}."
+
+
+def _ensure_apply_opening_sentence(
+    text: str,
+    applicant_name: str,
+    job_title: str,
+    job_company: str,
+) -> str:
+    """
+    Ensure the letter begins with: My name is {name}, and I am writing to apply for the {title} at {company}.
+    If the model omitted the name intro or used a legacy-only opening, fix it.
+    """
+    t = normalize_cover_letter_dashes((text or "").strip())
+    canonical = _canonical_opening_line(applicant_name, job_title, job_company)
+    if not t:
+        return canonical
+
+    first_line = t.split("\n", 1)[0]
+    if _COVER_OPENING_OK.search(first_line):
+        return t
+
+    m = _LEGACY_APPLY_START.match(t)
+    if m:
+        rest = t[m.end() :].strip()
+        return normalize_cover_letter_dashes(f"{canonical} {rest}".strip()) if rest else canonical
+
+    return normalize_cover_letter_dashes(f"{canonical} {t}".strip())
+
+
 def write_cover_letter_docx(body: str, path: Path | str) -> Path:
     """
     Write cover letter body to a ``.docx`` file (paragraphs split on blank lines).
@@ -61,24 +113,37 @@ def write_cover_letter_docx(body: str, path: Path | str) -> Path:
 COVER_INSTRUCTION = """Write a concise, professional cover letter for this job application.
 
 Requirements:
-- Exactly 3 short paragraphs, no fluff
-- Paragraph 1: Why this role fits and your relevant background (name this employer and role using
-  ``job_title`` and ``job_company`` where natural).
-- Paragraph 2: One specific example of relevant past work or impact. How you source it depends on
-  ``example_cover_letter``:
-  * If ``example_cover_letter`` is **non-empty**, treat it as the candidate's own prior cover letter.
-    You may **reuse, adapt, or copy** its sentences, role descriptions, employers, products, and
-    accomplishments when they still fit this application. It is trustworthy material from the user.
-  * If ``example_cover_letter`` is **empty**, ground this paragraph only in ``summary``, ``skills``, ``experience``
-    (per-role ``description`` text), and ``projects`` (per-project ``description``) below — do not invent employers,
-    titles, projects, technologies, or metrics that are not clearly supported there.
-- Paragraph 3: Enthusiasm for **this** company and role and a clear call to action (use ``job_title``,
-  ``job_company``, and ``job_description`` so the letter targets the current posting).
-- Tone: confident but not arrogant, conversational but professional
-- Do NOT include a date, address block, or "Dear Hiring Manager" — only the three body paragraphs
-- Keep under 220 words total
+- Exactly **four** paragraphs (plain body text only). No fluff; keep each paragraph focused.
+- **Opening sentence (mandatory):** The entire cover letter must **begin** with one clear sentence that is a
+  variant of: "My name is ``name``, and I am writing to apply for the ``job_title`` position at ``job_company``."
+  Use the applicant's full ``name`` from the inputs, plus the actual ``job_title`` and ``job_company`` strings.
+  Acceptable small variants: use "I write to apply for" instead of "I am writing to apply for" after the comma;
+  optional comma before "and". Do not put any text before this opening sentence.
+- Paragraph 1 — Introduction: After that opening sentence, briefly introduce the applicant's **education**
+  (degree, field, stage such as current student or recent graduate when supported by ``summary`` / ``experience``).
+  Acknowledge **this** employer's mission, product direction, or stated goals using ``job_company``, ``job_title``,
+  and ``job_description`` (what the company is trying to achieve or build — not generic praise).
+- Paragraph 2 — Fit through experience: Include **three** distinct experiences or projects that show the
+  applicant is a good fit for **this** role. Each should be a sentence or two. How you source them:
+  * If ``example_cover_letter`` is **non-empty**, treat it as the user's own sample letter (tone and structure
+    guide). You may **reuse, adapt, or echo** its phrasing when it still fits; prefer grounding specifics in
+    ``experience`` and ``projects`` below when facts conflict.
+  * Always anchor claims in ``summary``, ``skills``, ``experience`` (per-role descriptions), and ``projects``
+    — do not invent employers, titles, projects, technologies, or metrics not clearly supported there.
+  If fewer than three solid items exist in the materials, use the strongest available items once each and do
+  not invent a third.
+- Paragraph 3 — Company and role: Focus on **this** company and job. Explain what specifically draws the
+  applicant (mission, product, tech stack, team scope from ``job_description``) and why their background is a
+  strong match for ``job_title`` at ``job_company``.
+- Paragraph 4 — Conclusion: A **brief** closing that thanks the reader for their time (and consideration if
+  natural). No long repetition of paragraph 3.
+- Tone: confident but not arrogant, conversational but professional.
+- Do NOT include a date, address block, salutation (e.g. "Dear Hiring Manager"), or signature line — only the
+  four body paragraphs.
+- Aim for under 320 words total.
 
-If ``example_cover_letter`` is empty, ignore the non-empty branch above for paragraph 2."""
+If ``example_cover_letter`` is empty, ignore any branch that refers to reusing its wording except as optional
+style inspiration; still write paragraph 2 from ``summary``, ``skills``, ``experience``, and ``projects`` only."""
 
 
 class CoverLetterModule(dspy.Module):
@@ -203,16 +268,38 @@ class CoverLetterGenerator:
             job_description=(job.get("description", ""))[:4000],
         )
 
-        return normalize_cover_letter_dashes(result.cover_letter.strip())
+        raw = normalize_cover_letter_dashes(result.cover_letter.strip())
+        return _ensure_apply_opening_sentence(
+            raw,
+            str(resume.get("name") or ""),
+            str(job.get("title") or ""),
+            str(job.get("company") or ""),
+        )
 
     def _template_fallback(self, resume: dict, job: dict) -> str:
-        name = resume.get("name", "Candidate")
+        title = job.get("title") or "this role"
+        company = job.get("company") or "your organization"
         skills = ", ".join(resume.get("skills", [])[:5])
-        return normalize_cover_letter_dashes(
-            f"I am excited to apply for the {job.get('title')} position at {job.get('company')}. "
-            f"With expertise in {skills}, I believe I would be a strong addition to your team.\n\n"
-            f"Throughout my career, I have consistently delivered results in similar roles and am confident "
-            f"I can bring that same dedication to {job.get('company')}.\n\n"
-            f"I would welcome the opportunity to discuss how my background aligns with your needs. "
-            f"Thank you for considering my application.\n\nSincerely,\n{name}"
+        summary = (resume.get("summary") or "").strip()
+        edu_hint = summary[:200] + ("..." if len(summary) > 200 else "") if summary else (
+            f"My background includes strengths in {skills}."
+        )
+        display_name = str(resume.get("name") or "").strip() or "Candidate"
+        open_line = _canonical_opening_line(display_name, str(title), str(company))
+        return _ensure_apply_opening_sentence(
+            "\n\n".join(
+                [
+                    f"{open_line} {edu_hint} "
+                    f"I am motivated by opportunities where my training can support teams building impactful products.",
+                    f"Relevant experience includes work described in my resume across software engineering, collaboration, "
+                    f"and technical depth in areas such as {skills}. "
+                    f"I have applied these skills in course projects, internships, and hands-on development work.",
+                    f"This role at {company} aligns with my interests and the problems I want to solve; I am eager to "
+                    f"contribute to your goals for the {title} position and grow with the team.",
+                    f"Thank you for your time and consideration.",
+                ]
+            ),
+            display_name,
+            str(job.get("title") or ""),
+            str(job.get("company") or ""),
         )
