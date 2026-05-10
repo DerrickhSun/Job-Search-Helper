@@ -21,9 +21,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
 
-from chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies
-from cover_letter import write_cover_letter_docx
-from form_fill_rules import FormFillRulesEngine
+from .chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies
+from .cover_letter import write_cover_letter_docx
+from .form_fill_rules import FormFillRulesEngine
 
 log = logging.getLogger(__name__)
 

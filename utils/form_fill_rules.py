@@ -19,7 +19,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-DEFAULT_RULES_PATH = Path(__file__).resolve().parent / "data" / "form_fill_rules.json"
+DEFAULT_RULES_PATH = Path(__file__).resolve().parent.parent / "data" / "form_fill_rules.json"
 
 
 def label_matches(normalized_label: str, spec: dict[str, Any]) -> bool:

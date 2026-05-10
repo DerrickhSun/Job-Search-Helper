@@ -18,12 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from apply_sheets import (
+from .apply_sheets import (
     applied_sheet_row,
     format_apply_date_mdy,
     linkedin_job_ids_from_applications_sheet_csvs,
 )
-from output_paths import APPLICATIONS_ARCHIVE_CSV, APPLICATIONS_CSV
+from .output_paths import APPLICATIONS_ARCHIVE_CSV, APPLICATIONS_CSV
 
 log = logging.getLogger(__name__)
 

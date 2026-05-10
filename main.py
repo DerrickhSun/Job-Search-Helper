@@ -22,22 +22,22 @@ if sys.platform == "win32":
         except Exception:
             pass
 
-from apply_sheets import append_applied_job_row
-from chrome_driver import build_chrome, load_cookies, save_cookies
-from company_blacklist import is_company_blacklisted, load_company_blacklist
-from consulting_filter import is_consulting_listing
-from cover_letter import CoverLetterGenerator
-from dspy_lm import configure_dspy
-from form_filler import DEFAULT_HEADSHOT_IMAGE, EasyApplyFiller
-from greenhouse_session import DEFAULT_GREENHOUSE_COOKIE_PATH, run_greenhouse_sign_in_flow
-from helper_browser import run_helper_mode
-from job_records import DEFAULT_LISTINGS_LOG
-from job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher
-from matcher import JobMatcher, print_job_fit_debug
-from output_paths import migrate_legacy_root_archive_files
-from resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
-from resume_parser import ResumeParser, first_name_from_resume
-from tracker import ApplicationTracker
+from utils.apply_sheets import append_applied_job_row
+from utils.chrome_driver import build_chrome, load_cookies, save_cookies
+from utils.company_blacklist import is_company_blacklisted, load_company_blacklist
+from utils.consulting_filter import is_consulting_listing
+from utils.cover_letter import CoverLetterGenerator
+from utils.dspy_lm import configure_dspy
+from utils.form_filler import DEFAULT_HEADSHOT_IMAGE, EasyApplyFiller
+from utils.greenhouse_session import DEFAULT_GREENHOUSE_COOKIE_PATH, run_greenhouse_sign_in_flow
+from utils.helper_browser import run_helper_mode
+from utils.job_records import DEFAULT_LISTINGS_LOG
+from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher
+from utils.matcher import JobMatcher, print_job_fit_debug
+from utils.output_paths import migrate_legacy_root_archive_files
+from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
+from utils.resume_parser import ResumeParser, first_name_from_resume
+from utils.tracker import ApplicationTracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,7 +130,7 @@ def run(args):
             "Helper mode: browse LinkedIn and apply yourself; the bot assists Easy Apply fields when the "
             "modal is open. Type r + Enter here to record an apply, q + Enter to quit."
         )
-        log.info("Profile: %d skills, %d roles", len(resume["skills"]), len(resume["experience"]))
+        log.info("Profile: %d skills, %d roles, %d projects", len(resume["skills"]), len(resume["experience"]), len(resume.get("projects") or []))
         if args.easy_apply_only:
             log.info("Job search filter: Easy Apply only (LinkedIn f_AL).")
         else:
@@ -163,7 +163,12 @@ def run(args):
         Path(args.resume_cache),
         force_reparse=args.force_resume_parse,
     )
-    log.info("Profile: %d skills, %d roles", len(resume["skills"]), len(resume["experience"]))
+    log.info(
+        "Profile: %d skills, %d roles, %d projects",
+        len(resume["skills"]),
+        len(resume["experience"]),
+        len(resume.get("projects") or []),
+    )
 
     # 2. Search for jobs (Selenium + Chrome; visible by default)
     log.info(
@@ -371,7 +376,9 @@ def main():
         "after each helped job this terminal prompts: **n** records to `output/assisted_applications.csv` "
         "(same columns as `applications.csv`; dedupe also uses `output/archive/assisted_applications_history.csv`) "
         "then scans for the next gate-passing listing; **s** scans without "
-        "recording; Enter or **q** stops. Use --no-greenhouse-manual-next-listing to stop after the first passing "
+        "recording; **d** dismisses (like **s** but appends URL + date to `output/greenhouse_dismissed.csv` — "
+        "that posting is omitted from job-list collection for 30 days); Enter or **q** stops. "
+        "Use --no-greenhouse-manual-next-listing to stop after the first passing "
         "job only. Email is prefilled from --resume-cache when ``email`` is set there.",
     )
     ap.add_argument(
@@ -427,7 +434,8 @@ def main():
         "prompt in this terminal — **n** (+ Enter) if you submitted an application (append a row to "
         "`output/assisted_applications.csv`, same columns as `applications.csv`; prior rows in "
         "`output/archive/assisted_applications_history.csv` still count for skip dedupe), then scan for the next "
-        "gate-passing job; **s** to continue without recording; Enter or **q** to stop (default: on). "
+        "gate-passing job; **s** to continue without recording; **d** to dismiss (same as **s** plus "
+        "`output/greenhouse_dismissed.csv` for 30-day list skip); Enter or **q** to stop (default: on). "
         "Use --no-greenhouse-manual-next-listing to exit after the first passing job without prompts.",
     )
     ap.add_argument(

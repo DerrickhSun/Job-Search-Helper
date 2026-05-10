@@ -4,7 +4,8 @@ Uses a DSPy ChainOfThought module to write a tailored 3-paragraph cover letter f
 
 Optional ``example_cover_letter`` on the resume dict: a cover letter the candidate has already used or
 sent before. The model may reuse its wording, role descriptions, and employers when that field is set
-(see ``COVER_INSTRUCTION``).
+(see ``COVER_INSTRUCTION``). Optional ``projects``: list of ``{title, dates, description}`` (same shape
+as produced by :class:`utils.resume_parser.ResumeParser`) is passed through to the model for grounding.
 """
 
 from __future__ import annotations
@@ -16,11 +17,15 @@ from typing import Any
 
 import dspy
 
+from .resume_parser import experience_entry_description, project_entry_description
+
 log = logging.getLogger(__name__)
 
 _EXPERIENCE_BLOCK_MAX_CHARS = 20_000
+_PROJECTS_BLOCK_MAX_CHARS = 12_000
 _EXAMPLE_COVER_LETTER_MAX_CHARS = 8_000
-_MAX_BULLETS_PER_ROLE = 80
+_MAX_EXPERIENCE_DESCRIPTION_CHARS_PER_ROLE = 8000
+_MAX_PROJECT_DESCRIPTION_CHARS = 6000
 
 
 def normalize_cover_letter_dashes(text: str) -> str:
@@ -64,9 +69,9 @@ Requirements:
   * If ``example_cover_letter`` is **non-empty**, treat it as the candidate's own prior cover letter.
     You may **reuse, adapt, or copy** its sentences, role descriptions, employers, products, and
     accomplishments when they still fit this application. It is trustworthy material from the user.
-  * If ``example_cover_letter`` is **empty**, ground this paragraph only in ``summary``, ``skills``, and
-    ``experience`` below — do not invent employers, titles, projects, technologies, or metrics that
-    are not clearly supported there.
+  * If ``example_cover_letter`` is **empty**, ground this paragraph only in ``summary``, ``skills``, ``experience``
+    (per-role ``description`` text), and ``projects`` (per-project ``description``) below — do not invent employers,
+    titles, projects, technologies, or metrics that are not clearly supported there.
 - Paragraph 3: Enthusiasm for **this** company and role and a clear call to action (use ``job_title``,
   ``job_company``, and ``job_description`` so the letter targets the current posting).
 - Tone: confident but not arrogant, conversational but professional
@@ -80,7 +85,7 @@ class CoverLetterModule(dspy.Module):
     def __init__(self):
         super().__init__()
         self.write = dspy.ChainOfThought(
-            "instruction, name, email, summary, skills, experience, example_cover_letter, "
+            "instruction, name, email, summary, skills, experience, projects, example_cover_letter, "
             "job_title, job_company, job_description -> cover_letter: str"
         )
 
@@ -91,6 +96,7 @@ class CoverLetterModule(dspy.Module):
         summary: str,
         skills: str,
         experience: str,
+        projects: str,
         example_cover_letter: str,
         job_title: str,
         job_company: str,
@@ -103,6 +109,7 @@ class CoverLetterModule(dspy.Module):
             summary=summary,
             skills=skills,
             experience=experience,
+            projects=projects,
             example_cover_letter=example_cover_letter,
             job_title=job_title,
             job_company=job_company,
@@ -111,7 +118,7 @@ class CoverLetterModule(dspy.Module):
 
 
 def _format_experience_for_cover_letter(resume: dict[str, Any], *, max_chars: int = _EXPERIENCE_BLOCK_MAX_CHARS) -> str:
-    """Serialize every experience entry (title, company, dates, bullets) for the model."""
+    """Serialize every experience entry (title, company, dates, description) for the model."""
     lines: list[str] = []
     for r in resume.get("experience") or []:
         if not isinstance(r, dict):
@@ -122,16 +129,44 @@ def _format_experience_for_cover_letter(resume: dict[str, Any], *, max_chars: in
         head_bits = [x for x in (title, company, dates) if x]
         if head_bits:
             lines.append(" | ".join(head_bits))
-        bullets = r.get("bullets") or []
-        if isinstance(bullets, (list, tuple)):
-            for b in bullets[:_MAX_BULLETS_PER_ROLE]:
-                bt = str(b).strip()
-                if bt:
-                    lines.append(f"  - {bt}")
+        body = experience_entry_description(r)
+        if len(body) > _MAX_EXPERIENCE_DESCRIPTION_CHARS_PER_ROLE:
+            body = (
+                body[: _MAX_EXPERIENCE_DESCRIPTION_CHARS_PER_ROLE - 48].rstrip()
+                + "\n[... role description truncated ...]"
+            )
+        if body:
+            lines.append(body)
         lines.append("")
     text = "\n".join(lines).strip()
     if len(text) > max_chars:
         text = text[: max_chars - 48].rstrip() + "\n[... experience truncated for model input length ...]"
+    return text or "Not provided"
+
+
+def _format_projects_for_cover_letter(resume: dict[str, Any], *, max_chars: int = _PROJECTS_BLOCK_MAX_CHARS) -> str:
+    """Serialize every project entry (title, dates, description) for the model."""
+    lines: list[str] = []
+    for p in resume.get("projects") or []:
+        if not isinstance(p, dict):
+            continue
+        title = str(p.get("title") or "").strip()
+        dates = str(p.get("dates") or "").strip()
+        head_bits = [x for x in (title, dates) if x]
+        if head_bits:
+            lines.append(" | ".join(head_bits))
+        body = project_entry_description(p)
+        if len(body) > _MAX_PROJECT_DESCRIPTION_CHARS:
+            body = (
+                body[: _MAX_PROJECT_DESCRIPTION_CHARS - 48].rstrip()
+                + "\n[... project description truncated ...]"
+            )
+        if body:
+            lines.append(body)
+        lines.append("")
+    text = "\n".join(lines).strip()
+    if len(text) > max_chars:
+        text = text[: max_chars - 48].rstrip() + "\n[... projects truncated for model input length ...]"
     return text or "Not provided"
 
 
@@ -161,6 +196,7 @@ class CoverLetterGenerator:
             summary=(resume.get("summary", "") or "")[:500],
             skills=", ".join(resume.get("skills", [])[:12]),
             experience=_format_experience_for_cover_letter(resume),
+            projects=_format_projects_for_cover_letter(resume),
             example_cover_letter=example,
             job_title=job.get("title", ""),
             job_company=job.get("company", ""),

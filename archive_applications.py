@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import csv
 
-from output_paths import (
+from utils.output_paths import (
     APPLICATIONS_ARCHIVE_CSV as ARCHIVE,
     APPLICATIONS_CSV as APPLICATIONS,
     migrate_legacy_root_archive_files,

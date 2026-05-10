@@ -3,7 +3,9 @@ Resume profile JSON cache (``data/resume_profile.json`` by default).
 
 After the first parse from PDF/DOCX, the structured dict is written so you can edit fields
 (e.g. ``linkedin_url``, ``website_url``, ``example_cover_letter`` — a prior cover letter the bot may reuse
-for phrasing) without re-parsing. Re-parse with ``--force-resume-parse``.
+for phrasing) without re-parsing. Re-parse with ``--force-resume-parse``. Each ``experience`` item includes
+a string ``description`` (role narrative); older caches may still list ``bullets`` and are read as a fallback.
+Each ``projects`` item is ``title``, ``dates``, and ``description`` (optional legacy ``bullets`` for body text).
 
 Optional ``experience_years_cap`` (number): caps the resume ``years`` heuristic used only for
 education/years **gates** in ``matcher`` (see ``_estimate_years_experience``), e.g. when calendar
@@ -17,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from resume_parser import ResumeParser
+from .resume_parser import ResumeParser
 
 log = logging.getLogger(__name__)
 

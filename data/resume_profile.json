@@ -6,42 +6,33 @@
   "email": "derrick.han.sun@gmail.com",
   "phone": "858-397-3992",
   "location": "San Diego, CA, USA",
-  "experience_years_cap": 1,
+  "experience_years_cap": 2,
   "example_cover_letter": "I am excited to apply for the --- position at ---. The opportunity to build software solutions that power airline operations, logistics, and customer experience at a global leader in private aviation strongly aligns with my interest in developing impactful, real-world systems.\nAs a Master's in Computer Science, I have a background in computer science, which has provided me with a strong foundation in software engineering principles, including designing, implementing, and testing scalable applications. Through my academic and project experience, I have worked with languages such as Python and Java to build data-driven systems and automation tools. I have also developed projects that required integrating multiple components, handling diverse data formats, and iterating through design and testing cycles - skills that directly support building reliable, production-ready software.\nI am particularly drawn to this role’s emphasis on collaboration, automation, and continuous delivery. I have experience working in iterative, team-based environments and value writing clean, testable code while incorporating automated testing and deployment practices. I am motivated by solving complex problems and continuously improving systems, and I am eager to contribute to building robust software that enhances operational efficiency and customer experience at ---.\nI would welcome the opportunity to contribute to your engineering team and grow within an organization known for innovation, reliability, and excellence. Thank you for your time and consideration.",
   "skills": [
-    "python",
     "javascript",
     "java",
-    "c++",
-    "go",
     "sql",
-    "postgresql",
-    "mongodb",
-    "aws",
-    "docker",
     "machine learning",
     "deep learning",
     "tensorflow",
-    "pytorch",
-    "git",
-    "❖ Programming Languages: Python",
+    "Python",
     "C",
     "R",
     "MATLAB",
     "Swift",
     "HTML/CSS",
-    "❖ ML/AI Frameworks: PyTorch",
+    "PyTorch",
     "DSPy",
     "Scikit-learn",
-    "❖ Data Tools: Pandas",
+    "Data Tools: Pandas",
     "NumPy",
     "Matplotlib",
     "Seaborn",
     "RStudio",
     "Jupyter",
-    "❖ Cloud & Databases: AWS S3",
+    "AWS S3",
     "Redshift",
-    "❖ Development Tools: Git",
+    "Git",
     "Prefect",
     "XCode",
     "LaTeX",
@@ -50,17 +41,62 @@
   ],
   "experience": [
     {
-      "title": "automating workflows, building predictive models, and",
-      "company": "optimizing AI architectures. US Citizen. Available to work immediately, open to relocation.",
-      "dates": "",
-      "bullets": []
+      "title": "Teaching Assistant",
+      "company": "Purdue University",
+      "dates": "Fall 2024 & Spring 2025",
+      "description": "Worked as a graduate teacher's assistant at Purdue University for CS 361 (Great Issues In Computer Science) and CS 182 (Foundations of Computer Science). As a GTA, I designed grading rubrics, led undergraduate assistants in grading assignments, and provided consistent professional correspondence with students and the professors in a timely manner."
+    },
+    {
+      "title": "Data Scientist Intern",
+      "company": "Bridger Investment Partners",
+      "dates": "May 2024 - August 2024",
+      "description": "Automated data processing workflows with Prefect, removing manual workflows. Ran statistical analysis of mortgage data with Python & SQL on AWS S3 & Redshift."
+    },
+    {
+      "title": "Research Assistant",
+      "company": "UC Berkeley",
+      "dates": "December 2023 - May 2024",
+      "description": "Conducted comparative analysis of transformer architectures (GPT-2, Mamba, LLaMA) on in-context learning tasks. Results available on GitHub (code and arXiv)."
+    },
+    {
+      "title": "iOS Developer Intern",
+      "company": "NewsBreak",
+      "dates": "May 2022 - August 2022",
+      "description": "Implemented the Discover page of the NewsBreak iOS app using Swift and UIKit. Developed data-fetching to retrieve & display news for user-selected organizations."
+    }
+  ],
+  "projects": [
+    {
+      "title": "Webnovel Downloader and Translator",
+      "dates": "2025 - 2026",
+      "description": "Personal project that downloads online content and calls OpenAI API to translate it.\nUtilizes Selenium to display a menu and automatically navigate the internet."
+    },
+    {
+      "title": "Deep Learning for Mushroom Classification",
+      "dates": "Spring 2025",
+      "description": "Built decision trees, neural networks, and naïve Bayes classifiers to determine the edibility of mushrooms with >90% accuracy.\nDeployed LIME for interpretability of the models."
+    },
+    {
+      "title": "Uncertainty Quantification with Neural Networks",
+      "dates": "Spring 2025",
+      "description": "Trained neural networks to approximate uncertainty in Walmart Sales, evaluating their performance with quantile calibration error curves.\nDeveloped a NN model capable of predicting uncertainty with 10% margin of error."
+    },
+    {
+      "title": "Transformer Optimization",
+      "dates": "Fall 2023",
+      "description": "Tested transformer performance on various simple tasks with ReLU-attention and quantization optimizations, reducing model runtime on simple tasks by 0.1 seconds."
     }
   ],
   "education": [
     {
-      "degree": "❖ Purdue University, M.S. in Computer Science",
-      "institution": "August 2024 – May 2026",
-      "year": "o Specialization in AI and Machine Learning with focus on Computer Security"
+      "degree": "M.S. in Computer Science",
+      "institution": "Purdue University",
+      "year": "August 2024 - May 2026"
+    },
+    {
+      "degree": "B.A. in Computer Science and in Applied Math",
+      "institution": "UC Berkeley",
+      "year": "June 2020 - May 2024"
     }
   ],
   "summary": "M.S. in Computer Science with software engineering skills, industry internship, and \nresearch in machine learning. Experience automating workflows, building predictive models, and \noptimizing AI architectures. US Citizen. Available to work immediately, open to relocation. \nEducation \n❖ Purdue University, M.S. in Computer Science           \n                     August 2024 – May 2026 \no Specialization in AI and Machine Learning with focus on Computer Security \no Advanced courses: Deep learning, P"

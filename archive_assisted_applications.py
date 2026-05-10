@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import csv
 
-from output_paths import (
+from utils.output_paths import (
     ASSISTED_APPLICATIONS_HISTORY_CSV as HISTORY,
     ASSISTED_APPLICATIONS_CSV as ASSISTED,
     migrate_legacy_root_archive_files,

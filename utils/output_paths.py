@@ -11,6 +11,7 @@ APPLICATIONS_CSV = OUTPUT_DIR / "applications.csv"
 APPLICATIONS_ARCHIVE_CSV = ARCHIVE_DIR / "applications_archive.csv"
 ASSISTED_APPLICATIONS_CSV = OUTPUT_DIR / "assisted_applications.csv"
 ASSISTED_APPLICATIONS_HISTORY_CSV = ARCHIVE_DIR / "assisted_applications_history.csv"
+GREENHOUSE_DISMISSED_CSV = OUTPUT_DIR / "greenhouse_dismissed.csv"
 
 
 def migrate_legacy_root_archive_files() -> None:

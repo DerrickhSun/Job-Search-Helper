@@ -5,6 +5,39 @@ Extracts structured data from PDF or DOCX resumes using PyMuPDF and regex/spaCy.
 
 import re
 from pathlib import Path
+from typing import Any
+
+
+def project_entry_description(project: dict[str, Any]) -> str:
+    """
+    Body text for one ``projects`` item: ``description`` when present, otherwise legacy ``bullets``
+    joined with newlines.
+    """
+    if not isinstance(project, dict):
+        return ""
+    d = str(project.get("description") or "").strip()
+    if d:
+        return d
+    bullets = project.get("bullets")
+    if isinstance(bullets, (list, tuple)):
+        return "\n".join(str(b).strip() for b in bullets if str(b).strip())
+    return ""
+
+
+def experience_entry_description(role: dict[str, Any]) -> str:
+    """
+    Body text for one ``experience`` item: ``description`` when present, otherwise legacy ``bullets``
+    joined with newlines (older ``resume_profile.json`` from before the description field).
+    """
+    if not isinstance(role, dict):
+        return ""
+    d = str(role.get("description") or "").strip()
+    if d:
+        return d
+    bullets = role.get("bullets")
+    if isinstance(bullets, (list, tuple)):
+        return "\n".join(str(b).strip() for b in bullets if str(b).strip())
+    return ""
 
 
 def first_name_from_resume(resume: dict) -> str | None:
@@ -26,7 +59,8 @@ class ResumeParser:
       - email: email address
       - phone: phone number
       - skills: list of skill strings
-      - experience: list of {title, company, dates, bullets}
+      - experience: list of {title, company, dates, description}
+      - projects: list of {title, dates, description}
       - education: list of {degree, institution, year}
       - summary: optional summary/objective section
     """
@@ -59,6 +93,7 @@ class ResumeParser:
             "phone": self._extract_phone(text),
             "skills": self._extract_skills(text),
             "experience": self._extract_experience(text),
+            "projects": self._extract_projects(text),
             "education": self._extract_education(text),
             "summary": self._extract_summary(text),
         }
@@ -153,10 +188,44 @@ class ResumeParser:
                 "title": lines[0] if lines else "",
                 "company": lines[1] if len(lines) > 1 else "",
                 "dates": lines[2] if len(lines) > 2 else "",
-                "bullets": lines[3:],
+                "description": "\n".join(lines[3:]).strip(),
             })
 
         return roles
+
+    def _extract_projects(self, text: str) -> list[dict]:
+        """
+        Heuristic: ``Projects`` / ``Personal projects`` section, split into entries like experience.
+        """
+        section_match = re.search(
+            r"(?:projects|personal projects|selected projects)[:\s]*(.*?)"
+            r"(?=(?:^|\n)\s*(?:education|experience|work history|employment)\b"
+            r"|(?:^|\n)\s*programming skills\b"
+            r"|(?:^|\n)\s*skills\s*[:\s]"
+            r"|(?:^|\n)\s*(?:certifications|summary|objective|references)\b"
+            r"|(?:^|\n)\s*research and publications\b"
+            r"|\Z)",
+            text,
+            re.IGNORECASE | re.DOTALL | re.MULTILINE,
+        )
+        if not section_match:
+            return []
+
+        section = section_match.group(1)
+        blocks = re.split(r"\n{2,}", section.strip())
+        out: list[dict] = []
+
+        for block in blocks[:15]:
+            lines = [l.strip() for l in block.splitlines() if l.strip()]
+            if not lines:
+                continue
+            out.append({
+                "title": lines[0] if lines else "",
+                "dates": lines[1] if len(lines) > 1 else "",
+                "description": "\n".join(lines[2:]).strip(),
+            })
+
+        return out
 
     def _extract_education(self, text: str) -> list[dict]:
         section_match = re.search(

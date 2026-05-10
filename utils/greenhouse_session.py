@@ -21,18 +21,19 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from chrome_driver import build_chrome, focus_element, save_cookies
-from cover_letter import CoverLetterGenerator, write_cover_letter_docx
-from dspy_lm import configure_dspy
-from form_fill_rules import DEFAULT_RULES_PATH, FormFillRulesEngine
-from job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS
-from matcher import JobMatcher, print_job_fit_debug
-from output_paths import (
+from .chrome_driver import build_chrome, focus_element, save_cookies
+from .cover_letter import CoverLetterGenerator, write_cover_letter_docx
+from .dspy_lm import configure_dspy
+from .form_fill_rules import DEFAULT_RULES_PATH, FormFillRulesEngine
+from .job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS
+from .matcher import JobMatcher, print_job_fit_debug
+from .output_paths import (
     ASSISTED_APPLICATIONS_CSV as ASSISTED_GREENHOUSE_CSV,
     ASSISTED_APPLICATIONS_HISTORY_CSV as ASSISTED_GREENHOUSE_HISTORY_CSV,
+    GREENHOUSE_DISMISSED_CSV,
 )
-from resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
-from tracker import ApplicationTracker, normalize_greenhouse_job_url
+from .resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
+from .tracker import ApplicationTracker, normalize_greenhouse_job_url
 
 log = logging.getLogger(__name__)
 
@@ -211,13 +212,137 @@ def _skip_keys_from_assisted_greenhouse_csv() -> set[str]:
     )
 
 
+_DISMISS_RETENTION_DAYS = 30
+
+
+def _parse_greenhouse_dismissed_date(s: str):
+    """Parse ``YYYY-MM-DD`` or ISO datetime string to a ``date``, or ``None``."""
+    from datetime import date, datetime, timezone
+
+    t = (s or "").strip()
+    if not t:
+        return None
+    if len(t) >= 10 and t[4] == "-" and t[7] == "-":
+        try:
+            return date.fromisoformat(t[:10])
+        except ValueError:
+            return None
+    try:
+        if "T" in t:
+            dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.date()
+    except ValueError:
+        return None
+    return None
+
+
+def prune_and_read_greenhouse_dismissed_url_keys() -> frozenset[str]:
+    """
+    Remove dismissals older than :data:`_DISMISS_RETENTION_DAYS` calendar days (vs :func:`datetime.date.today`),
+    rewrite ``output/greenhouse_dismissed.csv`` with kept rows, return normalized URL keys for dedupe/skip.
+    """
+    from datetime import date
+
+    p = GREENHOUSE_DISMISSED_CSV
+    today = date.today()
+    keys: set[str] = set()
+    kept: list[tuple[str, str]] = []
+    if not p.is_file():
+        return frozenset()
+    try:
+        with p.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+    except OSError as e:
+        log.warning("Could not read %s: %s — skipping dismissal skip list.", p, e)
+        return frozenset()
+
+    start = 0
+    if rows and len(rows[0]) >= 2:
+        a = (rows[0][0] or "").strip().lower()
+        b = (rows[0][1] or "").strip().lower()
+        if a == "url" and b in ("dismissed_on", "date", "dismissed_at"):
+            start = 1
+
+    pruned = 0
+    for row in rows[start:]:
+        if not row:
+            continue
+        u = (row[0] or "").strip()
+        if not u:
+            continue
+        date_s = (row[1] or "").strip() if len(row) > 1 else ""
+        d = _parse_greenhouse_dismissed_date(date_s)
+        if d is None:
+            kept.append((u, date_s or today.isoformat()))
+            k = normalize_greenhouse_job_url(u)
+            if k:
+                keys.add(k)
+            continue
+        if (today - d).days > _DISMISS_RETENTION_DAYS:
+            pruned += 1
+            continue
+        kept.append((u, d.isoformat()))
+        k = normalize_greenhouse_job_url(u)
+        if k:
+            keys.add(k)
+
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["url", "dismissed_on"])
+            w.writerows(kept)
+    except OSError as e:
+        log.warning("Could not rewrite %s after pruning dismissals: %s", p, e)
+
+    if pruned:
+        log.info(
+            "Greenhouse dismissals: pruned %d row(s) older than %d days — %d kept in %s.",
+            pruned,
+            _DISMISS_RETENTION_DAYS,
+            len(kept),
+            p.as_posix(),
+        )
+    return frozenset(keys)
+
+
+def _append_greenhouse_dismissed(listing_url: str, *, source: str = "terminal") -> None:
+    from datetime import date
+
+    u = (listing_url or "").strip()
+    if not u:
+        log.warning("Greenhouse dismiss: empty URL — not writing CSV.")
+        return
+    GREENHOUSE_DISMISSED_CSV.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not GREENHOUSE_DISMISSED_CSV.is_file()
+    row_date = date.today().isoformat()
+    with GREENHOUSE_DISMISSED_CSV.open("a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if new_file:
+            w.writerow(["url", "dismissed_on"])
+        w.writerow([u, row_date])
+    log.info(
+        "Recorded Greenhouse dismiss (%s) to %s",
+        source,
+        GREENHOUSE_DISMISSED_CSV.resolve(),
+    )
+
+
 def load_greenhouse_skip_url_keys(db_path: Path | str | None = None) -> frozenset[str]:
     """
     Normalized Greenhouse job ``url`` keys to skip when collecting listings: ``applied`` / ``apply_opened``
     rows in the applications database plus URLs in ``output/assisted_applications.csv`` and
-    ``output/archive/assisted_applications_history.csv`` (archived manual ``n`` rows).
+    ``output/archive/assisted_applications_history.csv`` (archived manual ``n`` rows), plus URLs in
+    ``output/greenhouse_dismissed.csv`` dismissed within the last 30 days
+    (file is pruned of older rows on each load).
     """
     keys: set[str] = set(_skip_keys_from_assisted_greenhouse_csv())
+    try:
+        keys |= set(prune_and_read_greenhouse_dismissed_url_keys())
+    except Exception as e:
+        log.warning("Could not merge Greenhouse dismissal skip keys: %s", e)
     p = Path(db_path) if db_path is not None else DEFAULT_APPLICATIONS_DB
     if p.is_file():
         try:
@@ -624,7 +749,8 @@ def collect_my_greenhouse_view_job_listings(
     if the card layout differs). Order follows DOM; duplicate URLs are dropped (first card wins).
 
     If ``skip_url_keys`` is set (from :func:`load_greenhouse_skip_url_keys`), rows whose normalized URL
-    matches a prior ``applied`` / ``apply_opened`` Greenhouse application in the tracker DB are omitted.
+    matches a prior ``applied`` / ``apply_opened`` application, assisted CSV, recent dismissal
+    (``output/greenhouse_dismissed.csv``), etc., are omitted.
     """
     try:
         raw = driver.execute_script(
@@ -712,9 +838,10 @@ def collect_my_greenhouse_view_job_listings(
             filtered.append(row)
         if skipped:
             log.info(
-                "Greenhouse job list: skipped %d listing(s) whose URL matches a prior application in %s.",
+                "Greenhouse job list: skipped %d listing(s) whose URL matches a prior application, assisted "
+                "record, or recent dismissal (see %s).",
                 skipped,
-                DEFAULT_APPLICATIONS_DB,
+                GREENHOUSE_DISMISSED_CSV.as_posix(),
             )
         out = filtered
     return out
@@ -774,26 +901,28 @@ def _wait_for_greenhouse_view_job_links(
     min_count: int = 1,
     max_seconds: float = 90.0,
     poll_s: float = 1.0,
-    skip_url_keys: frozenset[str] | None = None,
 ) -> bool:
     """
-    Poll until ``collect_my_greenhouse_view_job_listings`` returns at least ``min_count`` entries.
-    After login, /jobs can render cards before **View job** anchors hydrate; scrolling first
-    would see zero links and skip useful work.
+    Poll until ``collect_my_greenhouse_view_job_listings`` reports at least ``min_count`` **View job** rows
+    in the DOM (hydration / layout ready).
+
+    Uses **no** ``skip_url_keys`` filter so we do not block when the first visible cards are only duplicates
+    (applied / assisted / dismissed): the filtered count can stay at 0 until we scroll to load more rows.
+    Callers should pass ``skip_url_keys`` only on the **post-scroll** collection pass.
     """
     deadline = time.monotonic() + max(5.0, float(max_seconds))
     poll_s = max(0.35, float(poll_s))
     min_count = max(1, int(min_count))
     last_n = 0
     while time.monotonic() < deadline:
-        listings = collect_my_greenhouse_view_job_listings(driver, skip_url_keys=skip_url_keys)
+        listings = collect_my_greenhouse_view_job_listings(driver, skip_url_keys=None)
         last_n = len(listings)
         if last_n >= min_count:
-            log.info("MyGreenhouse /jobs: %d View job link(s) ready.", last_n)
+            log.info("MyGreenhouse /jobs: %d View job link(s) in DOM (ready to scroll / dedupe).", last_n)
             return True
         time.sleep(poll_s)
     log.warning(
-        "MyGreenhouse /jobs: timed out after %.0fs with only %d View job link(s) — continuing to scroll/collect.",
+        "MyGreenhouse /jobs: timed out after %.0fs with only %d View job link(s) in DOM — continuing to scroll/collect.",
         max_seconds,
         last_n,
     )
@@ -1040,7 +1169,7 @@ def _assisted_greenhouse_job_publication_dict(entry: dict[str, str | None], job:
 def _append_assisted_greenhouse_application(job: dict[str, Any]) -> None:
     from datetime import datetime, timezone
 
-    from apply_sheets import applied_sheet_row, format_apply_date_mdy
+    from .apply_sheets import applied_sheet_row, format_apply_date_mdy
 
     ASSISTED_GREENHOUSE_CSV.parent.mkdir(parents=True, exist_ok=True)
     new_file = not ASSISTED_GREENHOUSE_CSV.is_file()
@@ -1067,6 +1196,7 @@ def _prompt_greenhouse_after_assisted_job(
 
     * ``next_applied`` — ``n`` (or ``y`` / ``next``): record to assisted CSV, then scan for the next listing.
     * ``next_skip`` — ``s`` (or ``skip``): do not record; still scan for the next gate-passing job.
+    * ``next_dismiss`` — ``d`` (or ``dismiss``): like ``s`` but append URL + date to ``greenhouse_dismissed.csv`` (skipped in job search collection for 30 days).
     * ``stay`` — Enter alone or ``q``: stop the helper loop here.
     """
     first_next_listing_num = listing_num + 1
@@ -1085,6 +1215,9 @@ def _prompt_greenhouse_after_assisted_job(
         f"  • Type 'n' then Enter if you submitted an application — record to {ASSISTED_GREENHOUSE_CSV.as_posix()}, "
         f"{forward_hint}\n"
         f"  • Type 's' then Enter to continue without recording (skipped or abandoned apply).\n"
+        f"  • Type 'd' then Enter to dismiss — same as 's' but record URL + today's date to "
+        f"{GREENHOUSE_DISMISSED_CSV.as_posix()} (that job is omitted from MyGreenhouse job-list collection for "
+        f"{_DISMISS_RETENTION_DAYS} days).\n"
         f"  • Enter alone or 'q' to stop here.\n"
         "Your choice: "
     )
@@ -1104,6 +1237,8 @@ def _prompt_greenhouse_after_assisted_job(
         return "stay"
     if token in ("s", "skip"):
         return "next_skip"
+    if token in ("d", "dismiss"):
+        return "next_dismiss"
     if token in ("n", "y", "yes", "next", "applied"):
         return "next_applied"
     log.info("Unrecognized input %r — stopping (same as Enter).", (raw or "").strip()[:40])
@@ -1148,11 +1283,14 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
     ``applied`` / ``apply_opened`` record in ``data/applications.db`` are omitted (same URL normalization as
     when collecting).
 
-    Listings that fail the gate are skipped; the browser moves to the next URL until a pass or the list ends.
+    Listings that fail the gate are skipped (**also appended to** ``output/greenhouse_dismissed.csv`` **so they are
+    omitted from MyGreenhouse job-list collection for 30 days**, same as terminal **d**); the browser moves to the
+    next URL until a pass or the list ends.
     With ``--greenhouse-manual-next-listing`` (default on), after **each** successful autofill/cover/checkbox pass
     the terminal asks for **n** (submitted application — append a row to ``output/assisted_applications.csv`` in the
-    same layout as ``applications.csv``), **s** (continue to the next gate-passing job without recording), or
-    **Enter** / **q** to stop. Disable that loop with ``--no-greenhouse-manual-next-listing``.
+    same layout as ``applications.csv``), **s** (continue to the next gate-passing job without recording),
+    **d** (dismiss — like **s** but also append URL + date to ``output/greenhouse_dismissed.csv`` for 30-day
+    omission from job-list collection), or **Enter** / **q** to stop. Disable that loop with ``--no-greenhouse-manual-next-listing``.
     Use ``--greenhouse-gate-probe-max-listings`` to cap how many URLs are in the collected list for probing (0 =
     entire list).
     """
@@ -1174,9 +1312,11 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
         ordered.append(entry)
     if skipped_dup:
         log.info(
-            "Greenhouse helper: omitted %d listing(s) already recorded in %s (duplicate job URL).",
+            "Greenhouse helper: omitted %d listing(s) whose URL matches a prior application, assisted record, "
+            "or recent dismissal (see %s and %s).",
             skipped_dup,
             DEFAULT_APPLICATIONS_DB,
+            GREENHOUSE_DISMISSED_CSV.as_posix(),
         )
     if not ordered:
         log.info("No View job links — skipping Greenhouse application helper.")
@@ -1248,6 +1388,7 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
             None,
             note="greenhouse_gates_failed",
         )
+        _append_greenhouse_dismissed(url, source="gates_failed")
 
     if chosen_index < 0 or gate_pass_job is None:
         log.warning(
@@ -1293,6 +1434,11 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
             break
         if action == "next_applied":
             _append_assisted_greenhouse_application(pub)
+        elif action == "next_dismiss":
+            _append_greenhouse_dismissed(
+                (pub.get("url") or current_entry.get("url") or "").strip(),
+                source="terminal_d",
+            )
 
         found_k: int | None = None
         found_entry: dict[str, str | None] | None = None
@@ -1346,6 +1492,7 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
                     None,
                     note="greenhouse_gates_failed_scan",
                 )
+                _append_greenhouse_dismissed(url, source="gates_failed")
                 continue
             found_k = k
             found_entry = entry
@@ -1418,7 +1565,7 @@ def _scrape_greenhouse_job_for_cover_letter(
 
     Description text is taken from the **richest** block on the page (including ``.job__description`` and
     embedded Greenhouse iframes). A single ``querySelector('#content, …')`` often hits a small region and
-    drops qualification bullets, which makes experience gates see ``unspecified`` incorrectly.
+    drops qualification text, which makes experience gates see ``unspecified`` incorrectly.
     """
     try:
         raw = _harvest_greenhouse_job_from_open_tabs(driver)
@@ -1460,6 +1607,72 @@ def _click_greenhouse_attach_for_cover(root: Any, driver: Any) -> bool:
         except Exception:
             continue
     return False
+
+
+def _probe_greenhouse_cover_in_document(driver: Any, *, timeout_s: float) -> bool:
+    """
+    True if this browsing context has Greenhouse's standard cover-letter upload UI
+    (``upload-label-cover_letter`` / ``input#cover_letter`` / wrapper ``div.file-upload``).
+    """
+    total = max(0.5, float(timeout_s))
+    per = max(0.35, total / 3.0)
+    for by, sel in (
+        (By.ID, "upload-label-cover_letter"),
+        (By.CSS_SELECTOR, 'input#cover_letter[type="file"]'),
+        (
+            By.XPATH,
+            "//div[contains(@class,'file-upload')][.//label[@id='upload-label-cover_letter']]",
+        ),
+    ):
+        try:
+            el = WebDriverWait(driver, per).until(EC.presence_of_element_located((by, sel)))
+            if el is not None:
+                return True
+        except (TimeoutException, NoSuchElementException):
+            continue
+        except Exception:
+            continue
+    return False
+
+
+def _probe_greenhouse_cover_in_iframes_recursive(driver: Any, *, timeout_s: float, depth: int) -> bool:
+    if depth > 14:
+        return False
+    sub_wait = float(timeout_s) if depth == 0 else min(3.0, max(0.6, float(timeout_s) * 0.35))
+    if _probe_greenhouse_cover_in_document(driver, timeout_s=sub_wait):
+        return True
+    try:
+        n = len(driver.find_elements(By.CSS_SELECTOR, "iframe, frame"))
+    except Exception:
+        n = 0
+    for i in range(n):
+        try:
+            driver.switch_to.frame(i)
+        except Exception:
+            continue
+        try:
+            if _probe_greenhouse_cover_in_iframes_recursive(driver, timeout_s=timeout_s, depth=depth + 1):
+                return True
+        finally:
+            try:
+                driver.switch_to.parent_frame()
+            except Exception:
+                _greenhouse_switch_default_content(driver)
+                return False
+    return False
+
+
+def _greenhouse_cover_letter_widget_available(driver: Any, *, timeout_s: float = 5.0) -> bool:
+    """
+    Whether the apply flow exposes a Greenhouse cover-letter upload (same discovery order as upload:
+    current context first, then ``default_content`` + nested iframes).
+    """
+    tmo = max(1.0, float(timeout_s))
+    if _probe_greenhouse_cover_in_document(driver, timeout_s=tmo):
+        return True
+    log.debug("Greenhouse cover letter control not in current document — probing from top through iframes.")
+    _greenhouse_switch_default_content(driver)
+    return _probe_greenhouse_cover_in_iframes_recursive(driver, timeout_s=tmo, depth=0)
 
 
 def _try_upload_greenhouse_cover_in_document(driver: Any, docx_path: Path, *, timeout_s: float) -> bool:
@@ -1569,25 +1782,34 @@ def maybe_upload_greenhouse_cover_letter(
     resume: dict[str, Any] | None = None,
 ) -> None:
     """
-    On the current Greenhouse application page, generate a cover letter (same generator as LinkedIn) and
-    attach the DOCX via the **Cover Letter** file field.
+    On the current Greenhouse application page: if a standard cover-letter upload control exists, generate
+    a cover letter (same generator as LinkedIn) and attach the DOCX. Skips generation when no such control
+    is found (optional-field listings, wrong embed, etc.).
     """
-    if not view_job_hrefs:
-        return
-    listing = (view_job_hrefs[0] or "").strip()
+    listing = (listing_url or "").strip()
     if not listing:
+        log.debug("Skipping Greenhouse cover letter: empty listing URL.")
         return
-    cache = Path(getattr(args, "resume_cache", DEFAULT_RESUME_CACHE_PATH))
-    resume_pdf = Path(getattr(args, "resume", DEFAULT_RESUME_FILE))
-    try:
-        resume = load_or_build_resume(
-            resume_pdf if resume_pdf.is_file() else None,
-            cache,
-            force_reparse=bool(getattr(args, "force_resume_parse", False)),
-        )
-    except Exception as e:
-        log.warning("Skipping Greenhouse cover letter: could not load resume (%s).", e)
+
+    if not _greenhouse_cover_letter_widget_available(driver, timeout_s=5.0):
+        log.info("No Greenhouse cover letter upload on this page — skipping cover letter generation.")
         return
+
+    if resume is not None:
+        resume_dict = resume
+    else:
+        cache = Path(getattr(args, "resume_cache", DEFAULT_RESUME_CACHE_PATH))
+        resume_pdf = Path(getattr(args, "resume", DEFAULT_RESUME_FILE))
+        try:
+            resume_dict = load_or_build_resume(
+                resume_pdf if resume_pdf.is_file() else None,
+                cache,
+                force_reparse=bool(getattr(args, "force_resume_parse", False)),
+            )
+        except Exception as e:
+            log.warning("Skipping Greenhouse cover letter: could not load resume (%s).", e)
+            return
+
     try:
         job = _scrape_greenhouse_job_for_cover_letter(
             driver,
@@ -1595,7 +1817,12 @@ def maybe_upload_greenhouse_cover_letter(
             company_from_search_card=company_from_search_card,
             title_from_search_card=title_from_search_card,
         )
-        cover_text = CoverLetterGenerator().generate(resume, job)
+        log.info(
+            "Generating Greenhouse cover letter for %r at %r …",
+            job.get("title") or "",
+            job.get("company") or "",
+        )
+        cover_text = CoverLetterGenerator().generate(resume_dict, job)
     except Exception as e:
         log.warning("Skipping Greenhouse cover letter: generation failed: %s", e)
         return
@@ -1612,7 +1839,13 @@ def maybe_upload_greenhouse_cover_letter(
         log.warning("Could not write Greenhouse cover letter DOCX: %s", e)
         return
     time.sleep(0.8)
-    _upload_file_to_greenhouse_cover_letter_input(driver, out_file)
+    if _upload_file_to_greenhouse_cover_letter_input(driver, out_file):
+        log.info("Greenhouse cover letter attached: %s", out_file.resolve())
+    else:
+        log.warning(
+            "Greenhouse cover letter DOCX written to %s but upload control was not found on the page.",
+            out_file.resolve(),
+        )
 
 
 def _greenhouse_fieldset_legend_text(fs: Any) -> str:
@@ -1819,7 +2052,7 @@ def run_greenhouse_sign_in_flow(args) -> None:
                 jobs_url,
             )
             # CloudFront/WAF sometimes returns an HTML 403 block page; wait and re-navigate a few times.
-            _CLOUDFRONT_BLOCK_MAX_ATTEMPTS = 4  # 1 try + 3 retries after 10s waits
+            _CLOUDFRONT_BLOCK_MAX_ATTEMPTS = 6  # 1 initial load + 5 retries (10s wait between each)
             loaded_ok = False
             for block_try in range(_CLOUDFRONT_BLOCK_MAX_ATTEMPTS):
                 driver.get(jobs_url)
@@ -1845,7 +2078,7 @@ def run_greenhouse_sign_in_flow(args) -> None:
                 )
                 continue
             time.sleep(0.5)
-            _wait_for_greenhouse_view_job_links(driver, max_seconds=ready_max, skip_url_keys=skip_keys)
+            _wait_for_greenhouse_view_job_links(driver, max_seconds=ready_max)
             _scroll_greenhouse_jobs_to_load_more(
                 driver,
                 max_rounds=int(args.greenhouse_scroll_max_rounds),

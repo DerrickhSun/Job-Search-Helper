@@ -26,8 +26,8 @@ from selenium.common.exceptions import NoSuchElementException
 _MAX_QUOTA = 2**30
 from selenium.webdriver.common.by import By
 
-from chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies, save_cookies
-from job_records import append_listing_record
+from .chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies, save_cookies
+from .job_records import append_listing_record
 
 log = logging.getLogger(__name__)
 

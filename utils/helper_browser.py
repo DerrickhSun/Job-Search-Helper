@@ -25,15 +25,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from apply_sheets import append_applied_job_row
-from chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, load_cookies, save_cookies
-from company_blacklist import is_company_blacklisted, load_company_blacklist
-from consulting_filter import is_consulting_listing
-from cover_letter import CoverLetterGenerator, write_cover_letter_docx
-from form_filler import EasyApplyFiller
-from job_searcher import JobSearcher
-from matcher import JobMatcher, print_job_fit_debug
-from tracker import ApplicationTracker
+from .apply_sheets import append_applied_job_row
+from .chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, load_cookies, save_cookies
+from .company_blacklist import is_company_blacklisted, load_company_blacklist
+from .consulting_filter import is_consulting_listing
+from .cover_letter import CoverLetterGenerator, write_cover_letter_docx
+from .form_filler import EasyApplyFiller
+from .job_searcher import JobSearcher
+from .matcher import JobMatcher, print_job_fit_debug
+from .tracker import ApplicationTracker
 
 log = logging.getLogger(__name__)
 

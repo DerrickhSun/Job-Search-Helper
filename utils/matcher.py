@@ -5,8 +5,9 @@ Two-stage evaluation:
 1) **Hard gates** (``gates_pass``) — all must pass or the job is skipped without a fit score:
    - Education: candidate's highest degree at or above the job's minimum (ordinal scale).
    - Experience: candidate's estimated years >= the job's minimum when the posting states one.
-     If the posting asks for **senior-level** experience (or **Senior** in the job title) but gives **no numeric**
-     years floor, the gate assumes **5 years** (regex backstop + LLM instruction).
+     If the posting asks for **senior-level** experience, or the **job title** contains **Senior**, **Lead**, or
+     **Manager** as a role level, but gives **no numeric** years floor, the gate assumes **5 years** (regex
+     backstop + LLM instruction).
    - **Clearance (regex):** evaluation is **per line** (split on newlines in description + title) so patterns
      cannot span unrelated sentences. If **any one line** contains ``active`` … ``clearance`` (both words on
      that same line) and that **same line** does **not** contain ``eligible`` or ``valid`` as whole words, the
@@ -14,7 +15,7 @@ Two-stage evaluation:
      on that line).
 
    Unstated minima (education ``unspecified`` / years ``-1`` or missing) impose no bar, except the
-   senior-level-without-number case above.
+   title/level-without-number case above (Senior / Lead / Manager in title, or senior-level experience in copy).
 
 2) **Fit rating** (``fit_score``) — a float in ``[0, 1]`` from an LLM (skills, roles, domain vs the
    posting). Compared to ``--min-score`` after gates pass. ``score()`` returns this fit when gates pass,
@@ -28,6 +29,8 @@ import re
 from typing import Any
 
 import dspy
+
+from .resume_parser import experience_entry_description
 
 log = logging.getLogger(__name__)
 
@@ -85,10 +88,13 @@ single-year bar is the max, not the smallest line item.
 Senior level without a number: if the posting requires **senior-level** experience (phrases like
 "senior level experience", "senior-level experience", "experience at the senior level") and **does not**
 anywhere state a numeric minimum years of experience (no "3+ years", "at least 5 years", etc.), set
-minimum_years_experience to **5**. The same **5** applies when the **job title** contains the word **Senior**
-as a role level (e.g. "Senior Software Engineer") and there is still no numeric years floor in the title or
-description. If numeric minima are stated anywhere, use the **largest** such number
-only — do not add 5 on top when explicit year floors already exist.
+minimum_years_experience to **5**.
+
+Title role level without a number: the same **5** applies when the **job title** contains any of these
+as **whole words** (case-insensitive): **Senior**, **Lead**, or **Manager** — e.g. "Senior Software Engineer",
+"Team Lead", "Engineering Manager", "Product Manager" — and there is still **no** numeric years floor in the
+title or description. If numeric minima are stated anywhere, use the **largest** such number only — do not
+add 5 on top when explicit year floors already exist.
 
 Do not infer stricter requirements than written. If numbers are ambiguous or clearly only
 nice-to-have, use -1."""
@@ -470,7 +476,7 @@ def _estimate_years_experience(resume: dict) -> float:
     Approximate professional years for gate comparison.
 
     Uses the **calendar span** ``max(year) - min(year)`` from four-digit years found in experience
-    bullets/dates (or ``raw_text`` if no experience text). That can **overestimate** overlapping roles
+    descriptions/dates (or ``raw_text`` if no experience text). That can **overestimate** overlapping roles
     or long education-adjacent spans — if gates pass unexpectedly, check INFO logs for
     ``candidate yrs≈`` vs ``eff min yrs``.
 
@@ -482,7 +488,9 @@ def _estimate_years_experience(resume: dict) -> float:
         if not isinstance(r, dict):
             continue
         chunks.append(str(r.get("dates") or ""))
-        chunks.extend(str(b) for b in (r.get("bullets") or []))
+        desc = experience_entry_description(r)
+        if desc:
+            chunks.append(desc)
     text = " ".join(chunks)
     if not text.strip():
         text = resume.get("raw_text") or ""
@@ -577,17 +585,28 @@ def _extract_job_requirements_regex(description: str, title: str | None = None) 
         # Posting asks for senior-level experience but states no numeric floor → assume 5 years.
         if _regex_implied_years_senior_level_no_numeric(t):
             req_years_f = 5.0
-        elif _title_has_senior_role_word(title):
+        elif _title_implies_five_years_role_level_no_numeric_floor(title):
             req_years_f = 5.0
 
     return req_edu, req_years_f
 
 
-def _title_has_senior_role_word(title: str | None) -> bool:
-    """True when the job title uses **Senior** as a role level (whole word), e.g. Senior Engineer."""
+def _title_implies_five_years_role_level_no_numeric_floor(title: str | None) -> bool:
+    """
+    True when the job **title** suggests mid/senior role level via whole-word **Senior**, **Lead**, or
+    **Manager** (case-insensitive). Used only when no numeric year minima exist in title + description.
+    """
     if not (title or "").strip():
         return False
-    return bool(re.search(r"\bsenior\b", title, re.IGNORECASE))
+    t = title.strip()
+    return any(
+        re.search(p, t, re.IGNORECASE)
+        for p in (
+            r"\bsenior\b",
+            r"\blead\b",
+            r"\bmanager\b",
+        )
+    )
 
 
 def _regex_implied_years_senior_level_no_numeric(text_lower: str) -> bool:
@@ -659,9 +678,9 @@ def _resume_digest(resume: dict, *, max_chars: int = 6000) -> str:
     for r in (resume.get("experience") or [])[:8]:
         if isinstance(r, dict):
             line = f"Role: {r.get('title', '')} at {r.get('company', '')} | {r.get('dates', '')}"
-            bullets = r.get("bullets") or []
-            if bullets:
-                line += "\n" + "\n".join(f"- {b}" for b in bullets[:6])
+            desc = experience_entry_description(r)
+            if desc:
+                line += "\n" + desc
             parts.append(line)
     for e in (resume.get("education") or [])[:5]:
         if isinstance(e, dict):
