@@ -1,398 +1,8 @@
 [
   {
-    "url": "https://www.cmtelematics.com/who-we-are/join-our-team/job-posting/?gh_jid=7909626&gh_src=my.greenhouse.search",
-    "title": "Senior Embedded Software Engineer",
-    "company": "Cambridge Mobile Telematics"
-  },
-  {
-    "url": "https://ursamajor.com/careers/?gh_jid=4693312005&gh_src=my.greenhouse.search",
-    "title": "Senior Embedded Software Engineer",
-    "company": "Ursa Major"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/grvty/jobs/4240891009?gh_src=my.greenhouse.search",
-    "title": "Cloud Software Engineer",
-    "company": "GRVTY"
-  },
-  {
-    "url": "https://www.asm.com/open-vacancies/?gh_jid=4846042101&gh_src=my.greenhouse.search",
-    "title": "Senior Engineer, Software Support",
-    "company": "ASM"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/lgelectronics/jobs/5213045008?gh_src=my.greenhouse.search",
-    "title": "Application Engineer",
-    "company": "LG Electronics"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/lgelectronics/jobs/5213062008?gh_src=my.greenhouse.search",
-    "title": "Application Engineer",
-    "company": "LG Electronics"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/further/jobs/8540263002?gh_src=my.greenhouse.search",
-    "title": "Senior Software Developer",
-    "company": "Further"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/freedomconsulting/jobs/5131519007?gh_src=my.greenhouse.search",
-    "title": "System Engineer",
-    "company": "Freedom Technology Solutions Group"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/k2spacecorporation/jobs/5210461008?gh_src=my.greenhouse.search",
-    "title": "Software Development Engineer in Test",
-    "company": "K2 Space"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/truebill/jobs/7713899003?gh_src=my.greenhouse.search",
-    "title": "Senior Engineer, Developer Experience",
-    "company": "Rocket Money"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/forthea/jobs/7726663003?gh_src=my.greenhouse.search",
-    "title": "Senior Software Developer",
-    "company": "Forthea"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/aquaticcapitalmanagement/jobs/8541358002?gh_src=my.greenhouse.search",
-    "title": "Systems Engineer",
-    "company": "Aquatic Capital Management"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/kepora/jobs/4240742009?gh_src=my.greenhouse.search",
-    "title": "Software Developer",
-    "company": "Kepora"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/generalmatter/jobs/5157066008?gh_src=my.greenhouse.search",
-    "title": "Software Engineer (New Grad)",
-    "company": "General Matter"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/ambiententerprises/jobs/5214998008?gh_src=my.greenhouse.search",
-    "title": "Project Engineer",
-    "company": "Ambient Enterprises"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/piaggiofastforward/jobs/7905651?gh_src=my.greenhouse.search",
-    "title": "Senior Embedded Engineer",
-    "company": "Piaggio Fast Forward"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/calahealth/jobs/5982842004?gh_src=my.greenhouse.search",
-    "title": "Full Stack Software Engineer",
-    "company": "Cala Health"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/babylist/jobs/5987915004?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, iOS",
-    "company": "Babylist"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/pairwiseviadelart/jobs/4691920005?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Full-stack",
-    "company": "Pairwise"
-  },
-  {
-    "url": "https://coreweave.com/careers/job?4678600006=&board=coreweave&gh_jid=4678600006&gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer, Developer Experience",
-    "company": "CoreWeave"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/procaresolutions/jobs/5131717008?gh_src=my.greenhouse.search",
-    "title": "Principal Engineer",
-    "company": "Procare Solutions"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/conga/jobs/5083684007?gh_src=my.greenhouse.search",
-    "title": "Software Architect",
-    "company": "Conga"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/clarityinnovates/jobs/5125081007?gh_src=my.greenhouse.search",
-    "title": "Software Engineer",
-    "company": "Clarity Innovations"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/salientmotion/jobs/5211133008?gh_src=my.greenhouse.search",
-    "title": "Project Engineer",
-    "company": "Salient Motion"
-  },
-  {
-    "url": "https://careers.route.com/job-board?gh_jid=7720165003&gh_src=my.greenhouse.search",
-    "title": "Implementation Engineer",
-    "company": "Route"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/navtechnologies/jobs/5985843004?gh_src=my.greenhouse.search",
-    "title": "Software Engineer",
-    "company": "Nav"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/chainguard/jobs/4672909006?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer (.NET)",
-    "company": "Chainguard"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/addepar1/jobs/8539659002?gh_src=my.greenhouse.search",
-    "title": "Software Engineer - Workflow Platform",
-    "company": "Addepar"
-  },
-  {
-    "url": "https://www.oldmissioncapital.com/careers/?gh_jid=7724739003&gh_src=my.greenhouse.search",
-    "title": "Python Software Engineer",
-    "company": "Old Mission"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/chainguard/jobs/4672901006?gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer (.NET)",
-    "company": "Chainguard"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/straightarrownews/jobs/4233168009?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer (Cloud)",
-    "company": "Straight Arrow"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/rocketlab/jobs/7714940003?gh_src=my.greenhouse.search",
-    "title": "Principal Software Security Engineer",
+    "url": "https://job-boards.greenhouse.io/rocketlab/jobs/7722445003?gh_src=my.greenhouse.search",
+    "title": "Flight Software Engineer II",
     "company": "Rocket Lab Corporation"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/amplitude/jobs/8541677002?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer - SDK",
-    "company": "Amplitude"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/addepar1/jobs/8539734002?gh_src=my.greenhouse.search",
-    "title": "Backend Software Engineer - Precompute",
-    "company": "Addepar"
-  },
-  {
-    "url": "https://zoo.dev/jobs/4690543005?gh_jid=4690543005&gh_src=my.greenhouse.search",
-    "title": "Senior Systems Software Engineer",
-    "company": "Zoo"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/amplitude/jobs/8542021002?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer (Experiment)",
-    "company": "Amplitude"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/alarmcom/jobs/8538618002?gh_src=my.greenhouse.search",
-    "title": "Software Engineer II - Mobile",
-    "company": "Alarm.com"
-  },
-  {
-    "url": "https://sofi.com/careers/job/7693700003?gh_jid=7693700003&gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Bank",
-    "company": "SoFi"
-  },
-  {
-    "url": "https://boards.greenhouse.io/neuralink/jobs/7729500003?gh_jid=7729500003&gh_src=my.greenhouse.search",
-    "title": "Software Engineer, Agentic AI",
-    "company": "Neuralink"
-  },
-  {
-    "url": "https://www.alloy.com/about/jobs/detail?gh_jid=8538706002&gh_jid=8538706002&gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Advance",
-    "company": "Alloy"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/sidecarhealth/jobs/5990181004?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Backend",
-    "company": "Sidecar Health"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/sidecarhealth/jobs/5990170004?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Data",
-    "company": "Sidecar Health"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/cognitiv/jobs/4241810009?gh_src=my.greenhouse.search",
-    "title": "Software Engineer, Big Data",
-    "company": "Cognitiv"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/vannevarlabs/jobs/5131930007?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer - NYC",
-    "company": "Vannevar"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/tenableinc/jobs/5214563008?gh_src=my.greenhouse.search",
-    "title": "Software Engineer - Java, Kafka",
-    "company": "Tenable, Inc."
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/earnin/jobs/7908987?gh_src=my.greenhouse.search",
-    "title": "Software Engineer (Gen AI)",
-    "company": "EarnIn"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/netsage/jobs/5813099003?gh_src=my.greenhouse.search",
-    "title": "Cloud Software Engineer",
-    "company": "NetSage"
-  },
-  {
-    "url": "https://boards.greenhouse.io/apptronik/jobs/5985625004?gh_jid=5985625004&gh_src=my.greenhouse.search",
-    "title": "Software Engineer \u2013 Platform",
-    "company": "Apptronik"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/chaosindustries/jobs/5129960007?gh_src=my.greenhouse.search",
-    "title": "Software Deployment & Integration Engineer",
-    "company": "CHAOS Industries"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/mill/jobs/4691800005?gh_src=my.greenhouse.search",
-    "title": "Software Development Engineer - Test",
-    "company": "Mill"
-  },
-  {
-    "url": "https://boards.greenhouse.io/lightmatter/jobs/5210441008?gh_jid=5210441008&gh_src=my.greenhouse.search",
-    "title": "Staff Embedded Software Engineer",
-    "company": "Lightmatter"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/marqeta/jobs/7859782?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer - Data Infrastructure",
-    "company": "Marqeta"
-  },
-  {
-    "url": "https://unity.com/careers/positions/7902188?gh_jid=7902188&gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer, Feature Platform",
-    "company": "Unity Technologies"
-  },
-  {
-    "url": "https://boards.greenhouse.io/pathrobotics/jobs/8540826002?gh_jid=8540826002&gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Perception Platform",
-    "company": "Path Robotics"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/trueanomalyinc/jobs/5131359007?gh_src=my.greenhouse.search",
-    "title": "Front End Software Engineer Intern",
-    "company": "True Anomaly"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/flowcode/jobs/4692468005?gh_src=my.greenhouse.search",
-    "title": "Senior Fullstack Experiences Software Engineer",
-    "company": "Flowcode"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/didi/jobs/7905661?gh_src=my.greenhouse.search",
-    "title": "Software Engineer \u2013 Motion & Behavioral Planning",
-    "company": "DiDi Labs"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/muonspace/jobs/5132032007?gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer, Information Systems",
-    "company": "Muon Space"
-  },
-  {
-    "url": "https://www.brex.com/careers/8536424002?gh_jid=8536424002&gh_src=my.greenhouse.search",
-    "title": "Software Engineer II, Backend",
-    "company": "Brex"
-  },
-  {
-    "url": "https://sofi.com/careers/job/7611030003?gh_jid=7611030003&gh_src=my.greenhouse.search",
-    "title": "Senior Staff Software Engineer, Crypto",
-    "company": "SoFi"
-  },
-  {
-    "url": "https://sofi.com/careers/job/7727874003?gh_jid=7727874003&gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Data Trust",
-    "company": "SoFi"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/censys/jobs/8538086002?gh_src=my.greenhouse.search",
-    "title": "Software Engineer (Backend), SaaS Platform",
-    "company": "Censys"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/censys/jobs/8500307002?gh_src=my.greenhouse.search",
-    "title": "Software Engineer (Backend), Core Services",
-    "company": "Censys"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/clear/jobs/7904350?gh_src=my.greenhouse.search",
-    "title": "Staff Software Development Engineer, iOS",
-    "company": "CLEAR - Corporate"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/marqeta/jobs/7848579?gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer - Kubernetes Operations",
-    "company": "Marqeta"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/didi/jobs/7906174?gh_src=my.greenhouse.search",
-    "title": "Software Engineer, Simulation (Summer Intern)",
-    "company": "DiDi Labs"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/kodiak/jobs/4243323009?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Motion Planning",
-    "company": "Kodiak"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/straightarrownews/jobs/4240386009?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer (React Native)",
-    "company": "Straight Arrow"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/engine/jobs/7723942003?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Frontend",
-    "company": "Engine"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/jetzero/jobs/5186383008?gh_src=my.greenhouse.search",
-    "title": "Aircraft Advanced Design Software Engineer",
-    "company": "JetZero"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/engine/jobs/7726524003?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, DevOps/Infrastructure",
-    "company": "Engine"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/chaosindustries/jobs/5133504007?gh_src=my.greenhouse.search",
-    "title": "Cloud DevSecOps Engineer - (Software Engineering Focused)",
-    "company": "CHAOS Industries"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/algolia/jobs/5988748004?gh_src=my.greenhouse.search",
-    "title": "Senior Fullstack Software Engineer, Growth",
-    "company": "Algolia"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/redpandadata/jobs/4693330005?gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer, Agentic Data Plane",
-    "company": "Redpanda Data"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/stackadapt/jobs/4244707009?gh_src=my.greenhouse.search",
-    "title": "Staff II Software Engineer, Data Ingestion",
-    "company": "StackAdapt"
-  },
-  {
-    "url": "https://zwift.com/careers?gh_jid=8539962002&gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer 2, Community Support",
-    "company": "Zwift"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/ceribell/jobs/5983689004?gh_src=my.greenhouse.search",
-    "title": "Senior Software/Firmware Engineer - QA",
-    "company": "Ceribell, Inc"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/systemstechnologyresearch/jobs/4678604006?gh_src=my.greenhouse.search",
-    "title": "Lead Software Engineer (CLEARANCE REQUIRED)",
-    "company": "STR"
-  },
-  {
-    "url": "https://otter.ai/careers?gh_jid=7725393003&gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer, Backend (Product)",
-    "company": "Otter.ai"
   },
   {
     "url": "https://job-boards.greenhouse.io/babylist/jobs/5987447004?gh_src=my.greenhouse.search",
@@ -400,14 +10,39 @@
     "company": "Babylist"
   },
   {
-    "url": "https://www.dealpath.com/job-post/?gh_jid=7875769&gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer",
-    "company": "Dealpath"
+    "url": "https://boomi.com/boomi-jobs/?gh_jid=5836266004&gh_src=my.greenhouse.search",
+    "title": "Solution Engineer",
+    "company": "Boomi"
   },
   {
-    "url": "https://job-boards.greenhouse.io/addepar1/jobs/8526599002?gh_src=my.greenhouse.search",
-    "title": "Sr. Software Engineer",
-    "company": "Addepar"
+    "url": "https://www.oldmissioncapital.com/careers/?gh_jid=7724739003&gh_src=my.greenhouse.search",
+    "title": "Python Software Engineer",
+    "company": "Old Mission"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/engine/jobs/7726524003?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer, DevOps/Infrastructure",
+    "company": "Engine"
+  },
+  {
+    "url": "https://boards.greenhouse.io/chime/jobs/8523547002?gh_jid=8523547002&gh_src=my.greenhouse.search",
+    "title": "Software Engineer, Deposits & Insights",
+    "company": "Chime Financial, Inc"
+  },
+  {
+    "url": "https://otter.ai/careers?gh_jid=7725393003&gh_src=my.greenhouse.search",
+    "title": "Staff Software Engineer, Backend (Product)",
+    "company": "Otter.ai"
+  },
+  {
+    "url": "https://www.pindrop.com/careers/job-title/?gh_jid=7737219&gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer - Capture",
+    "company": "Pindrop"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/algolia/jobs/5988748004?gh_src=my.greenhouse.search",
+    "title": "Senior Fullstack Software Engineer, Growth",
+    "company": "Algolia"
   },
   {
     "url": "https://job-boards.greenhouse.io/icapitalnetwork/jobs/8534824002?gh_src=my.greenhouse.search",
@@ -415,9 +50,29 @@
     "company": "iCapital"
   },
   {
-    "url": "https://job-boards.greenhouse.io/addepar1/jobs/8538666002?gh_src=my.greenhouse.search",
-    "title": "Full Stack Software Engineer - Alts & Data Management",
-    "company": "Addepar"
+    "url": "https://job-boards.greenhouse.io/ceribell/jobs/5983689004?gh_src=my.greenhouse.search",
+    "title": "Senior Software/Firmware Engineer - QA",
+    "company": "Ceribell, Inc"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/chaosindustries/jobs/5133328007?gh_src=my.greenhouse.search",
+    "title": "Radar R&D and Production Software Engineer",
+    "company": "CHAOS Industries"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/systemstechnologyresearch/jobs/4678604006?gh_src=my.greenhouse.search",
+    "title": "Lead Software Engineer (CLEARANCE REQUIRED)",
+    "company": "STR"
+  },
+  {
+    "url": "https://pluribusdigital.com/join/openings?gh_jid=7724652003&gh_src=my.greenhouse.search",
+    "title": "Full Stack Software Engineer (USCIS)",
+    "company": "Pluribus Digital"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/systemstechnologyresearch/jobs/4678598006?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer (CLEARANCE REQUIRED)",
+    "company": "STR"
   },
   {
     "url": "https://job-boards.greenhouse.io/boxinc/jobs/7895317?gh_src=my.greenhouse.search",
@@ -425,9 +80,19 @@
     "company": "Box"
   },
   {
-    "url": "https://sofi.com/careers/job/7632139003?gh_jid=7632139003&gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer, Loans Platform",
-    "company": "SoFi"
+    "url": "https://job-boards.greenhouse.io/addepar1/jobs/8538666002?gh_src=my.greenhouse.search",
+    "title": "Full Stack Software Engineer - Alts & Data Management",
+    "company": "Addepar"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/webflow/jobs/7867282?gh_src=my.greenhouse.search",
+    "title": "Senior Staff Software Engineer, Distributed Systems",
+    "company": "Webflow"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/engine/jobs/7726742003?gh_src=my.greenhouse.search",
+    "title": "Staff Software Engineer, Fullstack (Groups Shopping Team)",
+    "company": "Engine"
   },
   {
     "url": "https://job-boards.greenhouse.io/redwoodsoftware/jobs/4209667009?gh_src=my.greenhouse.search",
@@ -445,19 +110,19 @@
     "company": "Abnormal"
   },
   {
-    "url": "https://job-boards.greenhouse.io/engine/jobs/7726742003?gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer, Fullstack (Groups Shopping Team)",
-    "company": "Engine"
+    "url": "http://prizepicks.com/position?gh_jid=7727918003&gh_src=my.greenhouse.search",
+    "title": "Software Engineer III (Ruby on Rails) (Marketing Technology)",
+    "company": "PrizePicks"
   },
   {
-    "url": "https://job-boards.greenhouse.io/chaosindustries/jobs/5133328007?gh_src=my.greenhouse.search",
-    "title": "Radar R&D and Production Software Engineer",
-    "company": "CHAOS Industries"
+    "url": "https://sofi.com/careers/job/7632139003?gh_jid=7632139003&gh_src=my.greenhouse.search",
+    "title": "Staff Software Engineer, Loans Platform",
+    "company": "SoFi"
   },
   {
-    "url": "https://www.hashgraph.com/careers/8401818002?gh_jid=8401818002&gh_src=my.greenhouse.search",
-    "title": "Staff Software Engineer - CI/CD & Release Engineering",
-    "company": "Hashgraph"
+    "url": "https://zwift.com/careers?gh_jid=8536515002&gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer 2, Game Systems",
+    "company": "Zwift"
   },
   {
     "url": "https://unity.com/careers/positions/7871659?gh_jid=7871659&gh_src=my.greenhouse.search",
@@ -470,49 +135,9 @@
     "company": "Life360"
   },
   {
-    "url": "https://job-boards.greenhouse.io/defenseunicorns/jobs/5125711007?gh_src=my.greenhouse.search",
-    "title": "Software Engineer (Mid-Senior)",
-    "company": "Defense Unicorns"
-  },
-  {
-    "url": "https://www.riotgames.com/en/work-with-us/job/7872902?gh_jid=7872902&gh_src=my.greenhouse.search",
-    "title": "Principal Software Engineer, AI Enablement - Central Product",
-    "company": "Riot Games"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/singlestore/jobs/7868556?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer",
-    "company": "SingleStore"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/singlestore/jobs/7868514?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer",
-    "company": "SingleStore"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/divergent/jobs/5207177008?gh_src=my.greenhouse.search",
-    "title": "Full Stack Software Engineer",
-    "company": "Divergent"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/chaosindustries/jobs/5133311007?gh_src=my.greenhouse.search",
-    "title": "Software Engineer (Radar R&D and Production Focused)",
-    "company": "CHAOS Industries"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/chaosindustries/jobs/5133309007?gh_src=my.greenhouse.search",
-    "title": "Sr. Software Engineer (Radar R&D & Production Focused)",
-    "company": "CHAOS Industries"
-  },
-  {
     "url": "https://job-boards.greenhouse.io/torcrobotics/jobs/8516209002?gh_src=my.greenhouse.search",
     "title": "Senior Autonomy Software Systems Engineer (Python / C++ / Data)",
     "company": "Torc Robotics"
-  },
-  {
-    "url": "http://prizepicks.com/position?gh_jid=7727918003&gh_src=my.greenhouse.search",
-    "title": "Software Engineer III (Ruby on Rails) (Marketing Technology)",
-    "company": "PrizePicks"
   },
   {
     "url": "https://job-boards.greenhouse.io/thealleninstitute/jobs/7872631?gh_src=my.greenhouse.search",
@@ -525,24 +150,19 @@
     "company": "The Allen Institute for Artificial Intelligence"
   },
   {
-    "url": "https://job-boards.greenhouse.io/armada/jobs/5206617008?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer",
-    "company": "Armada"
-  },
-  {
     "url": "https://job-boards.greenhouse.io/rocketlab/jobs/7722430003?gh_src=my.greenhouse.search",
     "title": "Senior Flight Software Engineer I/II",
     "company": "Rocket Lab Corporation"
   },
   {
-    "url": "https://job-boards.greenhouse.io/samaraaerospace/jobs/5201133008?gh_src=my.greenhouse.search",
-    "title": "Flight Software Engineer",
-    "company": "Samara Aerospace"
+    "url": "https://job-boards.greenhouse.io/forgeglobal/jobs/5989937004?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer (Tech Lead), Customer Domain Engineering",
+    "company": "Forge Global"
   },
   {
-    "url": "https://job-boards.greenhouse.io/assemblyai/jobs/4691710005?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer, Streaming",
-    "company": "AssemblyAI"
+    "url": "https://job-boards.greenhouse.io/forgeglobal/jobs/5989943004?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer (Tech Lead), Customer Domain Engineering",
+    "company": "Forge Global"
   },
   {
     "url": "https://boards.greenhouse.io/corelight/jobs/7871048?gh_jid=7871048&gh_src=my.greenhouse.search",
@@ -550,9 +170,9 @@
     "company": "Job Board"
   },
   {
-    "url": "https://job-boards.greenhouse.io/chainguard/jobs/4677727006?gh_src=my.greenhouse.search",
-    "title": "Principal Software Engineer (Containers)",
-    "company": "Chainguard"
+    "url": "https://job-boards.greenhouse.io/divergent/jobs/5207177008?gh_src=my.greenhouse.search",
+    "title": "Full Stack Software Engineer",
+    "company": "Divergent"
   },
   {
     "url": "https://job-boards.greenhouse.io/virtu/jobs/8516902002?gh_src=my.greenhouse.search",
@@ -560,139 +180,34 @@
     "company": "Virtu Financial"
   },
   {
-    "url": "https://job-boards.greenhouse.io/inversionspace/jobs/4691394005?gh_src=my.greenhouse.search",
-    "title": "Senior Flight Software Engineer",
-    "company": "Inversion"
+    "url": "https://job-boards.greenhouse.io/doximity/jobs/7584022?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer, Android (Kotlin)",
+    "company": "Doximity"
   },
   {
-    "url": "https://job-boards.greenhouse.io/turtlerockstudios/jobs/4691440005?gh_src=my.greenhouse.search",
-    "title": "Tools Engineer",
-    "company": "Turtle Rock Studios"
+    "url": "https://job-boards.greenhouse.io/botauto/jobs/5208126008?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer, Build Tools",
+    "company": "Bot Auto"
   },
   {
-    "url": "https://job-boards.greenhouse.io/hevenaerotech/jobs/4236517009?gh_src=my.greenhouse.search",
-    "title": "Cloud Software Engineer - Defense Systems",
-    "company": "Heven AeroTech"
+    "url": "https://job-boards.greenhouse.io/botauto/jobs/5208075008?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer, Build Tools",
+    "company": "Bot Auto"
   },
   {
-    "url": "https://generatebiomedicines.com/open-positions?gh_jid=4677971006&gh_src=my.greenhouse.search",
-    "title": "Software Engineer II, ML Ops",
-    "company": "Generate Biomedicines"
+    "url": "https://job-boards.greenhouse.io/zocdoc/jobs/7775913?gh_src=my.greenhouse.search",
+    "title": "Staff Software Engineer (Clinical Fit)",
+    "company": "Zocdoc"
   },
   {
-    "url": "https://job-boards.greenhouse.io/8thlightrebuild/jobs/7722439003?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer (Chicago, Atlanta, Boston)",
-    "company": "8th Light"
+    "url": "https://job-boards.greenhouse.io/foresitelabs/jobs/8533284002?gh_src=my.greenhouse.search",
+    "title": "Senior Software Engineer (5+ years)",
+    "company": "Foresite Labs"
   },
   {
-    "url": "https://job-boards.greenhouse.io/smartsheet/jobs/7849785?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer II - Applied AI (Remote Eligible)",
-    "company": "Smartsheet"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/renttherunway/jobs/7863495?gh_src=my.greenhouse.search",
-    "title": "Software Engineer III - Full Stack",
-    "company": "Rent the Runway"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/turing/jobs/5985543004?gh_src=my.greenhouse.search",
-    "title": "Senior AI Solutions Engineer, Software Engineering",
-    "company": "Turing"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/elitetechnology/jobs/5206489008?gh_src=my.greenhouse.search",
-    "title": "Senior Software Development Engineer in Test",
-    "company": "Elite Technology"
-  },
-  {
-    "url": "https://braincorp.com/open-positions?gh_jid=8530814002&gh_src=my.greenhouse.search",
-    "title": "Senior Software Development Engineer in Test",
-    "company": "Brain Corp"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/springhealth66/jobs/4690238005?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer II, Customer Value, Orchestration",
-    "company": "Spring Health"
-  },
-  {
-    "url": "https://aperioglobal.com/career/job-openings-2/?gh_jid=5206683008&gh_src=my.greenhouse.search",
-    "title": "Principal Software Engineer 4 TS/SCI + Poly",
-    "company": "Aperio Global"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/sagent/jobs/5983929004?gh_src=my.greenhouse.search",
-    "title": "Software Engineer SR - Full Stack .NET/React",
-    "company": "Sagent"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/blackduck/jobs/5204209008?gh_src=my.greenhouse.search",
-    "title": "Sr. Release Engineer",
-    "company": "Black Duck Software, Inc."
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/globalhealthcareexchangeinc/jobs/4690467005?gh_src=my.greenhouse.search",
-    "title": "Senior Software Engineer - Java, SQL and NoSQL DBA",
-    "company": "GHX"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/rocketems/jobs/4236787009?gh_src=my.greenhouse.search",
-    "title": "Quality Engineer",
-    "company": "Rocket EMS"
-  },
-  {
-    "url": "https://careers.formlabs.com/job/7652183/apply/?gh_jid=7652183&gh_src=my.greenhouse.search",
-    "title": "Application Engineer",
-    "company": "Formlabs"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/rocketems/jobs/4236672009?gh_src=my.greenhouse.search",
-    "title": "Quality Engineer",
-    "company": "Rocket EMS"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/apexcompanies/jobs/5206778008?gh_src=my.greenhouse.search",
-    "title": "Project Engineer",
-    "company": "Apex Companies"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/renttherunway/jobs/7863496?gh_src=my.greenhouse.search",
-    "title": "iOS engineer",
-    "company": "Rent the Runway"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/rocketems/jobs/4236698009?gh_src=my.greenhouse.search",
-    "title": "Senior Test Engineer",
-    "company": "Rocket EMS"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/reactivate/jobs/4677901006?gh_src=my.greenhouse.search",
-    "title": "Project Engineer",
-    "company": "Reactivate"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/sonobello/jobs/5214980008?gh_src=my.greenhouse.search",
-    "title": "Data Engineer",
-    "company": "Sono Bello"
-  },
-  {
-    "url": "https://triafed.com/jobs/?gh_jid=5212052008&gh_src=my.greenhouse.search",
-    "title": "Data Engineer",
-    "company": "Tria Federal"
-  },
-  {
-    "url": "https://omnicommedia.com/careers/us/omnicom-media-network/?gh_jid=5120347007&gh_src=my.greenhouse.search",
-    "title": "Director, Data Science",
-    "company": "Omnicom Media US"
-  },
-  {
-    "url": "https://job-boards.greenhouse.io/phasev/jobs/4206725009?gh_src=my.greenhouse.search",
-    "title": "Senior Data Scientist",
-    "company": "PhaseV"
-  },
-  {
-    "url": "https://www.trexsolutionsllc.com/current-opportunities-at-trex/?gh_jid=8536804002&gh_src=my.greenhouse.search",
-    "title": "Data Engineer",
-    "company": "T-Rex Solutions"
+    "url": "https://job-boards.greenhouse.io/clear/jobs/7875065?gh_src=my.greenhouse.search",
+    "title": "Staff Data Scientist",
+    "company": "CLEAR - Corporate"
   },
   {
     "url": "https://job-boards.greenhouse.io/yipitdata/jobs/7875658?gh_src=my.greenhouse.search",
@@ -700,8 +215,188 @@
     "company": "YipitData"
   },
   {
+    "url": "https://expel.com/about/career-listing/8534383002?gh_jid=8534383002&gh_src=my.greenhouse.search",
+    "title": "Manager, Data Science",
+    "company": "Expel"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/engine/jobs/7686881003?gh_src=my.greenhouse.search",
+    "title": "Manager, Data Science",
+    "company": "Engine"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/baselayer/jobs/5209290008?gh_src=my.greenhouse.search",
+    "title": "Data Engineer",
+    "company": "Baselayer"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/chaosindustries/jobs/5133527007?gh_src=my.greenhouse.search",
+    "title": "Data Scientist: Mission Engineering",
+    "company": "CHAOS Industries"
+  },
+  {
+    "url": "https://app.careerpuck.com/job-board/thymecare/job/5988873004?gh_jid=5988873004&gh_src=my.greenhouse.search",
+    "title": "Senior Data Scientist, Provider Data Science",
+    "company": "Thyme Care"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/obsidiansecurity/jobs/5213687008?gh_src=my.greenhouse.search",
+    "title": "Tech Lead - Data Scientist",
+    "company": "Obsidian Security"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/sixgeninc/jobs/5213039008?gh_src=my.greenhouse.search",
+    "title": "Data Scientist (TS/SCI w/ Poly)",
+    "company": "SixGen, Inc."
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/systemstechnologyresearch/jobs/4678631006?gh_src=my.greenhouse.search",
+    "title": "Senior Data Scientist (CLEARANCE REQUIRED)",
+    "company": "STR"
+  },
+  {
+    "url": "https://careers.empowerpharmacy.com/jobs/4234851009?gh_jid=4234851009&gh_src=my.greenhouse.search",
+    "title": "Staff Data Scientist",
+    "company": "Empower Pharmacy"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/sandiegocommunitypower/jobs/5121899007?gh_src=my.greenhouse.search",
+    "title": "Data Engineer",
+    "company": "San Diego Community Power"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/rewardsnetwork/jobs/5124565007?gh_src=my.greenhouse.search",
+    "title": "Senior Data Scientist-Data & Personalization Platform (Hybrid)",
+    "company": "Rewards Network"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/attain/jobs/5987001004?gh_src=my.greenhouse.search",
+    "title": "Senior/Staff Data Scientist, Consumer Apps - Klover",
+    "company": "Attain"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/rewardsnetwork/jobs/5124364007?gh_src=my.greenhouse.search",
+    "title": "Senior Data Scientist-Intelligent Assignment Engine (Hybrid)",
+    "company": "Rewards Network"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/dragos/jobs/5204052008?gh_src=my.greenhouse.search",
+    "title": "BI Analyst",
+    "company": "Dragos"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/bitgo/jobs/8541106002?gh_src=my.greenhouse.search",
+    "title": "SOC Analyst",
+    "company": "BitGo"
+  },
+  {
+    "url": "https://boards.greenhouse.io/crossmediainc/jobs/5132700007?gh_jid=5132700007&gh_src=my.greenhouse.search",
+    "title": "Business Intelligence Analyst",
+    "company": "Crossmedia Inc"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/justanswer/jobs/8540635002?gh_src=my.greenhouse.search",
+    "title": "Product Analyst",
+    "company": "Pearl"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/verse/jobs/5213007008?gh_src=my.greenhouse.search",
+    "title": "Quantitative Analyst",
+    "company": "Verse"
+  },
+  {
+    "url": "https://walkersands.com/careers?gh_jid=7901788&gh_src=my.greenhouse.search",
+    "title": "Financial Analyst",
+    "company": "Walker Sands"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/upstack/jobs/5211525008?gh_src=my.greenhouse.search",
+    "title": "Financial Analyst",
+    "company": "UPSTACK"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/scoutmotors/jobs/5127808007?gh_src=my.greenhouse.search",
+    "title": "Accounting Analyst",
+    "company": "Scout Motors"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/sparksoftcorporation/jobs/5128913007?gh_src=my.greenhouse.search",
+    "title": "Data Analysis Internship",
+    "company": "Sparksoft Corporation"
+  },
+  {
     "url": "https://job-boards.greenhouse.io/conga/jobs/5130433007?gh_src=my.greenhouse.search",
     "title": "Staff Data Analyst",
     "company": "Conga"
+  },
+  {
+    "url": "https://www.equipmentshare.com/careers/openings/?gh_jid=7883423&gh_src=my.greenhouse.search",
+    "title": "Business Intelligence Analyst",
+    "company": "EquipmentShare"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/gallup/jobs/4243092009?gh_src=my.greenhouse.search",
+    "title": "Survey Data Operations Analyst",
+    "company": "Gallup"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/smithrx/jobs/8539228002?gh_src=my.greenhouse.search",
+    "title": "Marketing Data Analyst, Member Communications",
+    "company": "SmithRx"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/galaxydigitalservices/jobs/5990869004?gh_src=my.greenhouse.search",
+    "title": "Growth & Development Analyst (Data Centers)",
+    "company": "Galaxy"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/galaxydigitalservices/jobs/5990852004?gh_src=my.greenhouse.search",
+    "title": "Growth & Development Analyst (Data Centers)",
+    "company": "Galaxy"
+  },
+  {
+    "url": "https://launchpotato.com/careers-list?gh_jid=5989365004&gh_src=my.greenhouse.search",
+    "title": "Lead Data Analyst, Marketing",
+    "company": "LP Careers Page"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/engine/jobs/7664315003?gh_src=my.greenhouse.search",
+    "title": "Staff Data Analyst, Growth",
+    "company": "Engine"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/engine/jobs/7704254003?gh_src=my.greenhouse.search",
+    "title": "Senior Data Analyst, RevOps",
+    "company": "Engine"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/scorpionenterprisesllc/jobs/5209703008?gh_src=my.greenhouse.search",
+    "title": "Senior Data Analyst, SEO",
+    "company": "Scorpion Enterprises, LLC"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/dv01/jobs/8534389002?gh_src=my.greenhouse.search",
+    "title": "Sr. Data Analyst, Collateral Data Solutions",
+    "company": "dv01"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/lusternational/jobs/5207213008?gh_src=my.greenhouse.search",
+    "title": "Project Controls Analyst (Cost and Data Visualization)",
+    "company": "Luster National"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/agecareers/jobs/5212060008?gh_src=my.greenhouse.search",
+    "title": "Senior Data Analyst - Subject Matter Expert (SME)",
+    "company": "AGE Solutions"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/ascellahealth/jobs/4236664009?gh_src=my.greenhouse.search",
+    "title": "Data Analyst - Pharmacy",
+    "company": "AscellaHealth"
+  },
+  {
+    "url": "https://job-boards.greenhouse.io/renaissancelearning-nam/jobs/5178070008?gh_src=my.greenhouse.search",
+    "title": "Data Integration Analyst II",
+    "company": "Renaissance Learning North America"
   }
 ]
