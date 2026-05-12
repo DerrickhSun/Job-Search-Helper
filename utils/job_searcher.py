@@ -34,7 +34,6 @@ log = logging.getLogger(__name__)
 # Used when ``--keywords`` is omitted (LinkedIn pipeline and Greenhouse MyGreenhouse multi-search).
 DEFAULT_JOB_SEARCH_KEYWORDS: tuple[str, ...] = (
     "software engineer",
-    "ai",
     "data scientist",
     "data analyst",
 )
@@ -133,6 +132,10 @@ SEL = {
     "email_input": 'input[name="session_key"]',
     "password_input": 'input[name="session_password"]',
     "sign_in_btn": 'button[type="submit"]',
+    # Remembered account on login: ``aria-label="Login as First Last"``.
+    "saved_account_login": 'button[aria-label^="Login as "]',
+    # ``Welcome Back`` + saved profile (cookies weak but browser remembers user).
+    "welcome_back_heading": "h1.header__content__heading",
     # Job search list: ``li.scaffold-layout__list-item[data-occludable-job-id]``; link may be
     # ``/jobs/view/ID/`` (two-pane) or ``currentJobId=`` (search results URL).
     "job_card_title": '[class*="job-card-job-posting-card-wrapper__title"]',
@@ -255,10 +258,16 @@ class JobSearcher:
         *,
         max_applies: int | None = None,
         apply_counter: dict[str, int] | None = None,
+        maybe_skip_from_list_card: Callable[[Any, dict], bool] | None = None,
     ) -> int:
         """
         One browser session: for each search result, click the card, parse job fields, append a row to
         ``listings_log_path``, then call ``process_listing(driver, job)``.
+
+        If ``maybe_skip_from_list_card`` is set, it is called with ``(driver, peek_job)`` after reading each
+        list card **without** opening the job. When it returns True, the callback has fully handled the card
+        (e.g. dismiss + tracker); the pipeline skips opening the detail pane and does not call
+        ``process_listing``. Use this for blacklist / consulting memory / listing-only heuristics.
 
         ``keywords`` may be a single string or a sequence of queries. After one query runs out of result
         pages (no Next), the next query is loaded in the same session until ``max_listings`` is reached,
@@ -368,13 +377,14 @@ class JobSearcher:
                             )
                             break
 
-                        job = self._parse_job_at_card_index(driver, i, links=links_now)
+                        link = links_now[i]
+                        peek = self._peek_job_from_list_link(link)
                         i += 1
-                        if not job:
-                            log.debug("Skipping empty parse at card index %d", i - 1)
+                        if not peek:
+                            log.debug("Skipping empty list-card peek at index %d", i - 1)
                             continue
 
-                        jid = str(job.get("id") or "").strip()
+                        jid = str(peek.get("id") or "").strip()
                         if not jid:
                             log.debug("Skipping job with no id at index %d", i - 1)
                             continue
@@ -382,6 +392,41 @@ class JobSearcher:
                             log.info("Skipping duplicate job id %s (already processed this session)", jid)
                             continue
                         seen_job_ids.add(jid)
+
+                        if maybe_skip_from_list_card is not None and maybe_skip_from_list_card(
+                            driver, peek
+                        ):
+                            append_listing_record(
+                                listings_log_path,
+                                peek,
+                                phase="skipped_list_card",
+                                extra={"search_keyword": keyword},
+                            )
+                            log.info(
+                                "Skipped from list card (no job pane opened) — %s at %s (log: %s)",
+                                peek.get("title"),
+                                peek.get("company"),
+                                listings_log_path,
+                            )
+                            page_done += 1
+                            processed += 1
+                            if (
+                                max_applies is not None
+                                and apply_counter is not None
+                                and apply_counter.get("applied", 0) >= max_applies
+                            ):
+                                apply_goal_met = True
+                                log.info(
+                                    "Reached successful apply cap (%d) — stopping search.",
+                                    max_applies,
+                                )
+                                break
+                            continue
+
+                        job = self._complete_job_after_peek(driver, link, peek)
+                        if not job:
+                            log.debug("Skipping incomplete parse after opening job at index %d", i - 1)
+                            continue
 
                         append_listing_record(
                             listings_log_path,
@@ -780,14 +825,13 @@ class JobSearcher:
                 pass
         return out
 
-    def _parse_job_at_card_index(
-        self, driver, index: int, links: list | None = None
-    ) -> dict | None:
-        if links is None:
-            links = self._find_job_card_links(driver)
-        if index >= len(links):
-            return None
-        link = links[index]
+    def _peek_job_from_list_link(self, link) -> dict | None:
+        """
+        Read job id, title, company, location, Easy Apply from a **list card** without opening the job pane.
+
+        LinkedIn often puts the company in the entity lockup (including ``span[dir='ltr']`` with obfuscated
+        classes); the title may live inside the same row's job link.
+        """
         try:
             href = (link.get_attribute("href") or "").strip()
 
@@ -813,7 +857,12 @@ class JobSearcher:
             if not company:
                 company = self._text_from_first_match(
                     li_row,
-                    (SEL["job_card_company_row"],),
+                    (
+                        SEL["job_card_company_row"],
+                        ".artdeco-entity-lockup__subtitle span[dir='ltr']",
+                        ".artdeco-entity-lockup__subtitle span",
+                        ".artdeco-entity-lockup__subtitle",
+                    ),
                 )
             loc = self._text_from_first_match(link, (SEL["job_card_location"],))
             if not loc:
@@ -842,6 +891,22 @@ class JobSearcher:
             elif not job_id:
                 return None
 
+            return {
+                "id": job_id,
+                "title": title,
+                "company": company,
+                "location": loc,
+                "url": full_url,
+                "description": "",
+                "easy_apply": easy_apply,
+            }
+        except Exception as e:
+            log.debug("Error peeking job list link: %s", e)
+            return None
+
+    def _complete_job_after_peek(self, driver, link, peek: dict) -> dict | None:
+        """Open the job card (detail pane), read description, and merge into ``peek``."""
+        try:
             if self.highlight:
                 focus_element(driver, link, pause=self.step_delay)
             link.click()
@@ -851,18 +916,23 @@ class JobSearcher:
             time.sleep(self.job_description_wait_seconds)
             description = self._read_job_description_panel(driver)
 
-            return {
-                "id": job_id,
-                "title": title,
-                "company": company,
-                "location": loc,
-                "url": full_url,
-                "description": description,
-                "easy_apply": easy_apply,
-            }
+            return {**peek, "description": description}
         except Exception as e:
-            log.debug("Error parsing job list link %d: %s", index, e)
+            log.debug("Error completing job after peek: %s", e)
             return None
+
+    def _parse_job_at_card_index(
+        self, driver, index: int, links: list | None = None
+    ) -> dict | None:
+        if links is None:
+            links = self._find_job_card_links(driver)
+        if index >= len(links):
+            return None
+        link = links[index]
+        peek = self._peek_job_from_list_link(link)
+        if not peek:
+            return None
+        return self._complete_job_after_peek(driver, link, peek)
 
     def dismiss_current_job(self, driver, *, reason: str | None = None, job_id: str | None = None) -> bool:
         """
@@ -1067,6 +1137,97 @@ class JobSearcher:
             "easy_apply": True,
         }
 
+    def _login_page_shows_welcome_back_saved_account(self, driver) -> bool:
+        """
+        True when LinkedIn shows the **Welcome Back** saved-session flow and/or a ``Login as …`` button.
+
+        Cookies may be rejected while Chromium still has a remembered profile for one-click continue.
+        """
+        try:
+            h = driver.find_element(By.CSS_SELECTOR, SEL["welcome_back_heading"])
+            if "welcome back" in (h.text or "").strip().lower():
+                return True
+        except Exception:
+            pass
+        for css in (".header__content__heading", "h1[class*='header__content__heading']"):
+            try:
+                h = driver.find_element(By.CSS_SELECTOR, css)
+                if "welcome back" in (h.text or "").strip().lower():
+                    return True
+            except Exception:
+                continue
+        try:
+            if driver.find_elements(By.CSS_SELECTOR, SEL["saved_account_login"]):
+                return True
+        except Exception:
+            pass
+        try:
+            body = driver.find_element(By.TAG_NAME, "body").text
+            bl = body.lower()
+            if "welcome back" in bl and ("login as" in bl or "sign in to stay" in bl):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _try_click_saved_account_login(self, driver) -> bool:
+        """
+        If LinkedIn shows a remembered account (``Login as …`` on ``member-profile__details``), click it
+        to continue the session when cookies are not enough but the browser still knows the user.
+        """
+        selectors = (
+            'button.member-profile__details[aria-label^="Login as "]',
+            SEL["saved_account_login"],
+            ".member-profile-block button.member-profile__details",
+            'button[class*="member-profile__details"]',
+        )
+        candidates: list = []
+        for css in selectors:
+            try:
+                els = driver.find_elements(By.CSS_SELECTOR, css)
+            except Exception:
+                els = []
+            for el in els:
+                try:
+                    if el.is_displayed() and el.is_enabled():
+                        candidates.append(el)
+                except Exception:
+                    continue
+            if candidates:
+                break
+
+        if not candidates:
+            return False
+
+        btn = None
+        fn = self.account_first_name or ""
+        if fn and len(fn) >= _MIN_FIRST_NAME_LEN:
+            fn_lower = fn.lower()
+            for el in candidates:
+                label = (el.get_attribute("aria-label") or "").lower()
+                if fn_lower in label:
+                    btn = el
+                    break
+        if btn is None:
+            btn = candidates[0]
+
+        label = (btn.get_attribute("aria-label") or "").strip() or "(saved account)"
+        log.info("Clicking LinkedIn saved-account button: %s", label)
+        try:
+            if self.highlight:
+                focus_element(driver, btn, pause=self.step_delay)
+            btn.click()
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].click();", btn)
+            except Exception:
+                log.debug("Saved-account button click failed", exc_info=True)
+                return False
+
+        self._pause()
+        time.sleep(1.2)
+        return True
+
     def _session_looks_logged_in(self, driver) -> bool:
         # Use feed *path* only — "feed" in the raw URL matches login pages (?trk=feed, redirect=...feed...).
         # When a first name is set, still accept /feed path first: feed loads before nav shows the name.
@@ -1090,12 +1251,34 @@ class JobSearcher:
             log.info("Already logged in (session restored)")
             return
 
+        log.info("Opening LinkedIn login page (saved account or email/password).")
+        driver.get("https://www.linkedin.com/login")
+        self._pause()
+        time.sleep(self.login_form_wait_seconds)
+
+        if self._login_page_shows_welcome_back_saved_account(driver):
+            log.info("LinkedIn shows Welcome Back / saved profile — trying one-click login.")
+            if self._try_click_saved_account_login(driver):
+                if "checkpoint" in driver.current_url or "captcha" in driver.current_url.lower():
+                    log.warning(
+                        "2FA/CAPTCHA after saved-account click — complete it manually in Chrome "
+                        f"(polling up to {self.login_complete_max_seconds:.0f}s)"
+                    )
+                    self._wait_until_logged_in(driver, self.login_complete_max_seconds)
+                else:
+                    self._wait_until_logged_in(driver, self.login_complete_max_seconds_no_checkpoint)
+                if self._session_looks_logged_in(driver):
+                    log.info("Login successful (saved account)")
+                    return
+            log.info("Saved-account path did not complete session; falling back to email/password.")
+
         email = os.environ.get("LINKEDIN_EMAIL", "")
         password = os.environ.get("LINKEDIN_PASSWORD", "")
 
         if not email or not password:
             raise EnvironmentError(
-                "Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD in your .env file"
+                "Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD in your .env file "
+                "(needed when cookies and saved-account login are not enough)."
             )
 
         log.info("Logging in as %s", email)

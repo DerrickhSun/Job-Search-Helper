@@ -25,7 +25,15 @@ if sys.platform == "win32":
 from utils.apply_sheets import append_applied_job_row
 from utils.chrome_driver import build_chrome, load_cookies, save_cookies
 from utils.company_blacklist import is_company_blacklisted, load_company_blacklist
-from utils.consulting_filter import is_consulting_listing
+from utils.consulting_company_memory import (
+    DEFAULT_CONSULTING_MEMORY_PATH,
+    load_consulting_company_memory,
+    linkedin_company_slug_from_url,
+)
+from utils.consulting_filter import (
+    is_consulting_listing_from_job_posting_text_only,
+    is_consulting_listing_from_listing_company_line_only,
+)
 from utils.cover_letter import CoverLetterGenerator
 from utils.dspy_lm import configure_dspy
 from utils.form_filler import DEFAULT_HEADSHOT_IMAGE, EasyApplyFiller
@@ -48,6 +56,9 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
+
+# LinkedIn caps Easy Apply volume; default and hard ceiling per run (use --max-applies 0 for no cap).
+MAX_EASY_APPLY_PER_RUN = 30
 
 
 def _job_searcher_from_args(args, **kwargs):
@@ -75,8 +86,17 @@ def run(args):
 
     # 0 = unlimited listings evaluated; positive int = cap on how many cards we open.
     max_listings_cap: int | None = None if args.max_jobs <= 0 else args.max_jobs
-    # 0 = no cap on successful applies; positive int = stop after that many successful applies.
-    max_applies_cap: int | None = None if args.max_applies <= 0 else args.max_applies
+    # 0 = no cap on successful applies; positive int = stop after that many successful applies (capped).
+    if args.max_applies <= 0:
+        max_applies_cap = None
+    else:
+        max_applies_cap = min(int(args.max_applies), MAX_EASY_APPLY_PER_RUN)
+        if int(args.max_applies) > MAX_EASY_APPLY_PER_RUN:
+            log.info(
+                "Capping --max-applies from %d to %d (LinkedIn Easy Apply practical limit per run).",
+                int(args.max_applies),
+                MAX_EASY_APPLY_PER_RUN,
+            )
 
     if args.debug_jobs_page and args.helper:
         raise SystemExit("error: use either --debug-jobs-page or --helper, not both")
@@ -215,13 +235,47 @@ def run(args):
     )
 
     searcher = _job_searcher_from_args(args, account_first_name=account_first)
+    consulting_memory_path = (
+        Path(args.consulting_companies_memory_path)
+        if args.consulting_companies_memory_path is not None
+        else DEFAULT_CONSULTING_MEMORY_PATH
+    )
+    consulting_memory = None
+    if args.skip_consulting and args.consulting_companies_memory:
+        consulting_memory = load_consulting_company_memory(consulting_memory_path)
+    elif args.skip_consulting:
+        log.info(
+            "Consulting company memory disabled (--no-consulting-companies-memory); "
+            "LinkedIn company pages will be re-fetched when listing heuristics pass."
+        )
+
     company_lookup_driver = None
-    if args.skip_consulting:
+
+    def ensure_company_lookup_driver():
+        nonlocal company_lookup_driver
+        if company_lookup_driver is not None:
+            return company_lookup_driver
+        log.info("Starting second Chrome session for LinkedIn company-page consulting checks.")
         company_lookup_driver = build_chrome(headless=args.headless)
         try:
             load_cookies(company_lookup_driver, searcher.session_file)
         except Exception:
             log.debug("Company lookup driver: cookie load failed", exc_info=True)
+        log.info(
+            "Company lookup browser: verifying LinkedIn session (same flow as main window — feed, "
+            "Welcome Back / saved account, or email/password)."
+        )
+        try:
+            searcher._login(company_lookup_driver)
+        except Exception:
+            log.exception("Company lookup driver: LinkedIn login failed; closing second Chrome.")
+            try:
+                company_lookup_driver.quit()
+            except Exception:
+                pass
+            company_lookup_driver = None
+            raise
+        return company_lookup_driver
 
     apply_stats = {"applied": 0}
     if max_applies_cap is not None:
@@ -241,6 +295,64 @@ def run(args):
             max_listings_cap,
         )
 
+    def maybe_skip_from_list_card_preview(driver, peek: dict) -> bool:
+        """
+        Blacklist / consulting memory / listing-company heuristics using only list-card text (no job click).
+
+        When this returns True, the card is dismissed (except already-applied) and ``process_listing`` is not run.
+        """
+        jid = str(peek.get("id") or "").strip()
+        if not jid:
+            return False
+        if tracker.already_applied(jid):
+            log.info(
+                "Skipping from list card (already applied, no job click): %s at %s",
+                peek.get("title"),
+                peek.get("company"),
+            )
+            return True
+
+        company = str(peek.get("company") or "").strip()
+        title = str(peek.get("title") or "").strip()
+
+        if is_company_blacklisted(company, company_blacklist):
+            log.info(
+                "Skipping from list card (blacklisted company, no job click): %s at %s",
+                title or "(no title)",
+                company or "(no company)",
+            )
+            tracker.log(peek, status="blacklisted", score=0.0)
+            if searcher.dismiss_current_job(driver, reason="blacklisted-list-card", job_id=jid):
+                log.info("  → Dismissed on LinkedIn from list card.")
+            return True
+
+        if args.skip_consulting and consulting_memory is not None:
+            if consulting_memory.matches(slug=None, company_display=company):
+                log.info(
+                    "Skipping from list card (remembered consulting company, no job click): %s at %s",
+                    title or "(no title)",
+                    company or "(no company)",
+                )
+                tracker.log(peek, status="consulting", score=0.0)
+                if searcher.dismiss_current_job(
+                    driver, reason="consulting-remembered-list-card", job_id=jid
+                ):
+                    log.info("  → Dismissed on LinkedIn from list card.")
+                return True
+
+        if args.skip_consulting and is_consulting_listing_from_listing_company_line_only(peek):
+            log.info(
+                "Skipping from list card (listing company / title consulting heuristics, no job click): %s at %s",
+                title,
+                company,
+            )
+            tracker.log(peek, status="consulting", score=0.0)
+            if searcher.dismiss_current_job(driver, reason="consulting-list-card", job_id=jid):
+                log.info("  → Dismissed on LinkedIn from list card.")
+            return True
+
+        return False
+
     def process_listing(driver, job: dict) -> None:
         if tracker.already_applied(job["id"]):
             log.info("Skipping (already applied): %s at %s", job["title"], job["company"])
@@ -249,30 +361,6 @@ def run(args):
             log.info("Skipping (company blacklisted): %s at %s", job["title"], job["company"])
             tracker.log(job, status="blacklisted", score=0.0)
             return
-        if args.skip_consulting and is_consulting_listing(job):
-            log.info("Skipping (consulting / staffing indicators): %s at %s", job["title"], job["company"])
-            tracker.log(job, status="consulting", score=0.0)
-            if searcher.dismiss_current_job(driver, reason="consulting-signals", job_id=str(job.get("id") or "")):
-                log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
-            return
-        if args.skip_consulting and company_lookup_driver is not None:
-            company_link = searcher.selected_job_company_link(driver)
-            if company_link:
-                # LinkedIn often gives /life URL; normalize to /about/ for consistent industry/overview fields.
-                m = re.search(r"(https://www\.linkedin\.com/company/[^/]+)", company_link, re.IGNORECASE)
-                normalized_link = f"{m.group(1)}/about/" if m else company_link
-                if searcher.company_page_looks_consulting(company_lookup_driver, normalized_link):
-                    log.info(
-                        "Skipping (company page indicates consulting/recruiting): %s at %s",
-                        job["title"],
-                        job["company"],
-                    )
-                    tracker.log(job, status="consulting", score=0.0)
-                    if searcher.dismiss_current_job(
-                        driver, reason="company-page-signals", job_id=str(job.get("id") or "")
-                    ):
-                        log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
-                    return
         if not job.get("easy_apply"):
             log.info(
                 "Skipping (no Easy Apply on card — external apply not implemented yet): %s at %s",
@@ -308,6 +396,89 @@ def run(args):
             tracker.log(job, status="skipped", score=fit)
             return
 
+        # Company-based consulting checks come last so requirement/fit disqualifications short-circuit first.
+        if args.skip_consulting and is_consulting_listing_from_job_posting_text_only(job):
+            log.info(
+                "Skipping (consulting / staffing signals in job title or description): %s at %s",
+                job["title"],
+                job["company"],
+            )
+            tracker.log(job, status="consulting", score=0.0)
+            if searcher.dismiss_current_job(driver, reason="consulting-signals", job_id=str(job.get("id") or "")):
+                log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+            return
+        if args.skip_consulting and is_consulting_listing_from_listing_company_line_only(job):
+            log.info(
+                "Skipping (consulting / staffing on listing company or title line): %s at %s",
+                job["title"],
+                job["company"],
+            )
+            tracker.log(job, status="consulting", score=0.0)
+            if searcher.dismiss_current_job(driver, reason="consulting-signals", job_id=str(job.get("id") or "")):
+                log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+            return
+
+        company_link_li = None
+        if args.skip_consulting and consulting_memory is not None:
+            if consulting_memory.matches(
+                slug=None,
+                company_display=str(job.get("company") or ""),
+            ):
+                log.info(
+                    "Skipping (remembered consulting company — no LinkedIn company page fetch): %s at %s",
+                    job["title"],
+                    job.get("company"),
+                )
+                tracker.log(job, status="consulting", score=0.0)
+                if searcher.dismiss_current_job(
+                    driver, reason="consulting-remembered", job_id=str(job.get("id") or "")
+                ):
+                    log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+                return
+
+        if args.skip_consulting:
+            company_link_li = searcher.selected_job_company_link(driver)
+            if consulting_memory is not None and company_link_li:
+                slug_only = linkedin_company_slug_from_url(company_link_li)
+                if slug_only and consulting_memory.matches(
+                    slug=slug_only,
+                    company_display=str(job.get("company") or ""),
+                ):
+                    log.info(
+                        "Skipping (remembered consulting company by LinkedIn slug — no company page fetch): %s at %s",
+                        job["title"],
+                        job.get("company"),
+                    )
+                    tracker.log(job, status="consulting", score=0.0)
+                    if searcher.dismiss_current_job(
+                        driver, reason="consulting-remembered", job_id=str(job.get("id") or "")
+                    ):
+                        log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+                    return
+
+        if args.skip_consulting and company_link_li:
+            m = re.search(r"(https://www\.linkedin\.com/company/[^/]+)", company_link_li, re.IGNORECASE)
+            normalized_link = f"{m.group(1)}/about/" if m else company_link_li
+            lookup_driver = ensure_company_lookup_driver()
+            if searcher.company_page_looks_consulting(lookup_driver, normalized_link):
+                log.info(
+                    "Skipping (company page indicates consulting/recruiting): %s at %s",
+                    job["title"],
+                    job["company"],
+                )
+                tracker.log(job, status="consulting", score=0.0)
+                if consulting_memory is not None:
+                    consulting_memory.remember(
+                        slug=linkedin_company_slug_from_url(company_link_li),
+                        company_display=str(job.get("company") or ""),
+                    )
+                    log.info("  → Recorded company in consulting memory (%s).", consulting_memory.path)
+                if searcher.dismiss_current_job(
+                    driver, reason="company-page-signals", job_id=str(job.get("id") or "")
+                ):
+                    log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+                return
+
         cover_letter = cover_gen.generate(resume, job)
         log.info("  → Easy Apply (same browser session)...")
         success = filler.apply(job, resume, cover_letter, driver=driver)
@@ -336,6 +507,7 @@ def run(args):
             process_listing=process_listing,
             max_applies=max_applies_cap,
             apply_counter=apply_stats,
+            maybe_skip_from_list_card=maybe_skip_from_list_card_preview,
         )
     finally:
         if company_lookup_driver is not None:
@@ -510,9 +682,10 @@ def main():
     ap.add_argument(
         "--max-applies",
         type=int,
-        default=100,
+        default=MAX_EASY_APPLY_PER_RUN,
         metavar="N",
-        help="Stop after N successful Easy Applies this run (default: 100). "
+        help=f"Stop after N successful Easy Applies this run (default: {MAX_EASY_APPLY_PER_RUN}; "
+        f"values above {MAX_EASY_APPLY_PER_RUN} are capped). "
         "Use 0 for no apply cap (run until --max-jobs listings or end of search).",
     )
     ap.add_argument(
@@ -521,7 +694,7 @@ def main():
         default=0,
         metavar="N",
         help="Max job listings to open and evaluate per run (default: 0 = no cap). "
-        "Use with --max-applies as a safety bound (e.g. --max-jobs 800 --max-applies 100). "
+        "Use with --max-applies as a safety bound (e.g. --max-jobs 800 --max-applies 30). "
         "LinkedIn shows ~25 listings per page when more pages exist.",
     )
     ap.add_argument(
@@ -711,6 +884,22 @@ def main():
         "singular ``our client`` but not ``our clients``, "
         "etc.; bare 'consulting' in the description is ignored to avoid industry-experience false positives). "
         "Default: on. Use --no-skip-consulting to disable.",
+    )
+    ap.add_argument(
+        "--consulting-companies-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Remember LinkedIn company-page consulting flags across runs (slugs + normalized names in a JSON "
+        "file) so those employers are skipped without opening /company/.../about again. Also defers starting the "
+        "second Chrome window until a company page is actually needed. Default: on. "
+        "Use --no-consulting-companies-memory to always re-fetch company pages when heuristics pass.",
+    )
+    ap.add_argument(
+        "--consulting-companies-memory-path",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Path for consulting company memory JSON (default: data/consulting_companies.json).",
     )
     ap.add_argument(
         "--google-sheets-credentials",
