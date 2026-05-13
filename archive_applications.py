@@ -1,20 +1,31 @@
 """
-Append rows from ``output/applications.csv`` into ``output/archive/applications_archive.csv``,
-then reset the active file to header-only (same layout as ``archive_assisted_applications.py``).
+Append data rows from active CSV(s) into archive history CSV(s), then reset each active file to
+header-only.
 
-LinkedIn dedupe still treats archived rows as prior applies: :meth:`tracker.ApplicationTracker.already_applied`
-reads both CSV paths in addition to ``data/applications.db``.
+**Default:** archives both ``output/applications.csv`` and ``output/assisted_applications.csv``.
 
-Run from repo root: ``python archive_applications.py``
+LinkedIn dedupe still treats archived application rows as prior applies:
+:class:`tracker.ApplicationTracker.already_applied` reads both archive paths in addition to
+``data/applications.db``.
+
+Run from repo root::
+
+    python archive_applications.py
+    python archive_applications.py --applications-only
+    python archive_applications.py --assisted-only
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
+from pathlib import Path
 
 from utils.output_paths import (
-    APPLICATIONS_ARCHIVE_CSV as ARCHIVE,
-    APPLICATIONS_CSV as APPLICATIONS,
+    APPLICATIONS_ARCHIVE_CSV,
+    APPLICATIONS_CSV,
+    ASSISTED_APPLICATIONS_CSV,
+    ASSISTED_APPLICATIONS_HISTORY_CSV,
     migrate_legacy_root_archive_files,
 )
 
@@ -27,14 +38,14 @@ def _is_header_row(row: list[str]) -> bool:
     return (row[0] or "").strip() == "" and (row[1] or "").strip().lower() == "company"
 
 
-def main() -> None:
-    migrate_legacy_root_archive_files()
-    APPLICATIONS.parent.mkdir(parents=True, exist_ok=True)
-    ARCHIVE.parent.mkdir(parents=True, exist_ok=True)
+def _archive_one(*, active_csv: Path, history_csv: Path) -> int:
+    """Append non-header rows from ``active_csv`` to ``history_csv``; reset ``active_csv`` to header only. Returns row count."""
+    active_csv.parent.mkdir(parents=True, exist_ok=True)
+    history_csv.parent.mkdir(parents=True, exist_ok=True)
 
     rows: list[list[str]] = []
-    if APPLICATIONS.is_file():
-        with APPLICATIONS.open(newline="", encoding="utf-8") as f:
+    if active_csv.is_file():
+        with active_csv.open(newline="", encoding="utf-8") as f:
             rows = list(csv.reader(f))
 
     header = list(HEADER)
@@ -47,19 +58,51 @@ def main() -> None:
             continue
         data_rows.append(row)
 
-    archive_exists = ARCHIVE.is_file() and ARCHIVE.stat().st_size > 0
-    with ARCHIVE.open("a", newline="", encoding="utf-8") as f:
+    history_exists = history_csv.is_file() and history_csv.stat().st_size > 0
+    with history_csv.open("a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        if not archive_exists:
+        if not history_exists:
             w.writerow(header)
         w.writerows(data_rows)
 
-    with APPLICATIONS.open("w", newline="", encoding="utf-8") as f:
+    with active_csv.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(header)
 
-    print(f"Archived {len(data_rows)} data row(s) -> {ARCHIVE.resolve()}")
-    print(f"Reset {APPLICATIONS.resolve()} to header only.")
+    return len(data_rows)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Move application tracking rows from active CSV(s) into archive CSV(s)."
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--applications-only",
+        action="store_true",
+        help="Only archive output/applications.csv (skip assisted).",
+    )
+    group.add_argument(
+        "--assisted-only",
+        action="store_true",
+        help="Only archive output/assisted_applications.csv (skip applications).",
+    )
+    args = parser.parse_args()
+
+    migrate_legacy_root_archive_files()
+
+    do_applications = not args.assisted_only
+    do_assisted = not args.applications_only
+
+    if do_applications:
+        n = _archive_one(active_csv=APPLICATIONS_CSV, history_csv=APPLICATIONS_ARCHIVE_CSV)
+        print(f"Applications: archived {n} data row(s) -> {APPLICATIONS_ARCHIVE_CSV.resolve()}")
+        print(f"Applications: reset {APPLICATIONS_CSV.resolve()} to header only.")
+
+    if do_assisted:
+        n = _archive_one(active_csv=ASSISTED_APPLICATIONS_CSV, history_csv=ASSISTED_APPLICATIONS_HISTORY_CSV)
+        print(f"Assisted: archived {n} data row(s) -> {ASSISTED_APPLICATIONS_HISTORY_CSV.resolve()}")
+        print(f"Assisted: reset {ASSISTED_APPLICATIONS_CSV.resolve()} to header only.")
 
 
 if __name__ == "__main__":
