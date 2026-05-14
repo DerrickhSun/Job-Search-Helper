@@ -846,7 +846,8 @@ def main():
         default=Path("output/coverletters"),
         metavar="DIR",
         help='Save generated cover letter .docx files here when the form has "Upload cover letter" '
-        "(default: output/coverletters).",
+        "(default: output/coverletters). Names look like "
+        "`{linkedin|greenhouse}_{company}_{position}_{job_id}.docx` (unsafe characters removed).",
     )
     ap.add_argument(
         "--headshot",
@@ -920,6 +921,8 @@ def main():
         "--export-csv",
         action="store_true",
         help="Write output/applications.csv and output/apply_opened.csv from data/applications.db and exit. "
+        "Applied rows already listed in output/archive/applications_archive.csv are omitted from applications.csv "
+        "so re-export after archiving does not duplicate rows on the next archive. "
         "Use when a run was interrupted (Ctrl+C) or you want CSVs to match the DB without re-scraping.",
     )
     args = ap.parse_args()

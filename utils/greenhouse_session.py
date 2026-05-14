@@ -22,7 +22,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .chrome_driver import build_chrome, focus_element, save_cookies
-from .cover_letter import CoverLetterGenerator, write_cover_letter_docx
+from .cover_letter import CoverLetterGenerator, cover_letter_docx_path_unique, write_cover_letter_docx
 from .dspy_lm import configure_dspy
 from .form_fill_rules import DEFAULT_RULES_PATH, FormFillRulesEngine
 from .job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS
@@ -42,6 +42,9 @@ GREENHOUSE_SIGN_IN_URL = f"{MY_GREENHOUSE_ORIGIN}/users/sign_in"
 GREENHOUSE_DASHBOARD_URL = f"{MY_GREENHOUSE_ORIGIN}/dashboard"
 DEFAULT_GREENHOUSE_COOKIE_PATH = Path("data/selenium_greenhouse_cookies.json")
 DEFAULT_APPLICATIONS_DB = Path("data/applications.db")
+
+# After opening MyGreenhouse sign-in, wait so a delayed redirect / trusted-device login can complete.
+GREENHOUSE_SIGN_IN_POST_NAV_DELAY_S = 10.0
 
 # Harvest job description from embedded boards (same priority idea as EasyApplyFiller).
 GREENHOUSE_DESCRIPTION_IFRAME_SELECTORS: tuple[str, ...] = (
@@ -1830,9 +1833,13 @@ def maybe_upload_greenhouse_cover_letter(
         log.warning("Generated cover letter is empty — skipping Greenhouse upload.")
         return
     docx_dir = Path(getattr(args, "cover_letter_dir", Path("output/coverletters")))
-    docx_dir.mkdir(parents=True, exist_ok=True)
-    safe = re.sub(r"[^\w\-.]+", "_", str(job.get("id", "job")))[:120]
-    out_file = docx_dir / f"gh_cover_{safe}.docx"
+    out_file = cover_letter_docx_path_unique(
+        docx_dir,
+        site="greenhouse",
+        company=str(job.get("company") or ""),
+        title=str(job.get("title") or ""),
+        job_id=str(job.get("id") or "job"),
+    )
     try:
         write_cover_letter_docx(cover_text, out_file)
     except Exception as e:
@@ -1989,7 +1996,11 @@ def run_greenhouse_sign_in_flow(args) -> None:
 
         log.info("Opening MyGreenhouse sign-in (candidates): %s", GREENHOUSE_SIGN_IN_URL)
         driver.get(GREENHOUSE_SIGN_IN_URL)
-        time.sleep(1.0)
+        log.info(
+            "Waiting %.0fs on the sign-in page in case the session completes automatically.",
+            GREENHOUSE_SIGN_IN_POST_NAV_DELAY_S,
+        )
+        time.sleep(GREENHOUSE_SIGN_IN_POST_NAV_DELAY_S)
 
         if _is_candidate_dashboard(driver.current_url or ""):
             log.info("Already on dashboard (session from cookies).")

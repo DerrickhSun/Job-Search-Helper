@@ -22,7 +22,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
 
 from .chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies
-from .cover_letter import write_cover_letter_docx
+from .cover_letter import cover_letter_docx_path_unique, write_cover_letter_docx
 from .form_fill_rules import FormFillRulesEngine
 
 log = logging.getLogger(__name__)
@@ -1525,8 +1525,13 @@ class EasyApplyFiller:
                     if not (cover_letter or "").strip():
                         log.warning("Cover letter upload requested but generated cover letter is empty — skipping")
                         continue
-                    safe_id = re.sub(r"[^\w\-.]+", "_", str(job.get("id", "job")))[:120]
-                    docx_path = self.cover_letter_docx_dir / f"cover_{safe_id}.docx"
+                    docx_path = cover_letter_docx_path_unique(
+                        self.cover_letter_docx_dir,
+                        site="linkedin",
+                        company=str(job.get("company") or ""),
+                        title=str(job.get("title") or ""),
+                        job_id=str(job.get("id") or "job"),
+                    )
                     write_cover_letter_docx(cover_letter, docx_path)
                     finp.send_keys(str(docx_path.resolve()))
                     self._after_field_fill()

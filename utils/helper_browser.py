@@ -4,7 +4,8 @@ the bot polls the Easy Apply modal and fills fields it recognizes. Terminal comm
 
 When LinkedIn opens an external site in a **new tab** (common for off-site apply), we detect that tab,
 record the job from the LinkedIn detail pane (status apply_opened), append a JSONL event, and save a
-cover letter .docx under your Downloads folder (or --helper-downloads-dir).
+cover letter ``.docx`` under your Downloads folder (or ``--helper-downloads-dir``). Filenames use
+``linkedin_{company}_{title}_{job_id}.docx`` (see :func:`utils.cover_letter.cover_letter_docx_path_unique`).
 
 Commands (type in this terminal, then Enter):
   r / record — log the current job detail as \"applied\" (same tracker + Sheets as auto mode)
@@ -29,7 +30,7 @@ from .apply_sheets import append_applied_job_row
 from .chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, load_cookies, save_cookies
 from .company_blacklist import is_company_blacklisted, load_company_blacklist
 from .consulting_filter import is_consulting_listing
-from .cover_letter import CoverLetterGenerator, write_cover_letter_docx
+from .cover_letter import CoverLetterGenerator, cover_letter_docx_path_unique, write_cover_letter_docx
 from .form_filler import EasyApplyFiller
 from .job_searcher import JobSearcher
 from .matcher import JobMatcher, print_job_fit_debug
@@ -61,27 +62,6 @@ _EXTERNAL_APPLY_URL_FRAGMENTS: tuple[str, ...] = (
 )
 
 _HELPER_APPLY_EVENTS_JSONL = Path("data/helper_external_apply_events.jsonl")
-
-
-def _safe_filename_component(s: str, max_len: int = 100) -> str:
-    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", (s or "").strip())
-    s = re.sub(r"\s+", " ", s)
-    return (s[:max_len] or "unknown").rstrip(" .")
-
-
-def _cover_docx_path(downloads_dir: Path, company: str, title: str) -> Path:
-    c = _safe_filename_component(company or "Company", 70)
-    t = _safe_filename_component(title or "Position", 90)
-    base = f"{c} - {t}.docx"
-    path = downloads_dir / base
-    if not path.exists():
-        return path
-    n = 2
-    while True:
-        cand = downloads_dir / f"{c} - {t} ({n}).docx"
-        if not cand.exists():
-            return cand
-        n += 1
 
 
 def _url_looks_like_external_job_apply(url: str) -> bool:
@@ -212,7 +192,13 @@ def _detect_external_apply_new_tabs(
         cl = _cover_letter_for_job(cover_gen, resume, job, cover_cache)
         tracker.log(job, status="apply_opened", score=score, cover_letter=cl)
 
-        docx_path = _cover_docx_path(downloads_dir, job.get("company", ""), job.get("title", ""))
+        docx_path = cover_letter_docx_path_unique(
+            downloads_dir,
+            site="linkedin",
+            company=str(job.get("company") or ""),
+            title=str(job.get("title") or ""),
+            job_id=str(job.get("id") or "job"),
+        )
         try:
             write_cover_letter_docx(cl, docx_path)
         except Exception as e:

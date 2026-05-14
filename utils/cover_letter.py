@@ -110,6 +110,76 @@ def write_cover_letter_docx(body: str, path: Path | str) -> Path:
     return path
 
 
+_MAX_COVER_LETTER_FILENAME_STEM_CHARS = 200
+
+
+def _normalize_cover_letter_site(site: str) -> str:
+    s = (site or "").strip().lower()
+    if s in ("greenhouse", "gh") or "greenhouse" in s:
+        return "greenhouse"
+    return "linkedin"
+
+
+def _sanitize_cover_letter_filename_segment(s: str, max_len: int) -> str:
+    t = (s or "").strip()
+    t = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", t)
+    t = re.sub(r"\s+", "_", t)
+    t = re.sub(r"_+", "_", t).strip("._-")
+    if not t:
+        t = "unknown"
+    return t[:max_len].rstrip("._-")
+
+
+def cover_letter_docx_stem(
+    *,
+    site: str,
+    company: str,
+    title: str,
+    job_id: str,
+) -> str:
+    """
+    Filesystem-safe filename **stem** (no ``.docx``) for a cover letter:
+    ``{site}_{company}_{title}_{job_id}`` (``site`` is ``linkedin`` or ``greenhouse``).
+    """
+    board = _normalize_cover_letter_site(site)
+    co = _sanitize_cover_letter_filename_segment(company or "Company", 55)
+    ti = _sanitize_cover_letter_filename_segment(title or "Position", 75)
+    raw_id = str(job_id or "job").strip()
+    jid = re.sub(r"[^\w\-.]+", "_", raw_id).strip("_")
+    jid = (jid or "job")[:48]
+    stem = "_".join((board, co, ti, jid))
+    stem = re.sub(r"_+", "_", stem)
+    if len(stem) > _MAX_COVER_LETTER_FILENAME_STEM_CHARS:
+        stem = stem[:_MAX_COVER_LETTER_FILENAME_STEM_CHARS].rstrip("._-")
+    return stem
+
+
+def cover_letter_docx_path_unique(
+    output_dir: Path | str,
+    *,
+    site: str,
+    company: str,
+    title: str,
+    job_id: str,
+) -> Path:
+    """
+    ``output_dir / {stem}.docx`` using :func:`cover_letter_docx_stem`; if that path exists, use
+    ``{stem}__2.docx``, ``{stem}__3.docx``, …
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = cover_letter_docx_stem(site=site, company=company, title=title, job_id=str(job_id))
+    path = output_dir / f"{stem}.docx"
+    if not path.exists():
+        return path
+    n = 2
+    while True:
+        cand = output_dir / f"{stem}__{n}.docx"
+        if not cand.exists():
+            return cand
+        n += 1
+
+
 COVER_INSTRUCTION = """Write a concise, professional cover letter for this job application.
 
 Requirements:

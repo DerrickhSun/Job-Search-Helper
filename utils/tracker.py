@@ -3,7 +3,9 @@ Application Tracker
 Logs every job to SQLite and exports CSV in the same 6-column layout as Google Sheets
 (A empty, B company, C empty, D date, E job URL, F title):
 
-- ``applications.csv`` — status ``applied`` (manual ``r`` / successful auto-applies)
+- ``applications.csv`` — status ``applied`` (manual ``r`` / successful auto-applies). Export omits rows
+  whose job URL already appears in the archive CSV (same keys as ``already_applied``) so re-export after
+  archiving does not refill ``applications.csv`` with jobs that would duplicate on the next archive.
 - ``output/archive/applications_archive.csv`` — optional archive (see root ``archive_applications.py``,
   which also archives assisted rows by default); LinkedIn
   ``already_applied`` also matches job ids found in column E of this file
@@ -20,8 +22,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .apply_sheets import (
+    _is_applications_sheet_header_row,
     applied_sheet_row,
     format_apply_date_mdy,
+    linkedin_job_id_from_sheet_job_url,
     linkedin_job_ids_from_applications_sheet_csvs,
 )
 from .output_paths import APPLICATIONS_ARCHIVE_CSV, APPLICATIONS_CSV
@@ -49,6 +53,43 @@ def normalize_greenhouse_job_url(url: str) -> str:
         return f"{scheme}://{netloc}{path}".lower()
     except Exception:
         return u.lower()
+
+
+def _sheet_export_url_dedupe_key(url: str) -> str:
+    """
+    Stable key for matching an applications-sheet row (column E) to the archive / active CSV.
+    LinkedIn uses numeric job id; Greenhouse uses :func:`normalize_greenhouse_job_url`; else full URL lowercased.
+    """
+    jid = linkedin_job_id_from_sheet_job_url(url)
+    if jid:
+        return f"li:{jid}"
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if "greenhouse" in u.lower():
+        k = normalize_greenhouse_job_url(u)
+        return f"gh:{k}" if k else ""
+    return f"u:{u.lower()}"
+
+
+def _archive_row_keys_for_export_dedupe(archive_csv: Path) -> frozenset[str]:
+    keys: set[str] = set()
+    if not archive_csv.is_file():
+        return frozenset()
+    try:
+        with archive_csv.open(newline="", encoding="utf-8") as f:
+            for row in csv.reader(f):
+                if not row or len(row) < 5:
+                    continue
+                if _is_applications_sheet_header_row(row):
+                    continue
+                k = _sheet_export_url_dedupe_key(row[4])
+                if k:
+                    keys.add(k)
+    except Exception as e:
+        log.warning("Could not read archive for export dedupe %s: %s", archive_csv.resolve(), e)
+        return frozenset()
+    return frozenset(keys)
 
 
 class ApplicationTracker:
@@ -185,6 +226,10 @@ class ApplicationTracker:
         Export rows in the Google Sheet layout: A empty, B company, C empty, D date, E url, F title.
 
         Default ``statuses`` is ``("applied",)`` (manual helper ``r`` / successful auto-applies).
+        Rows whose job URL already appears in ``output/archive/applications_archive.csv`` are omitted
+        so ``--export-csv`` does not refill ``applications.csv`` with jobs you have already archived
+        (which would duplicate them on the next archive run).
+
         Use ``statuses=("apply_opened",)`` for external-apply-tab captures.
         """
         if not statuses:
@@ -200,22 +245,42 @@ class ApplicationTracker:
                 statuses,
             ).fetchall()
 
+        archived_keys = (
+            _archive_row_keys_for_export_dedupe(APPLICATIONS_ARCHIVE_CSV)
+            if statuses == ("applied",)
+            else frozenset()
+        )
+        written: list[tuple] = []
+        excluded = 0
+        for company, url, title, applied_at in rows:
+            k = _sheet_export_url_dedupe_key(url or "")
+            if k and k in archived_keys:
+                excluded += 1
+                continue
+            written.append((company, url, title, applied_at))
+
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         header = ("", "company", "", "date", "url", "title")
         with open(out, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(header)
-            for company, url, title, applied_at in rows:
+            for company, url, title, applied_at in written:
                 job = {"company": company or "", "url": url or "", "title": title or ""}
                 writer.writerow(applied_sheet_row(job, format_apply_date_mdy(applied_at or "")))
 
         log.info(
             "Exported %d job(s) (statuses=%s) to %s (sheet column layout)",
-            len(rows),
+            len(written),
             ",".join(statuses),
             out,
         )
+        if excluded:
+            log.info(
+                "Excluded %d applied job(s) whose URL already appears in %s (not re-exporting archived applies).",
+                excluded,
+                APPLICATIONS_ARCHIVE_CSV.resolve(),
+            )
 
     def summary(self) -> dict:
         with self._conn() as conn:

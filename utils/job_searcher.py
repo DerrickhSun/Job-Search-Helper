@@ -31,8 +31,17 @@ from .job_records import append_listing_record
 
 log = logging.getLogger(__name__)
 
+# After ``driver.get`` on ``https://www.linkedin.com/login``, wait so a delayed auto-login / device-trust
+# redirect can complete before we interact with the form.
+LINKEDIN_LOGIN_PAGE_POST_NAV_DELAY_S = 10.0
+
+# After the first ``driver.get`` on ``https://www.linkedin.com/feed/``, wait so cookie-driven redirects
+# (e.g. delayed / device sign-in) can finish before we navigate to ``/login`` again.
+LINKEDIN_FEED_FIRST_NAV_DELAY_S = 5.0
+
 # Used when ``--keywords`` is omitted (LinkedIn pipeline and Greenhouse MyGreenhouse multi-search).
 DEFAULT_JOB_SEARCH_KEYWORDS: tuple[str, ...] = (
+    "software developer",
     "software engineer",
     "data scientist",
     "data analyst",
@@ -102,6 +111,42 @@ def _linkedin_url_is_feed_home(url: str) -> bool:
     except Exception:
         return False
     return path == "/feed" or path.startswith("/feed/")
+
+
+def _linkedin_url_is_authenticated_jobs_area(url: str) -> bool:
+    """True when already on the logged-in Jobs experience (delayed auth sometimes lands here, not /feed)."""
+    try:
+        path = (urllib.parse.urlparse(url).path or "").lower()
+    except Exception:
+        return False
+    if not path.startswith("/jobs"):
+        return False
+    if "guest" in path or "authwall" in path:
+        return False
+    return True
+
+
+def _linkedin_url_on_credential_or_device_flow(url: str) -> bool:
+    """
+    True when the browser is already on LinkedIn sign-in or device-trust / checkpoint flow
+    (common right after loading ``/feed/`` with stale cookies). Not feed or logged-in jobs home.
+    """
+    if _linkedin_url_is_feed_home(url) or _linkedin_url_is_authenticated_jobs_area(url):
+        return False
+    try:
+        path = (urllib.parse.urlparse(url).path or "").lower()
+    except Exception:
+        return False
+    p = path.rstrip("/") or "/"
+    if p == "/login" or p.startswith("/login/"):
+        return True
+    if "checkpoint" in path or "challenge" in path:
+        return True
+    if "/uas/" in path:
+        return True
+    if "authwall" in path:
+        return True
+    return False
 
 
 def _find_login_element(driver, css: str, *, attempts: int = 12, delay_s: float = 0.5):
@@ -1236,8 +1281,37 @@ class JobSearcher:
             return False
         if _linkedin_url_is_feed_home(url):
             return True
+        if _linkedin_url_is_authenticated_jobs_area(url):
+            return True
         if self.account_first_name and len(self.account_first_name) >= _MIN_FIRST_NAME_LEN:
             return _page_contains_first_name(driver, self.account_first_name)
+        return False
+
+    @staticmethod
+    def _wait_after_initial_linkedin_feed_nav() -> None:
+        log.info(
+            "Waiting %.0fs after opening LinkedIn so cookie-based redirects (e.g. delayed sign-in) can finish.",
+            LINKEDIN_FEED_FIRST_NAV_DELAY_S,
+        )
+        time.sleep(LINKEDIN_FEED_FIRST_NAV_DELAY_S)
+
+    @staticmethod
+    def _wait_on_linkedin_login_page_for_delayed_auth() -> None:
+        log.info(
+            "Waiting %.0fs on the LinkedIn login page in case the session completes automatically.",
+            LINKEDIN_LOGIN_PAGE_POST_NAV_DELAY_S,
+        )
+        time.sleep(LINKEDIN_LOGIN_PAGE_POST_NAV_DELAY_S)
+
+    def _skip_redundant_linkedin_login_get(self, driver) -> bool:
+        """When cookies already sent us to sign-in / checkpoint, avoid a second ``get(/login)``."""
+        return _linkedin_url_on_credential_or_device_flow(driver.current_url or "")
+
+    def _login_return_if_session_ready(self, driver, *, note: str) -> bool:
+        """If the browser already has an authenticated session, log and return True (skip credential form)."""
+        if self._session_looks_logged_in(driver):
+            log.info("Login complete without credential step (%s).", note)
+            return True
         return False
 
     def _login(self, driver) -> None:
@@ -1245,16 +1319,25 @@ class JobSearcher:
             log.info("Login check: looking for first name %r on the page", self.account_first_name)
         driver.get("https://www.linkedin.com/feed/")
         self._pause()
-        time.sleep(0.8)
+        self._wait_after_initial_linkedin_feed_nav()
 
         if self._session_looks_logged_in(driver):
             log.info("Already logged in (session restored)")
             return
 
-        log.info("Opening LinkedIn login page (saved account or email/password).")
-        driver.get("https://www.linkedin.com/login")
+        if self._skip_redundant_linkedin_login_get(driver):
+            log.info(
+                "LinkedIn already on a sign-in or device-trust URL after cookies; skipping extra /login navigation."
+            )
+        else:
+            log.info("Opening LinkedIn login page (saved account or email/password).")
+            driver.get("https://www.linkedin.com/login")
         self._pause()
+        self._wait_on_linkedin_login_page_for_delayed_auth()
         time.sleep(self.login_form_wait_seconds)
+
+        if self._login_return_if_session_ready(driver, note="after login-page wait"):
+            return
 
         if self._login_page_shows_welcome_back_saved_account(driver):
             log.info("LinkedIn shows Welcome Back / saved profile — trying one-click login.")
@@ -1272,6 +1355,9 @@ class JobSearcher:
                     return
             log.info("Saved-account path did not complete session; falling back to email/password.")
 
+        if self._login_return_if_session_ready(driver, note="before email/password form"):
+            return
+
         email = os.environ.get("LINKEDIN_EMAIL", "")
         password = os.environ.get("LINKEDIN_PASSWORD", "")
 
@@ -1282,9 +1368,14 @@ class JobSearcher:
             )
 
         log.info("Logging in as %s", email)
-        driver.get("https://www.linkedin.com/login")
+        if not self._skip_redundant_linkedin_login_get(driver):
+            driver.get("https://www.linkedin.com/login")
         self._pause()
+        self._wait_on_linkedin_login_page_for_delayed_auth()
         time.sleep(self.login_form_wait_seconds)
+
+        if self._login_return_if_session_ready(driver, note="after second login-page wait"):
+            return
 
         email_el = _find_login_element(driver, SEL["email_input"])
         if self.highlight:
