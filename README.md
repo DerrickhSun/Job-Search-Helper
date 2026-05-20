@@ -70,6 +70,14 @@ python main.py --resume resume.pdf --keywords "product manager" --headless
 - `output/screenshots/` — Error screenshots for failed applications
 - `data/bot.log` — Full log
 
+### Optional: sync outputs to AWS S3
+
+To copy `output/` (and optionally other folders) to a private S3 bucket between machines, see **[docs/s3_outputs.md](docs/s3_outputs.md)**. Quick upload after a run:
+
+```bash
+python scripts/upload_outputs_to_s3.py
+```
+
 ---
 
 ## First Run Tips
