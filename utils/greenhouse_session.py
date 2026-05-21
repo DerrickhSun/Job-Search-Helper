@@ -21,7 +21,13 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from .chrome_driver import build_chrome, focus_element, save_cookies
+from .chrome_driver import (
+    build_chrome,
+    driver_session_alive,
+    focus_element,
+    log_driver_session_closed,
+    save_cookies,
+)
 from .cover_letter import CoverLetterGenerator, cover_letter_docx_path_unique, write_cover_letter_docx
 from .dspy_lm import configure_dspy
 from .form_fill_rules import DEFAULT_RULES_PATH, FormFillRulesEngine
@@ -1133,11 +1139,15 @@ def navigate_greenhouse_listing(driver: Any, listing_url: str, *, index: int, to
     u = (listing_url or "").strip()
     if not u:
         return False
+    if not driver_session_alive(driver):
+        return False
     log.info("Opening job listing %d/%d: %s", index, total, u)
     try:
         driver.get(u)
     except Exception as e:
         log.warning("Could not navigate to job URL: %s", e)
+        return False
+    if not driver_session_alive(driver):
         return False
     time.sleep(2.0)
     return True
@@ -1356,10 +1366,16 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
     chosen_index = -1
     gate_pass_job: dict[str, Any] | None = None
     for i, entry in enumerate(ordered, start=1):
+        if not driver_session_alive(driver):
+            log_driver_session_closed()
+            return
         url = entry["url"] or ""
         if not url:
             continue
         if not navigate_greenhouse_listing(driver, url, index=i, total=total):
+            if not driver_session_alive(driver):
+                log_driver_session_closed()
+                return
             continue
         job = _scrape_greenhouse_job_for_cover_letter(
             driver,
@@ -1420,6 +1436,10 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
     current_job = gate_pass_job
 
     while True:
+        if not driver_session_alive(driver):
+            log_driver_session_closed()
+            break
+
         pub = _assisted_greenhouse_job_publication_dict(current_entry, current_job)
         remaining_after_current = max(0, total - (j + 1))
         action = _prompt_greenhouse_after_assisted_job(
@@ -1463,6 +1483,9 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
                 total,
             )
         for k in scan_range:
+            if not driver_session_alive(driver):
+                log_driver_session_closed()
+                return
             entry = ordered[k]
             url = entry["url"] or ""
             if not url:
@@ -1473,6 +1496,9 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
                 total,
             )
             if not navigate_greenhouse_listing(driver, url, index=k + 1, total=total):
+                if not driver_session_alive(driver):
+                    log_driver_session_closed()
+                    return
                 continue
             job = _scrape_greenhouse_job_for_cover_letter(
                 driver,
@@ -2053,6 +2079,9 @@ def run_greenhouse_sign_in_flow(args) -> None:
         view_job_listings: list[dict[str, str]] = []
         seen_norm_urls: set[str] = set()
         for ki, phrase in enumerate(kw_list):
+            if not driver_session_alive(driver):
+                log_driver_session_closed()
+                break
             jobs_url = my_greenhouse_jobs_search_url(args, query=phrase)
             label = phrase if phrase else "(no query)"
             log.info(
@@ -2125,7 +2154,10 @@ def run_greenhouse_sign_in_flow(args) -> None:
             log.info("Wrote job listings to %s", out_path.resolve())
         except OSError as e:
             log.warning("Could not write %s: %s", out_path, e)
-        run_greenhouse_application_helper(driver, args, view_job_listings)
+        if driver_session_alive(driver):
+            run_greenhouse_application_helper(driver, args, view_job_listings)
+        elif view_job_listings:
+            log_driver_session_closed()
         # When prompting for manual review, defer cookie snapshot until after Enter so we do not navigate
         # away from the application tab first (get_cookies is document-scoped; saving still needs my.greenhouse.io).
         if not prompt_before_close:
@@ -2133,11 +2165,14 @@ def run_greenhouse_sign_in_flow(args) -> None:
             log.info("Greenhouse session saved (%s).", path.resolve())
     finally:
         if driver is not None:
-            if prompt_before_close:
+            if prompt_before_close and driver_session_alive(driver):
                 log.info(
                     "Leaving the browser open — inspect the page, then press Enter in this terminal to quit Chrome."
                 )
                 _pause_until_user_closes_browser()
                 _save_greenhouse_session_cookies(driver, path, "after manual review, before quit")
                 log.info("Greenhouse session saved (%s).", path.resolve())
-            driver.quit()
+            try:
+                driver.quit()
+            except Exception:
+                pass

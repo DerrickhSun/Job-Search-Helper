@@ -23,7 +23,13 @@ if sys.platform == "win32":
             pass
 
 from utils.apply_sheets import append_applied_job_row
-from utils.chrome_driver import build_chrome, load_cookies, save_cookies
+from utils.chrome_driver import (
+    build_chrome,
+    driver_session_alive,
+    load_cookies,
+    log_driver_session_closed,
+    save_cookies,
+)
 from utils.company_blacklist import is_company_blacklisted, load_company_blacklist
 from utils.consulting_company_memory import (
     DEFAULT_CONSULTING_MEMORY_PATH,
@@ -355,6 +361,10 @@ def run(args):
         return False
 
     def process_listing(driver, job: dict) -> None:
+        if not driver_session_alive(driver):
+            log_driver_session_closed()
+            return
+
         if tracker.already_applied(job["id"]):
             log.info("Skipping (already applied): %s at %s", job["title"], job["company"])
             return
@@ -461,7 +471,19 @@ def run(args):
             m = re.search(r"(https://www\.linkedin\.com/company/[^/]+)", company_link_li, re.IGNORECASE)
             normalized_link = f"{m.group(1)}/about/" if m else company_link_li
             lookup_driver = ensure_company_lookup_driver()
-            if searcher.company_page_looks_consulting(lookup_driver, normalized_link):
+            if lookup_driver is not None and not driver_session_alive(lookup_driver):
+                log.warning(
+                    "Company lookup Chrome session ended — skipping company-page consulting check."
+                )
+                nonlocal company_lookup_driver
+                try:
+                    company_lookup_driver.quit()
+                except Exception:
+                    pass
+                company_lookup_driver = None
+            elif lookup_driver is not None and searcher.company_page_looks_consulting(
+                lookup_driver, normalized_link
+            ):
                 log.info(
                     "Skipping (company page indicates consulting/recruiting): %s at %s",
                     job["title"],
@@ -498,6 +520,7 @@ def run(args):
         else:
             log.warning("  ✗ Application failed — check output/screenshots/")
 
+    processed = 0
     try:
         processed = searcher.run_search_apply_pipeline(
             keywords=list(args.keywords),
@@ -516,18 +539,25 @@ def run(args):
                 save_cookies(company_lookup_driver, searcher.session_file)
             except Exception:
                 log.debug("Company lookup driver: cookie save failed", exc_info=True)
-            company_lookup_driver.quit()
+            try:
+                company_lookup_driver.quit()
+            except Exception:
+                pass
+        try:
+            tracker.export_csv("output/applications.csv")
+            tracker.export_csv("output/apply_opened.csv", statuses=("apply_opened",))
+            log.info(
+                "Exported output/applications.csv (applied) and output/apply_opened.csv (external apply tab)."
+            )
+        except Exception:
+            log.exception("Failed to export application CSVs from SQLite tracker.")
+
     log.info(
         "Finished search pipeline: %d listing(s) processed, %d successful apply(ies) (see %s).",
         processed,
         apply_stats["applied"],
         args.listings_log,
     )
-
-    # Export summary (same 6-column sheet layout: company, date, LinkedIn job URL, title)
-    tracker.export_csv("output/applications.csv")
-    tracker.export_csv("output/apply_opened.csv", statuses=("apply_opened",))
-    log.info("Done. Exports: output/applications.csv (applied), output/apply_opened.csv (external apply tab)")
 
 
 def main():

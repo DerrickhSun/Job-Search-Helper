@@ -8,11 +8,16 @@ import time
 from pathlib import Path
 
 from selenium import webdriver
+from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
 log = logging.getLogger(__name__)
+
+DRIVER_SESSION_CLOSED_MSG = (
+    "Chrome window was closed or the WebDriver session ended — saving progress and shutting down."
+)
 
 DEFAULT_COOKIE_PATH = Path("data/selenium_linkedin_cookies.json")
 
@@ -35,6 +40,21 @@ def build_chrome(headless: bool = False) -> webdriver.Chrome:
         except Exception:
             driver.set_window_size(1400, 900)
     return driver
+
+
+def driver_session_alive(driver: webdriver.Chrome | None) -> bool:
+    """False when Chrome was closed or the WebDriver session is no longer reachable."""
+    if driver is None:
+        return False
+    try:
+        _ = driver.window_handles
+        return True
+    except WebDriverException:
+        return False
+
+
+def log_driver_session_closed() -> None:
+    log.info(DRIVER_SESSION_CLOSED_MSG)
 
 
 def focus_element(driver: webdriver.Chrome, element, pause: float = 0.35) -> None:
@@ -79,7 +99,13 @@ def load_cookies(driver: webdriver.Chrome, path: Path = DEFAULT_COOKIE_PATH) -> 
 
 
 def save_cookies(driver: webdriver.Chrome, path: Path = DEFAULT_COOKIE_PATH) -> None:
+    if not driver_session_alive(driver):
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    cookies = driver.get_cookies()
+    try:
+        cookies = driver.get_cookies()
+    except WebDriverException as e:
+        log.debug("save_cookies: session unavailable (%s)", e)
+        return
     path.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
     log.info("Saved %d cookies to %s", len(cookies), path)

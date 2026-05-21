@@ -27,7 +27,14 @@ from pathlib import Path
 from typing import Any
 
 from .apply_sheets import append_applied_job_row
-from .chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, load_cookies, save_cookies
+from .chrome_driver import (
+    DEFAULT_COOKIE_PATH,
+    build_chrome,
+    driver_session_alive,
+    load_cookies,
+    log_driver_session_closed,
+    save_cookies,
+)
 from .company_blacklist import is_company_blacklisted, load_company_blacklist
 from .consulting_filter import is_consulting_listing
 from .cover_letter import CoverLetterGenerator, cover_letter_docx_path_unique, write_cover_letter_docx
@@ -367,6 +374,11 @@ def run_helper_mode(
 
         running = True
         while running:
+            if not driver_session_alive(driver):
+                log_driver_session_closed()
+                running = False
+                break
+
             while True:
                 try:
                     cmd = cmd_q.get_nowait()

@@ -26,7 +26,15 @@ from selenium.common.exceptions import NoSuchElementException
 _MAX_QUOTA = 2**30
 from selenium.webdriver.common.by import By
 
-from .chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies, save_cookies
+from .chrome_driver import (
+    DEFAULT_COOKIE_PATH,
+    build_chrome,
+    driver_session_alive,
+    focus_element,
+    load_cookies,
+    log_driver_session_closed,
+    save_cookies,
+)
 from .job_records import append_listing_record
 
 log = logging.getLogger(__name__)
@@ -341,6 +349,7 @@ class JobSearcher:
         processed = 0
         seen_job_ids: set[str] = set()
         apply_goal_met = False
+        driver_closed = False
         kw_list = normalize_search_keywords(keywords)
 
         try:
@@ -348,6 +357,13 @@ class JobSearcher:
             self._login(driver)
 
             for kw_index, keyword in enumerate(kw_list):
+                if driver_closed:
+                    break
+                if not driver_session_alive(driver):
+                    log_driver_session_closed()
+                    driver_closed = True
+                    break
+
                 if max_listings is not None and processed >= max_listings:
                     break
 
@@ -368,6 +384,13 @@ class JobSearcher:
                 time.sleep(1.2)
 
                 while max_listings is None or processed < max_listings:
+                    if driver_closed:
+                        break
+                    if not driver_session_alive(driver):
+                        log_driver_session_closed()
+                        driver_closed = True
+                        break
+
                     self._wait_job_list(driver)
 
                     has_next = self._has_next_page(driver)
@@ -406,6 +429,13 @@ class JobSearcher:
                     while page_done < quota and (
                         max_listings is None or processed < max_listings
                     ):
+                        if driver_closed:
+                            break
+                        if not driver_session_alive(driver):
+                            log_driver_session_closed()
+                            driver_closed = True
+                            break
+
                         links_now = self._find_job_card_links(driver, expand=False)
                         if i >= len(links_now):
                             if has_next:
@@ -510,7 +540,7 @@ class JobSearcher:
                             )
                             break
 
-                    if apply_goal_met:
+                    if apply_goal_met or driver_closed:
                         break
 
                     if max_listings is not None and processed >= max_listings:
@@ -531,6 +561,11 @@ class JobSearcher:
                             page_done,
                         )
 
+                    if not driver_session_alive(driver):
+                        log_driver_session_closed()
+                        driver_closed = True
+                        break
+
                     time.sleep(self.next_page_wait_seconds)
                     next_els = driver.find_elements(By.CSS_SELECTOR, SEL["next_page"])
                     if not next_els:
@@ -543,13 +578,17 @@ class JobSearcher:
                     self._pause()
                     time.sleep(1.2)
 
-                if apply_goal_met:
+                if apply_goal_met or driver_closed:
                     break
 
-            save_cookies(driver, self.session_file)
+            if not driver_closed:
+                save_cookies(driver, self.session_file)
             return processed
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
     def _wait_job_list(self, driver) -> None:
         if self.job_cards_wait_seconds > 0:
