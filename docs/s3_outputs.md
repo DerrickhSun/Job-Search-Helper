@@ -1,6 +1,6 @@
 # AWS S3 for outputs (between machines)
 
-Use S3 as a remote copy of `output/` (CSVs, archives, cover letters, etc.) so you do not need to git-push results when switching devices.
+Use S3 as a remote copy of `output/` (CSVs, archives, cover letters, etc.) so you do not need to git-push results when switching devices. The `output/` tree is **gitignored** (only `output/.gitkeep` is tracked) to avoid merge conflicts; use S3 or a fresh run to populate it on each machine.
 
 ## 1. Create a bucket
 
@@ -25,13 +25,13 @@ Optional: enable **Versioning** if you want accidental overwrites recoverable (e
       "Sid": "ListBucket",
       "Effect": "Allow",
       "Action": ["s3:ListBucket"],
-      "Resource": "arn:aws:s3:::job-applyer-bucket-862361086686-us-east-2-an"
+      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME"
     },
     {
       "Sid": "ObjectRW",
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-      "Resource": "arn:aws:s3:::job-applyer-bucket-862361086686-us-east-2-an/*"
+      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/*"
     }
   ]
 }
@@ -52,7 +52,18 @@ S3_OUTPUT_BUCKET=yourname-job-applyer-outputs
 S3_OUTPUT_PREFIX=devices/home-pc/
 ```
 
-## 3. Upload from this repo
+## 3. Automatic sync in `main.py`
+
+When `S3_OUTPUT_BUCKET` is set in `.env` (with AWS credentials), every `python main.py` run:
+
+1. **Downloads** from S3 into `output/` **before** reading archives/CSVs (right after `load_dotenv()`, before legacy path migration).
+2. **Uploads** the full `output/` tree **after** the run finishes (including `--export-csv`, helper, and Greenhouse flows), even if the run errors or you press Ctrl+C.
+
+If `S3_OUTPUT_BUCKET` is unset, sync is skipped (no error).
+
+The same download/upload pattern applies to ``python archive_applications.py`` (archives CSVs under ``output/``).
+
+## 4. Manual upload script
 
 After installing deps (`pip install -r requirements.txt`):
 
@@ -64,15 +75,17 @@ python scripts/upload_outputs_to_s3.py
 python scripts/upload_outputs_to_s3.py --dry-run
 ```
 
-## 4. Pull on another machine
+## 5. Pull on another machine
 
-Install [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), configure the same credentials (or a second IAM user with the same policy), then:
+On the other machine, run `python main.py` with the same `.env` S3 settings — it downloads at startup automatically.
+
+Alternatively, install [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) and run `aws configure` (the CLI does **not** read `.env`). Then:
 
 ```bash
 aws s3 sync s3://YOUR_BUCKET_NAME/devices/home-pc/output ./output
 ```
 
-Keys mirror the upload script: `{S3_OUTPUT_PREFIX}{local_dir_name}/{relative path}` (default local dir name is `output`). Add `--dryrun` to the `aws s3 sync` command first to preview.
+Keys mirror the upload logic: `{S3_OUTPUT_PREFIX}{local_dir_name}/{relative path}` (default local dir name is `output`). Add `--dryrun` to the `aws s3 sync` command first to preview.
 
 ## Zero-Python alternative
 

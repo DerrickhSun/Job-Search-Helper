@@ -15,34 +15,31 @@ Usage (from repo root):
 from __future__ import annotations
 
 import argparse
-import mimetypes
-import os
 import sys
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 try:
     from dotenv import load_dotenv
 except ImportError:
     load_dotenv = None  # type: ignore[misc, assignment]
 
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+from utils.s3_outputs import (  # noqa: E402
+    iter_local_files,
+    resolve_output_dir,
+    s3_key_for_file,
+    s3_output_bucket,
+    s3_output_sync_enabled,
+    sync_upload_output,
+)
 
 
 def _load_env() -> None:
     if load_dotenv:
-        load_dotenv(_repo_root() / ".env")
-
-
-def _iter_files(root: Path) -> list[Path]:
-    out: list[Path] = []
-    for p in root.rglob("*"):
-        if p.is_file():
-            if "__pycache__" in p.parts or p.name.endswith(".tmp"):
-                continue
-            out.append(p)
-    return sorted(out)
+        load_dotenv(_REPO_ROOT / ".env")
 
 
 def main() -> int:
@@ -62,68 +59,33 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    bucket = (os.environ.get("S3_OUTPUT_BUCKET") or "").strip()
-    if not bucket:
+    if not s3_output_sync_enabled():
         print(
             "error: set S3_OUTPUT_BUCKET in the environment or .env (see docs/s3_outputs.md)",
             file=sys.stderr,
         )
         return 1
 
-    prefix = (os.environ.get("S3_OUTPUT_PREFIX") or "").strip()
-    if prefix and not prefix.endswith("/"):
-        prefix += "/"
-
-    root = args.local_dir
-    if not root.is_absolute():
-        root = _repo_root() / root
-    root = root.resolve()
+    bucket = s3_output_bucket()
+    root = resolve_output_dir(args.local_dir if args.local_dir.is_absolute() else _REPO_ROOT / args.local_dir)
     if not root.is_dir():
         print(f"error: not a directory: {root}", file=sys.stderr)
         return 1
 
-    try:
-        import boto3
-        from botocore.exceptions import BotoCoreError, ClientError
-    except ImportError:
-        print("error: install boto3: pip install boto3", file=sys.stderr)
-        return 1
-
-    session = boto3.session.Session()
-    s3 = session.client("s3")
-
-    files = _iter_files(root)
+    files = iter_local_files(root)
     if not files:
         print(f"no files under {root}")
         return 0
 
-    uploaded = 0
-    for path in files:
-        rel = path.relative_to(root).as_posix()
-        key = f"{prefix}{root.name}/{rel}" if prefix else f"{root.name}/{rel}"
-
-        ctype, _ = mimetypes.guess_type(path.name)
-        extra = {"ContentType": ctype} if ctype else {}
-
-        if args.dry_run:
-            print(f"DRY-RUN  s3://{bucket}/{key}")
-            continue
-
-        try:
-            if extra:
-                s3.upload_file(str(path), bucket, key, ExtraArgs=extra)
-            else:
-                s3.upload_file(str(path), bucket, key)
-        except (ClientError, BotoCoreError, OSError) as e:
-            print(f"error uploading {path} -> s3://{bucket}/{key}: {e}", file=sys.stderr)
-            return 1
-        uploaded += 1
-        print(f"uploaded  s3://{bucket}/{key}")
-
     if args.dry_run:
+        for path in files:
+            print(f"DRY-RUN  s3://{bucket}/{s3_key_for_file(root, path)}")
         print(f"DRY-RUN: {len(files)} file(s) would upload to s3://{bucket}/")
-    else:
-        print(f"done: {uploaded} file(s) -> s3://{bucket}/{prefix or ''}{root.name}/")
+        return 0
+
+    uploaded = sync_upload_output(root)
+    if uploaded != len(files):
+        return 1
     return 0
 
 

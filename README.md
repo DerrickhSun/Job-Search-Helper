@@ -66,13 +66,13 @@ python main.py --resume resume.pdf --keywords "product manager" --headless
 
 - `data/listings_log.jsonl` — One JSON record per parsed job from search (audit trail)
 - `data/applications.db` — SQLite database of all tracked jobs
-- `output/applications.csv` — Spreadsheet export
+- `output/applications.csv` — Spreadsheet export (under `output/`, gitignored — synced via S3 between machines)
 - `output/screenshots/` — Error screenshots for failed applications
 - `data/bot.log` — Full log
 
 ### Optional: sync outputs to AWS S3
 
-To copy `output/` (and optionally other folders) to a private S3 bucket between machines, see **[docs/s3_outputs.md](docs/s3_outputs.md)**. Quick upload after a run:
+To sync `output/` with a private S3 bucket between machines, set `S3_OUTPUT_BUCKET` (and AWS keys) in `.env` — see **[docs/s3_outputs.md](docs/s3_outputs.md)**. `python main.py` downloads from S3 at startup and uploads when the run ends. You can also upload manually:
 
 ```bash
 python scripts/upload_outputs_to_s3.py

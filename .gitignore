@@ -19,8 +19,10 @@ data/applications.db
 data/bot.log
 data/listings_log.jsonl
 
-# Outputs
-output/screenshots/
+# Bot outputs (CSVs, cover letters, screenshots — sync via S3; see docs/s3_outputs.md)
+output/
+!output/.gitkeep
+
 *.log
 
 # OS / editor

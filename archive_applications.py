@@ -13,6 +13,9 @@ Run from repo root::
     python archive_applications.py
     python archive_applications.py --applications-only
     python archive_applications.py --assisted-only
+
+When ``S3_OUTPUT_BUCKET`` is set in ``.env``, downloads ``output/`` from S3 before archiving and
+uploads after (same as ``main.py``; see docs/s3_outputs.md).
 """
 
 from __future__ import annotations
@@ -21,6 +24,8 @@ import argparse
 import csv
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from utils.output_paths import (
     APPLICATIONS_ARCHIVE_CSV,
     APPLICATIONS_CSV,
@@ -28,6 +33,7 @@ from utils.output_paths import (
     ASSISTED_APPLICATIONS_HISTORY_CSV,
     migrate_legacy_root_archive_files,
 )
+from utils.s3_outputs import sync_download_output, sync_upload_output
 
 HEADER = ("", "company", "", "date", "url", "title")
 
@@ -89,20 +95,25 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    load_dotenv()
+    sync_download_output()
     migrate_legacy_root_archive_files()
 
     do_applications = not args.assisted_only
     do_assisted = not args.applications_only
 
-    if do_applications:
-        n = _archive_one(active_csv=APPLICATIONS_CSV, history_csv=APPLICATIONS_ARCHIVE_CSV)
-        print(f"Applications: archived {n} data row(s) -> {APPLICATIONS_ARCHIVE_CSV.resolve()}")
-        print(f"Applications: reset {APPLICATIONS_CSV.resolve()} to header only.")
+    try:
+        if do_applications:
+            n = _archive_one(active_csv=APPLICATIONS_CSV, history_csv=APPLICATIONS_ARCHIVE_CSV)
+            print(f"Applications: archived {n} data row(s) -> {APPLICATIONS_ARCHIVE_CSV.resolve()}")
+            print(f"Applications: reset {APPLICATIONS_CSV.resolve()} to header only.")
 
-    if do_assisted:
-        n = _archive_one(active_csv=ASSISTED_APPLICATIONS_CSV, history_csv=ASSISTED_APPLICATIONS_HISTORY_CSV)
-        print(f"Assisted: archived {n} data row(s) -> {ASSISTED_APPLICATIONS_HISTORY_CSV.resolve()}")
-        print(f"Assisted: reset {ASSISTED_APPLICATIONS_CSV.resolve()} to header only.")
+        if do_assisted:
+            n = _archive_one(active_csv=ASSISTED_APPLICATIONS_CSV, history_csv=ASSISTED_APPLICATIONS_HISTORY_CSV)
+            print(f"Assisted: archived {n} data row(s) -> {ASSISTED_APPLICATIONS_HISTORY_CSV.resolve()}")
+            print(f"Assisted: reset {ASSISTED_APPLICATIONS_CSV.resolve()} to header only.")
+    finally:
+        sync_upload_output()
 
 
 if __name__ == "__main__":

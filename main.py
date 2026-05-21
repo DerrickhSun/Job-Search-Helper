@@ -43,6 +43,7 @@ from utils.job_records import DEFAULT_LISTINGS_LOG
 from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher
 from utils.matcher import JobMatcher, print_job_fit_debug
 from utils.output_paths import migrate_legacy_root_archive_files
+from utils.s3_outputs import sync_download_output, sync_upload_output
 from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 from utils.resume_parser import ResumeParser, first_name_from_resume
 from utils.tracker import ApplicationTracker
@@ -531,6 +532,7 @@ def run(args):
 
 def main():
     load_dotenv()
+    sync_download_output()
     migrate_legacy_root_archive_files()
 
     ap = argparse.ArgumentParser(
@@ -954,23 +956,26 @@ def main():
         ):
             logging.getLogger(_name).setLevel(logging.WARNING)
 
-    if args.export_csv:
-        tracker = ApplicationTracker("data/applications.db")
-        tracker.export_csv("output/applications.csv")
-        tracker.export_csv("output/apply_opened.csv", statuses=("apply_opened",))
-        log.info("Re-exported output/applications.csv and output/apply_opened.csv from SQLite.")
-        return
+    try:
+        if args.export_csv:
+            tracker = ApplicationTracker("data/applications.db")
+            tracker.export_csv("output/applications.csv")
+            tracker.export_csv("output/apply_opened.csv", statuses=("apply_opened",))
+            log.info("Re-exported output/applications.csv and output/apply_opened.csv from SQLite.")
+            return
 
-    if not args.debug_jobs_page and args.site == "linkedin":
-        cache_p = Path(args.resume_cache)
-        need_resume_file = args.force_resume_parse or not cache_p.is_file()
-        if need_resume_file and not Path(args.resume).exists():
-            raise FileNotFoundError(
-                f"Resume not found: {args.resume} — add this file or pass --resume PATH "
-                "(needed when data/resume_profile.json is missing or with --force-resume-parse)."
-            )
+        if not args.debug_jobs_page and args.site == "linkedin":
+            cache_p = Path(args.resume_cache)
+            need_resume_file = args.force_resume_parse or not cache_p.is_file()
+            if need_resume_file and not Path(args.resume).exists():
+                raise FileNotFoundError(
+                    f"Resume not found: {args.resume} — add this file or pass --resume PATH "
+                    "(needed when data/resume_profile.json is missing or with --force-resume-parse)."
+                )
 
-    run(args)
+        run(args)
+    finally:
+        sync_upload_output()
 
 
 if __name__ == "__main__":
