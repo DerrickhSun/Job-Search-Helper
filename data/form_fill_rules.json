@@ -221,9 +221,15 @@
       "result": { "type": "literal", "value": "San Diego, California, United States" }
     },
     {
+      "id": "location_city",
+      "comment": "LinkedIn/Workday Location (city) / Location (city)* ; must run before city_blank",
+      "match": { "regex": "location\\s*\\(\\s*city\\s*\\)(?:\\s*\\*)?" },
+      "result": { "type": "literal", "value": "San Diego, California, United States" }
+    },
+    {
       "id": "city_blank",
-      "comment": "City often location-specific — leave blank",
-      "match": { "all_substrings": ["city"] },
+      "comment": "Other city-only prompts — leave blank when not covered above",
+      "match": { "all_substrings": ["city"], "not_substrings": ["location"] },
       "result": { "type": "literal", "value": "" }
     },
     {
