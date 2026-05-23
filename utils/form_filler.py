@@ -1384,6 +1384,21 @@ class EasyApplyFiller:
                                 (label or "")[:100],
                                 candidates.index(try_val) + 1,
                             )
+                        if self._rules.text_input_press_enter_after_fill(label):
+                            try:
+                                input_el.send_keys(Keys.RETURN)
+                                self._after_field_fill()
+                                time.sleep(0.35)
+                                log.debug(
+                                    "Pressed Enter after fill for autocomplete label=%r",
+                                    (label or "")[:120],
+                                )
+                            except Exception:
+                                log.debug(
+                                    "Press Enter after fill failed label=%r",
+                                    (label or "")[:120],
+                                    exc_info=True,
+                                )
                         break
                     try:
                         input_el.clear()

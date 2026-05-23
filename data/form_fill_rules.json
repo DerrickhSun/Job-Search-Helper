@@ -222,9 +222,13 @@
     },
     {
       "id": "location_city",
-      "comment": "LinkedIn/Workday Location (city) / Location (city)* ; must run before city_blank",
+      "comment": "LinkedIn/Workday Location (city) / Location (city)* — autocomplete; press Enter after fill",
       "match": { "regex": "location\\s*\\(\\s*city\\s*\\)(?:\\s*\\*)?" },
-      "result": { "type": "literal", "value": "San Diego, California, United States" }
+      "result": {
+        "type": "literal",
+        "value": "San Diego, California, United States",
+        "press_enter_after_fill": true
+      }
     },
     {
       "id": "city_blank",

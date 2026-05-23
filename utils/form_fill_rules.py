@@ -162,6 +162,23 @@ class FormFillRulesEngine:
         s = str(one).strip()
         return [s] if s else []
 
+    def _first_matching_text_input_rule(self, label: str) -> dict[str, Any] | None:
+        n = self.normalize_label(label)
+        if not n:
+            return None
+        for rule in self._data.get("text_inputs", []):
+            if self._matches(n, rule.get("match", {})):
+                return rule
+        return None
+
+    def text_input_press_enter_after_fill(self, label: str) -> bool:
+        """True when the first matching ``text_inputs`` rule sets ``press_enter_after_fill`` (autocomplete commit)."""
+        rule = self._first_matching_text_input_rule(label)
+        if not rule:
+            return False
+        result = rule.get("result") or {}
+        return bool(result.get("press_enter_after_fill"))
+
     def text_input_fill_candidates(self, label: str, resume: dict[str, Any]) -> list[str]:
         """
         Ordered strings to type for this label. Screening yes/no resolves to a single candidate; otherwise
@@ -170,12 +187,9 @@ class FormFillRulesEngine:
         s = self.screening_yes_no(label)
         if s is not None:
             return [s]
-        n = self.normalize_label(label)
-        if not n:
-            return []
-        for rule in self._data.get("text_inputs", []):
-            if self._matches(n, rule.get("match", {})):
-                return self._text_result_candidates(rule.get("result", {}), resume)
+        rule = self._first_matching_text_input_rule(label)
+        if rule:
+            return self._text_result_candidates(rule.get("result", {}), resume)
         return []
 
     def _apply_textarea_result(self, result: dict[str, Any], cover_letter: str) -> str | None:
