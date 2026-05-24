@@ -6,6 +6,7 @@ from pathlib import Path
 
 OUTPUT_DIR = Path("output")
 ARCHIVE_DIR = OUTPUT_DIR / "archive"
+COVERLETTERS_DIR = OUTPUT_DIR / "coverletters"
 
 APPLICATIONS_CSV = OUTPUT_DIR / "applications.csv"
 APPLICATIONS_ARCHIVE_CSV = ARCHIVE_DIR / "applications_archive.csv"

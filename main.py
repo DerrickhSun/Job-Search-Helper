@@ -48,6 +48,7 @@ from utils.helper_browser import run_helper_mode
 from utils.job_records import DEFAULT_LISTINGS_LOG
 from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher
 from utils.matcher import JobMatcher, print_job_fit_debug
+from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import migrate_legacy_root_archive_files
 from utils.s3_outputs import sync_download_output, sync_upload_output
 from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
@@ -564,6 +565,7 @@ def run(args):
 def main():
     load_dotenv()
     sync_download_output()
+    prune_cover_letters_for_sync()
     migrate_legacy_root_archive_files()
 
     ap = argparse.ArgumentParser(
@@ -1014,6 +1016,7 @@ def main():
 
         run(args)
     finally:
+        prune_cover_letters_for_sync()
         sync_upload_output()
 
 

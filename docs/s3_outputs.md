@@ -2,6 +2,23 @@
 
 Use S3 as a remote copy of `output/` (CSVs, archives, cover letters, etc.) so you do not need to git-push results when switching devices. The `output/` tree is **gitignored** (only `output/.gitkeep` is tracked) to avoid merge conflicts; use S3 or a fresh run to populate it on each machine.
 
+### Pruning old cover letters (faster sync)
+
+Large `output/coverletters/` folders slow S3 upload/download. By default, `main.py` and `archive_applications.py` delete local and S3 cover letter `.docx` files **older than 7 days** (by file modification time locally; S3 `LastModified` remotely) before each sync.
+
+In `.env`:
+
+```bash
+COVER_LETTER_MAX_AGE_DAYS=7   # default; set 0 to disable pruning
+```
+
+Manual prune (dry run first):
+
+```bash
+python scripts/prune_old_cover_letters.py --dry-run
+python scripts/prune_old_cover_letters.py
+```
+
 ## 1. Create a bucket
 
 1. Sign in to [AWS Console](https://console.aws.amazon.com/) → **S3** → **Create bucket**.

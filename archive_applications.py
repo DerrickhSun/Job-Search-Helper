@@ -33,6 +33,7 @@ from utils.output_paths import (
     ASSISTED_APPLICATIONS_HISTORY_CSV,
     migrate_legacy_root_archive_files,
 )
+from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.s3_outputs import sync_download_output, sync_upload_output
 
 HEADER = ("", "company", "", "date", "url", "title")
@@ -97,6 +98,7 @@ def main() -> None:
 
     load_dotenv()
     sync_download_output()
+    prune_cover_letters_for_sync()
     migrate_legacy_root_archive_files()
 
     do_applications = not args.assisted_only
@@ -113,6 +115,7 @@ def main() -> None:
             print(f"Assisted: archived {n} data row(s) -> {ASSISTED_APPLICATIONS_HISTORY_CSV.resolve()}")
             print(f"Assisted: reset {ASSISTED_APPLICATIONS_CSV.resolve()} to header only.")
     finally:
+        prune_cover_letters_for_sync()
         sync_upload_output()
 
 
