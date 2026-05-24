@@ -50,6 +50,7 @@ SEL = {
     "textarea": "textarea",
     "select": "select",
     "radio": "input[type='radio']",
+    "linkedin_radio_fieldset": 'fieldset[data-test-form-builder-radio-button-form-component="true"]',
     "error_msg": ".artdeco-inline-feedback--error",
 }
 
@@ -113,7 +114,8 @@ class EasyApplyFiller:
         highlight: bool = True,
         easy_apply_wait_seconds: float = 5.0,
         apply_click_gap_seconds: float = 1.0,
-        apply_review_pause_after_fill_seconds: float = 10.0,
+        apply_review_pause_after_fill_seconds: float = 3.0,
+        apply_first_empty_field_pause_after_nav_seconds: float = 10.0,
         cover_letter_docx_dir: Path | str = "output/coverletters",
         form_fill_rules_path: Path | str | None = None,
         helper_scan_all_tabs: bool = False,
@@ -132,6 +134,11 @@ class EasyApplyFiller:
         self.apply_review_pause_after_fill_seconds = max(
             0.0, float(apply_review_pause_after_fill_seconds)
         )
+        self.apply_first_empty_field_pause_after_nav_seconds = max(
+            0.0, float(apply_first_empty_field_pause_after_nav_seconds)
+        )
+        self._user_pause_pending_after_nav = False
+        self._user_pause_consumed_this_step = False
         self._rules = FormFillRulesEngine(
             Path(form_fill_rules_path) if form_fill_rules_path else None,
             apply_source="linkedin",
@@ -646,6 +653,26 @@ class EasyApplyFiller:
         if self.apply_review_pause_after_fill_seconds > 0:
             time.sleep(self.apply_review_pause_after_fill_seconds)
 
+    def _maybe_pause_for_user_on_first_empty_field(self, label: str = "") -> None:
+        """
+        After Continue/Review, pause once on the first empty control on the new step so the user can
+        fill fields we do not auto-fill.
+        """
+        if not self._user_pause_pending_after_nav:
+            return
+        self._user_pause_pending_after_nav = False
+        pause = self.apply_first_empty_field_pause_after_nav_seconds
+        if pause <= 0:
+            return
+        hint = f" ({label[:100]})" if label else ""
+        log.info(
+            "Pausing %.1fs for manual fill — first empty field after Continue/Review%s",
+            pause,
+            hint,
+        )
+        time.sleep(pause)
+        self._user_pause_consumed_this_step = True
+
     def apply(self, job: dict, resume: dict, cover_letter: str, driver: Any | None = None) -> bool:
         """
         Clicks Easy Apply and submits the form.
@@ -973,6 +1000,14 @@ class EasyApplyFiller:
                     return True
             except Exception:
                 continue
+        for fs in modal.find_elements(By.CSS_SELECTOR, SEL["linkedin_radio_fieldset"]):
+            try:
+                if not self._linkedin_radio_fieldset_is_required(fs):
+                    continue
+                if not self._linkedin_radio_fieldset_is_selected(fs):
+                    return True
+            except Exception:
+                continue
         return False
 
     @staticmethod
@@ -1063,6 +1098,7 @@ class EasyApplyFiller:
 
     def _fill_form(self, driver, resume: dict, cover_letter: str, job: dict) -> bool:
         max_steps = 10
+        self._user_pause_pending_after_nav = False
 
         for step in range(max_steps):
             self._pause()
@@ -1117,12 +1153,14 @@ class EasyApplyFiller:
                     focus_element(driver, btn, pause=self.step_delay)
                 btn.click()
                 self._after_ui_click()
+                self._user_pause_pending_after_nav = True
             elif next_btns:
                 btn = next_btns[0]
                 if self.highlight:
                     focus_element(driver, btn, pause=self.step_delay)
                 btn.click()
                 self._after_ui_click()
+                self._user_pause_pending_after_nav = True
             else:
                 log.warning("No navigation button found at step %d", step)
                 self._abandon_apply_and_dismiss(
@@ -1136,10 +1174,200 @@ class EasyApplyFiller:
         self._abandon_apply_and_dismiss(driver, job, "max form steps exceeded")
         return False
 
+    @staticmethod
+    def _choice_labels_equivalent(want: str, option: str) -> bool:
+        """Match rule answers (Yes/No) to option label text or values (true/false, etc.)."""
+        w = (want or "").strip().lower()
+        o = (option or "").strip().lower()
+        if not w or not o:
+            return False
+        if w == o:
+            return True
+        yes = frozenset({"yes", "y", "true", "1", "on"})
+        no = frozenset({"no", "n", "false", "0", "off"})
+        return (w in yes and o in yes) or (w in no and o in no)
+
+    def _click_radio_target(self, driver: Any, el: Any) -> None:
+        if self.highlight:
+            focus_element(driver, el, pause=0.2)
+        try:
+            el.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", el)
+
+    def _legend_for_linkedin_radio_fieldset(self, fieldset: Any) -> str:
+        """Question text from LinkedIn ``data-test-form-builder-radio-button-form-component`` fieldsets."""
+        for sel in (
+            "[data-test-form-builder-radio-button-form-component__title]",
+            "legend .fb-dash-form-element__label",
+            "legend",
+        ):
+            try:
+                els = fieldset.find_elements(By.CSS_SELECTOR, sel)
+                if els:
+                    t = (els[0].text or "").strip()
+                    if t:
+                        return t
+            except Exception:
+                continue
+        return ""
+
+    @staticmethod
+    def _linkedin_radio_fieldset_is_required(fieldset: Any) -> bool:
+        try:
+            for el in fieldset.find_elements(
+                By.CSS_SELECTOR,
+                "legend, legend .fb-dash-form-element__label, [data-test-form-builder-radio-button-form-component__required]",
+            ):
+                cls = (el.get_attribute("class") or "").lower()
+                if "is-required" in cls or "required" in cls:
+                    return True
+        except Exception:
+            pass
+        for inp in fieldset.find_elements(By.CSS_SELECTOR, "input[type='radio']"):
+            try:
+                if (inp.get_attribute("aria-required") or "").lower() == "true":
+                    return True
+                if inp.get_attribute("required") is not None:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    @staticmethod
+    def _linkedin_radio_fieldset_is_selected(fieldset: Any) -> bool:
+        for inp in fieldset.find_elements(By.CSS_SELECTOR, "input[type='radio']"):
+            try:
+                if inp.is_selected():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _click_choice_in_radio_container(self, driver: Any, container: Any, choose_label: str) -> bool:
+        """
+        Click a radio option inside a fieldset or group by visible label / LinkedIn data-test attrs.
+        ``choose_label`` is usually ``Yes`` or ``No`` from ``screening_yes_no`` rules.
+        """
+        target = (choose_label or "").strip()
+        if not target:
+            return False
+        for opt in container.find_elements(By.CSS_SELECTOR, "[data-test-text-selectable-option]"):
+            try:
+                inp_list = opt.find_elements(By.CSS_SELECTOR, "input[type='radio']")
+                lab_list = opt.find_elements(By.CSS_SELECTOR, "label[data-test-text-selectable-option__label]")
+                label_attr = ""
+                if lab_list:
+                    label_attr = (lab_list[0].get_attribute("data-test-text-selectable-option__label") or "").strip()
+                opt_text = (lab_list[0].text or "").strip() if lab_list else ""
+                inp_attr = ""
+                if inp_list:
+                    inp_attr = (inp_list[0].get_attribute("data-test-text-selectable-option__input") or "").strip()
+                    if not inp_attr:
+                        inp_attr = (inp_list[0].get_attribute("value") or "").strip()
+                for candidate in (label_attr, opt_text, inp_attr):
+                    if candidate and self._choice_labels_equivalent(target, candidate):
+                        click_el = lab_list[0] if lab_list else (inp_list[0] if inp_list else opt)
+                        self._click_radio_target(driver, click_el)
+                        time.sleep(0.15)
+                        for inp in container.find_elements(By.CSS_SELECTOR, "input[type='radio']"):
+                            try:
+                                if inp.is_selected():
+                                    return True
+                            except Exception:
+                                continue
+                        return False
+            except Exception:
+                continue
+        for r in container.find_elements(By.CSS_SELECTOR, "input[type='radio']"):
+            try:
+                val = (r.get_attribute("value") or "").strip()
+                rid = r.get_attribute("id") or ""
+                label_text = ""
+                if rid:
+                    for lab in container.find_elements(By.CSS_SELECTOR, f'label[for="{rid}"]'):
+                        label_text = (lab.text or "").strip()
+                        if self._choice_labels_equivalent(target, label_text):
+                            self._click_radio_target(driver, lab)
+                            return True
+                if val and self._choice_labels_equivalent(target, val):
+                    self._click_radio_target(driver, r)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _fill_linkedin_form_builder_radio_fieldsets(
+        self,
+        driver: Any,
+        job: dict,
+        root: Any,
+        *,
+        assist: bool,
+    ) -> tuple[bool, set[str]]:
+        """
+        LinkedIn Easy Apply single-choice groups (``data-test-form-builder-radio-button-form-component``).
+        Uses ``screening_yes_no`` rules on the fieldset legend. Returns (ok, processed input ``name``s).
+        """
+        processed_names: set[str] = set()
+        for fs in root.find_elements(By.CSS_SELECTOR, SEL["linkedin_radio_fieldset"]):
+            try:
+                for inp in fs.find_elements(By.CSS_SELECTOR, "input[type='radio']"):
+                    n = (inp.get_attribute("name") or "").strip()
+                    if n:
+                        processed_names.add(n)
+
+                if self._linkedin_radio_fieldset_is_selected(fs):
+                    continue
+
+                label = self._legend_for_linkedin_radio_fieldset(fs)
+                self._maybe_pause_for_user_on_first_empty_field(label)
+                if self._linkedin_radio_fieldset_is_selected(fs):
+                    continue
+
+                required = self._linkedin_radio_fieldset_is_required(fs)
+                ans = self._rules.screening_yes_no(label)
+                if ans is None:
+                    if required and not assist:
+                        log.warning(
+                            "No rule for required LinkedIn radio question (job %s) label=%r — abandoning",
+                            job.get("id"),
+                            label,
+                        )
+                        return False, processed_names
+                    if required and assist:
+                        log.debug(
+                            "Assist: leaving required LinkedIn radio unanswered (no rule) label=%r",
+                            label,
+                        )
+                    continue
+
+                if self._click_choice_in_radio_container(driver, fs, ans):
+                    self._after_field_fill()
+                    log.info(
+                        "Selected %r for LinkedIn radio question: %s",
+                        ans,
+                        (label or "")[:120],
+                    )
+                elif required and not assist:
+                    log.warning(
+                        "Could not select %r for required LinkedIn radio (job %s) label=%r — abandoning",
+                        ans,
+                        job.get("id"),
+                        label,
+                    )
+                    return False, processed_names
+            except Exception as e:
+                log.debug("Skipping LinkedIn radio fieldset: %s", e)
+        return True, processed_names
+
     def _label_for_radio_group(self, driver: Any, first_radio) -> str:
         """Best-effort question text for a radio group (fieldset legend or form-element wrapper)."""
         try:
             fs = first_radio.find_element(By.XPATH, "./ancestor::fieldset[1]")
+            t = self._legend_for_linkedin_radio_fieldset(fs)
+            if t:
+                return t
             legs = fs.find_elements(By.TAG_NAME, "legend")
             if legs:
                 t = (legs[0].text or "").strip()
@@ -1168,18 +1396,27 @@ class EasyApplyFiller:
 
     def _click_yes_no_in_radio_group(self, driver: Any, radios: list, want_yes: bool) -> bool:
         """Click the Yes or No control in a group of radios. Returns True if a click occurred."""
+        want = "Yes" if want_yes else "No"
+        for r in radios:
+            try:
+                fs = r.find_element(
+                    By.XPATH,
+                    "./ancestor::fieldset[@data-test-form-builder-radio-button-form-component][1]",
+                )
+                if self._click_choice_in_radio_container(driver, fs, want):
+                    return True
+            except NoSuchElementException:
+                pass
+            except Exception:
+                continue
         for r in radios:
             val = (r.get_attribute("value") or "").strip().lower()
             if want_yes and val in ("yes", "true", "1", "y", "on"):
-                if self.highlight:
-                    focus_element(driver, r, pause=0.2)
-                r.click()
-                return True
+                if self._click_radio_control(driver, r):
+                    return True
             if not want_yes and val in ("no", "false", "0", "n", "off"):
-                if self.highlight:
-                    focus_element(driver, r, pause=0.2)
-                r.click()
-                return True
+                if self._click_radio_control(driver, r):
+                    return True
         for r in radios:
             try:
                 rid = r.get_attribute("id")
@@ -1188,18 +1425,26 @@ class EasyApplyFiller:
                 for lab in driver.find_elements(By.CSS_SELECTOR, f'label[for="{rid}"]'):
                     t = (lab.text or "").strip().lower()
                     if want_yes and t in ("yes", "y"):
-                        if self.highlight:
-                            focus_element(driver, r, pause=0.2)
-                        r.click()
-                        return True
+                        if self._click_radio_control(driver, r, label=lab):
+                            return True
                     if not want_yes and t in ("no", "n"):
-                        if self.highlight:
-                            focus_element(driver, r, pause=0.2)
-                        r.click()
-                        return True
+                        if self._click_radio_control(driver, r, label=lab):
+                            return True
             except Exception:
                 continue
         return False
+
+    def _click_radio_control(self, driver: Any, radio: Any, *, label: Any | None = None) -> bool:
+        """Click a radio input; prefer the visible ``label`` when LinkedIn hides the input."""
+        try:
+            click_el = label or radio
+            if self.highlight:
+                focus_element(driver, click_el, pause=0.2)
+            click_el.click()
+            time.sleep(0.12)
+            return radio.is_selected()
+        except Exception:
+            return False
 
     def _file_input_is_cover_letter_upload(self, driver: Any, el) -> bool:
         """True when this ``input[type=file]`` is for a cover letter (not résumé/CV)."""
@@ -1306,12 +1551,24 @@ class EasyApplyFiller:
             self._default_content(driver)
 
     def _fill_step(
-        self, driver: Any, resume: dict, cover_letter: str, job: dict, *, assist: bool = False
+        self,
+        driver: Any,
+        resume: dict,
+        cover_letter: str,
+        job: dict,
+        *,
+        assist: bool = False,
+        _after_user_pause_retry: bool = False,
     ) -> bool:
         """
         Fill the current step. Returns False if we should abandon (unknown required field with no rule);
         the caller will dismiss the modal — unless ``assist`` is True (manual apply mode: skip unknowns).
+
+        After the manual-fill pause on a new step, runs a second pass so user-filled values are seen
+        before we validate or click Continue / Review / Submit.
         """
+        if not _after_user_pause_retry:
+            self._user_pause_consumed_this_step = False
         root = self._resolve_fill_root(driver)
         if root is None:
             if assist:
@@ -1342,6 +1599,10 @@ class EasyApplyFiller:
                 if self._automation_id_is_skipped(input_el):
                     continue
                 if self._label_looks_like_robot_trap(label):
+                    continue
+                self._maybe_pause_for_user_on_first_empty_field(label)
+                current = (input_el.get_attribute("value") or "").strip()
+                if current:
                     continue
                 required = self._element_is_required(input_el)
                 candidates = self._rules.text_input_fill_candidates(label, resume)
@@ -1428,6 +1689,11 @@ class EasyApplyFiller:
                 current = self._control_text_snapshot(ta)
                 if current and not is_cover:
                     continue
+                if not current or is_cover:
+                    self._maybe_pause_for_user_on_first_empty_field(label)
+                    current = self._control_text_snapshot(ta)
+                    if current and not is_cover:
+                        continue
 
                 text = self._answer_textarea(label, cover_letter)
                 if text is None and is_cover and (cover_letter or "").strip():
@@ -1465,9 +1731,12 @@ class EasyApplyFiller:
             try:
                 if not self._select_needs_fill(sel_el):
                     continue
+                label = self._get_label(driver, sel_el)
+                self._maybe_pause_for_user_on_first_empty_field(label)
+                if not self._select_needs_fill(sel_el):
+                    continue
                 if not self._element_is_required(sel_el):
                     continue
-                label = self._get_label(driver, sel_el)
                 opt_els = sel_el.find_elements(By.TAG_NAME, "option")
                 preferred = self._answer_select_value(label, opt_els)
                 dd = Select(sel_el)
@@ -1490,10 +1759,18 @@ class EasyApplyFiller:
             except Exception as e:
                 log.debug("Skipping select: %s", e)
 
+        linkedin_radio_ok, linkedin_radio_names = self._fill_linkedin_form_builder_radio_fieldsets(
+            driver, job, root, assist=assist
+        )
+        if not linkedin_radio_ok:
+            return False
+
         radio_groups: dict[str, list] = defaultdict(list)
         for radio in root.find_elements(By.CSS_SELECTOR, SEL["radio"]):
             try:
                 name = radio.get_attribute("name") or ""
+                if name and name in linkedin_radio_names:
+                    continue
                 if name:
                     radio_groups[name].append(radio)
             except Exception:
@@ -1503,6 +1780,9 @@ class EasyApplyFiller:
                 if any(r.is_selected() for r in radios):
                     continue
                 label = self._label_for_radio_group(driver, radios[0])
+                self._maybe_pause_for_user_on_first_empty_field(label)
+                if any(r.is_selected() for r in radios):
+                    continue
                 ans = self._rules.screening_yes_no(label)
                 if ans is None:
                     # Legacy: prefer Yes when value hints yes (unknown questions) — not in assist mode
@@ -1569,6 +1849,16 @@ class EasyApplyFiller:
             except Exception as e:
                 log.warning("File upload failed: %s", e)
 
+        if self._user_pause_consumed_this_step and not _after_user_pause_retry:
+            log.info("Re-scanning step after manual-fill pause (re-check empty fields and auto-fill).")
+            return self._fill_step(
+                driver,
+                resume,
+                cover_letter,
+                job,
+                assist=assist,
+                _after_user_pause_retry=True,
+            )
         return True
 
     def _select_needs_fill(self, sel_el) -> bool:

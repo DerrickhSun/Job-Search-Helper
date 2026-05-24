@@ -236,6 +236,7 @@ def run(args):
         easy_apply_wait_seconds=args.easy_apply_wait,
         apply_click_gap_seconds=args.apply_click_gap,
         apply_review_pause_after_fill_seconds=args.apply_review_pause,
+        apply_first_empty_field_pause_after_nav_seconds=args.apply_first_empty_pause,
         cover_letter_docx_dir=args.cover_letter_dir,
         form_fill_rules_path=args.form_fill_rules,
         headshot_image_path=args.headshot,
@@ -861,10 +862,18 @@ def main():
     ap.add_argument(
         "--apply-review-pause",
         type=float,
+        default=3.0,
+        metavar="SEC",
+        help="Seconds to wait after the bot fills a field (text, textarea, dropdown, radio) so you can "
+        "review it (default: 3). Set to 0 to disable.",
+    )
+    ap.add_argument(
+        "--apply-first-empty-pause",
+        type=float,
         default=10.0,
         metavar="SEC",
-        help="Seconds to wait after filling an empty field (text, textarea, dropdown, radio) so you can "
-        "review it (default: 10). Set to 0 to disable.",
+        help="After each Continue/Review click, pause this long on the first empty field on the new step "
+        "so you can fill it manually (default: 10). Set to 0 to disable.",
     )
     ap.add_argument(
         "--listings-log",
