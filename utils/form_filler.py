@@ -54,6 +54,15 @@ SEL = {
     "error_msg": ".artdeco-inline-feedback--error",
 }
 
+# LinkedIn "Job search safety reminder" / possible fraud pre-apply dialog (not the Easy Apply sheet).
+JOB_TRUST_SAFETY_MODAL_CONTENT = ".job-trust-pre-apply-safety-tips-modal__content"
+JOB_TRUST_SAFETY_MODAL_DISMISS = (
+    "button.artdeco-modal__dismiss[data-test-modal-close-btn], "
+    "button[data-test-modal-close-btn].artdeco-modal__dismiss"
+)
+
+APPLY_ABORT_JOB_TRUST_SAFETY = "job_trust_safety_reminder"
+
 # Success / follow-up UI after submit is often *not* inside ``.jobs-easy-apply-modal`` — same tab, different layer.
 POST_APPLY_DISMISS = (
     'button[aria-label="Not now"]',
@@ -139,6 +148,7 @@ class EasyApplyFiller:
         )
         self._user_pause_pending_after_nav = False
         self._user_pause_consumed_this_step = False
+        self._apply_abort_reason: str | None = None
         self._rules = FormFillRulesEngine(
             Path(form_fill_rules_path) if form_fill_rules_path else None,
             apply_source="linkedin",
@@ -673,6 +683,100 @@ class EasyApplyFiller:
         time.sleep(pause)
         self._user_pause_consumed_this_step = True
 
+    def consume_apply_abort_reason(self) -> str | None:
+        """Return and clear the reason the last :meth:`apply` aborted early (if any)."""
+        reason = self._apply_abort_reason
+        self._apply_abort_reason = None
+        return reason
+
+    @staticmethod
+    def _dialog_is_job_trust_safety_modal(el: Any) -> bool:
+        """True for LinkedIn's pre-apply trust / fraud warning layer (``role="dialog"``)."""
+        try:
+            if not el.is_displayed():
+                return False
+        except Exception:
+            return False
+        try:
+            if el.find_elements(By.CSS_SELECTOR, JOB_TRUST_SAFETY_MODAL_CONTENT):
+                return True
+        except Exception:
+            pass
+        blob = (el.text or "").lower()
+        if "job search safety reminder" in blob:
+            return True
+        if "research the company" in blob and "report suspicious jobs" in blob:
+            return True
+        if "job-trust-pre-apply-safety-tips" in (el.get_attribute("class") or "").lower():
+            return True
+        return False
+
+    def _job_trust_safety_modal_element(self, driver: Any) -> Any | None:
+        for el in driver.find_elements(By.CSS_SELECTOR, '[role="dialog"], .artdeco-modal'):
+            try:
+                if self._dialog_is_job_trust_safety_modal(el):
+                    return el
+            except Exception:
+                continue
+        for el in driver.find_elements(By.CSS_SELECTOR, JOB_TRUST_SAFETY_MODAL_CONTENT):
+            try:
+                if not el.is_displayed():
+                    continue
+                parent = el.find_element(
+                    By.XPATH, './ancestor::*[@role="dialog" or contains(@class,"artdeco-modal")][1]'
+                )
+                if parent:
+                    return parent
+            except Exception:
+                return el
+        return None
+
+    def _dismiss_job_trust_safety_modal(self, driver: Any) -> bool:
+        """Close the trust/safety reminder dialog via its Dismiss (X) control."""
+        modal = self._job_trust_safety_modal_element(driver)
+        if modal is None:
+            return False
+        for sel in (
+            JOB_TRUST_SAFETY_MODAL_DISMISS,
+            'button[aria-label="Dismiss"]',
+            'button[aria-label="dismiss"]',
+        ):
+            try:
+                for btn in modal.find_elements(By.CSS_SELECTOR, sel):
+                    if not btn.is_displayed() or not btn.is_enabled():
+                        continue
+                    if self.highlight:
+                        focus_element(driver, btn, pause=self.step_delay)
+                    try:
+                        btn.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", btn)
+                    time.sleep(0.35)
+                    if self._job_trust_safety_modal_element(driver) is None:
+                        log.info("Closed LinkedIn job trust/safety reminder dialog.")
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _abort_apply_for_job_trust_safety(self, driver: Any, job: dict) -> bool:
+        """
+        If the pre-apply trust/safety modal is open, dismiss it and signal the caller to skip this job.
+
+        Returns True when the modal was present and handled.
+        """
+        if self._job_trust_safety_modal_element(driver) is None:
+            return False
+        log.warning(
+            "LinkedIn job trust/safety reminder for %s at %s — skipping apply",
+            job.get("title"),
+            job.get("company"),
+        )
+        self._dismiss_job_trust_safety_modal(driver)
+        self._dismiss_easy_apply_modal_if_open(driver, "after job trust safety")
+        self._apply_abort_reason = APPLY_ABORT_JOB_TRUST_SAFETY
+        return True
+
     def apply(self, job: dict, resume: dict, cover_letter: str, driver: Any | None = None) -> bool:
         """
         Clicks Easy Apply and submits the form.
@@ -682,6 +786,7 @@ class EasyApplyFiller:
         and does not close the browser afterward.
         """
         own_driver = driver is None
+        self._apply_abort_reason = None
         try:
             if own_driver:
                 driver = build_chrome(headless=self.headless)
@@ -705,6 +810,9 @@ class EasyApplyFiller:
             apply_btn.click()
             self._after_ui_click()
             time.sleep(0.35)
+
+            if self._abort_apply_for_job_trust_safety(driver, job):
+                return False
 
             return self._fill_form(driver, resume, cover_letter, job)
         except Exception as e:

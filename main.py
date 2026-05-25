@@ -42,14 +42,21 @@ from utils.consulting_filter import (
 )
 from utils.cover_letter import CoverLetterGenerator
 from utils.dspy_lm import configure_dspy
-from utils.form_filler import DEFAULT_HEADSHOT_IMAGE, EasyApplyFiller
+from utils.form_filler import (
+    APPLY_ABORT_JOB_TRUST_SAFETY,
+    DEFAULT_HEADSHOT_IMAGE,
+    EasyApplyFiller,
+)
 from utils.greenhouse_session import DEFAULT_GREENHOUSE_COOKIE_PATH, run_greenhouse_sign_in_flow
 from utils.helper_browser import run_helper_mode
 from utils.job_records import DEFAULT_LISTINGS_LOG
 from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher
 from utils.matcher import JobMatcher, print_job_fit_debug
 from utils.output_cleanup import prune_cover_letters_for_sync
-from utils.output_paths import migrate_legacy_root_archive_files
+from utils.output_paths import (
+    migrate_legacy_consulting_companies_file,
+    migrate_legacy_root_archive_files,
+)
 from utils.s3_outputs import sync_download_output, sync_upload_output
 from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 from utils.resume_parser import ResumeParser, first_name_from_resume
@@ -507,6 +514,17 @@ def run(args):
         cover_letter = cover_gen.generate(resume, job)
         log.info("  → Easy Apply (same browser session)...")
         success = filler.apply(job, resume, cover_letter, driver=driver)
+        abort_reason = filler.consume_apply_abort_reason()
+        if not success and abort_reason == APPLY_ABORT_JOB_TRUST_SAFETY:
+            tracker.log(job, status="skipped", score=fit)
+            if searcher.dismiss_current_job(
+                driver, reason="job-trust-safety", job_id=str(job.get("id") or "")
+            ):
+                log.info("  → Dismissed job card (LinkedIn trust/safety warning).")
+            else:
+                log.warning("  → Trust/safety warning seen but job card dismiss button not found.")
+            return
+
         status = "applied" if success else "failed"
         applied_at = tracker.log(job, status=status, score=fit, cover_letter=cover_letter)
 
@@ -566,6 +584,7 @@ def main():
     load_dotenv()
     sync_download_output()
     prune_cover_letters_for_sync()
+    migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
 
     ap = argparse.ArgumentParser(
@@ -943,7 +962,7 @@ def main():
         type=Path,
         default=None,
         metavar="PATH",
-        help="Path for consulting company memory JSON (default: data/consulting_companies.json).",
+        help="Path for consulting company memory JSON (default: output/consulting_companies.json; synced via S3).",
     )
     ap.add_argument(
         "--google-sheets-credentials",

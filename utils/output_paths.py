@@ -13,6 +13,16 @@ APPLICATIONS_ARCHIVE_CSV = ARCHIVE_DIR / "applications_archive.csv"
 ASSISTED_APPLICATIONS_CSV = OUTPUT_DIR / "assisted_applications.csv"
 ASSISTED_APPLICATIONS_HISTORY_CSV = ARCHIVE_DIR / "assisted_applications_history.csv"
 GREENHOUSE_DISMISSED_CSV = OUTPUT_DIR / "greenhouse_dismissed.csv"
+CONSULTING_COMPANIES_JSON = OUTPUT_DIR / "consulting_companies.json"
+
+LEGACY_CONSULTING_COMPANIES_JSON = Path("data/consulting_companies.json")
+
+
+def migrate_legacy_consulting_companies_file() -> None:
+    """Move ``data/consulting_companies.json`` to ``output/consulting_companies.json`` when only the legacy path exists."""
+    if LEGACY_CONSULTING_COMPANIES_JSON.is_file() and not CONSULTING_COMPANIES_JSON.is_file():
+        CONSULTING_COMPANIES_JSON.parent.mkdir(parents=True, exist_ok=True)
+        LEGACY_CONSULTING_COMPANIES_JSON.replace(CONSULTING_COMPANIES_JSON)
 
 
 def migrate_legacy_root_archive_files() -> None:

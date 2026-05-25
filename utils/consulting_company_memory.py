@@ -16,10 +16,11 @@ from pathlib import Path
 from typing import Any
 
 from .company_blacklist import normalize_company_name
+from .output_paths import CONSULTING_COMPANIES_JSON
 
 log = logging.getLogger(__name__)
 
-DEFAULT_CONSULTING_MEMORY_PATH = Path("data/consulting_companies.json")
+DEFAULT_CONSULTING_MEMORY_PATH = CONSULTING_COMPANIES_JSON
 _MEMORY_VERSION = 1
 
 

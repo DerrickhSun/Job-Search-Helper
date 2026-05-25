@@ -21,11 +21,20 @@
       "answer": "Yes"
     },
     {
+      "id": "legally_authorized_us_any_employer",
+      "comment": "Legally authorized to work in the US for any employer (optional trailing *)",
+      "match": {
+        "all_substrings": ["legally authorized", "united states", "any employer"]
+      },
+      "answer": "Yes"
+    },
+    {
       "id": "authorized_to_work_in_united_states",
       "comment": "Currently authorized to work in the United States (without requiring sponsorship phrasing in first rule)",
       "match": {
         "all_substrings": ["authorized", "united states"],
-        "any_substrings": ["work in", "to work", "currently authorized", "employed in", "accept employment"]
+        "any_substrings": ["work in", "to work", "currently authorized", "employed in", "accept employment"],
+        "not_substrings": ["any employer"]
       },
       "answer": "Yes"
     },
@@ -50,8 +59,21 @@
       "answer": "Yes"
     },
     {
+      "id": "require_employment_visa_sponsorship_future",
+      "comment": "Will you now or in the future require employment visa sponsorship in the US (optional *)",
+      "match": {
+        "all_substrings": ["sponsorship", "united states"],
+        "any_substrings": [
+          "now or in the future",
+          "require employment visa",
+          "employment visa sponsorship"
+        ]
+      },
+      "answer": "No"
+    },
+    {
       "id": "sponsorship_need_now_or_future",
-      "comment": "Visa / sponsorship need now or in the future — answer No",
+      "comment": "Other visa / sponsorship need now or in the future — answer No",
       "match": {
         "all_substrings": ["sponsorship"],
         "any_substrings": [
@@ -62,7 +84,8 @@
           "need sponsorship",
           "now, or will you",
           "will you in the future"
-        ]
+        ],
+        "not_substrings": ["require employment visa", "employment visa sponsorship"]
       },
       "answer": "No"
     },
@@ -109,6 +132,18 @@
       "match": {
         "all_substrings": ["relocat"],
         "any_substrings": ["willing to", "would you be willing", "willing"]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "on_site_acknowledge_commute_relocate",
+      "comment": "Acknowledge on-site role; willing to commute and/or relocate (optional *)",
+      "match": {
+        "all_substrings": ["acknowledge"],
+        "all_of_any": [
+          ["on-site", "on site"],
+          ["commute", "relocate"]
+        ]
       },
       "answer": "Yes"
     },
@@ -160,11 +195,21 @@
       }
     },
     {
+      "id": "current_location",
+      "comment": "What is your current location? (optional trailing *)",
+      "match": { "all_substrings": ["current location"] },
+      "result": {
+        "type": "literal",
+        "value": "San Diego, California, United States"
+      }
+    },
+    {
       "id": "where_are_you_located",
       "comment": "Free-text location; try formats until the widget accepts one",
       "match": {
         "all_substrings": ["where"],
-        "any_substrings": ["you located", "your location", "where are you", "where do you live"]
+        "any_substrings": ["you located", "your location", "where are you", "where do you live"],
+        "not_substrings": ["current location"]
       },
       "result": {
         "type": "literal_fallbacks",

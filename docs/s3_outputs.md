@@ -1,6 +1,6 @@
 # AWS S3 for outputs (between machines)
 
-Use S3 as a remote copy of `output/` (CSVs, archives, cover letters, etc.) so you do not need to git-push results when switching devices. The `output/` tree is **gitignored** (only `output/.gitkeep` is tracked) to avoid merge conflicts; use S3 or a fresh run to populate it on each machine.
+Use S3 as a remote copy of `output/` (CSVs, archives, cover letters, `consulting_companies.json`, etc.) so you do not need to git-push results when switching devices. The `output/` tree is **gitignored** (only `output/.gitkeep` is tracked) to avoid merge conflicts; use S3 or a fresh run to populate it on each machine.
 
 ### Pruning old cover letters (faster sync)
 
@@ -79,6 +79,8 @@ When `S3_OUTPUT_BUCKET` is set in `.env` (with AWS credentials), every `python m
 If `S3_OUTPUT_BUCKET` is unset, sync is skipped (no error).
 
 The same download/upload pattern applies to ``python archive_applications.py`` (archives CSVs under ``output/``).
+
+**Consulting company memory** lives at ``output/consulting_companies.json`` (LinkedIn slug/name cache). On first run after upgrading, if only ``data/consulting_companies.json`` exists locally it is moved into ``output/``. That file is included in the full ``output/`` S3 sync like other outputs.
 
 ## 4. Manual upload script
 

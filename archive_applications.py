@@ -31,6 +31,7 @@ from utils.output_paths import (
     APPLICATIONS_CSV,
     ASSISTED_APPLICATIONS_CSV,
     ASSISTED_APPLICATIONS_HISTORY_CSV,
+    migrate_legacy_consulting_companies_file,
     migrate_legacy_root_archive_files,
 )
 from utils.output_cleanup import prune_cover_letters_for_sync
@@ -99,6 +100,7 @@ def main() -> None:
     load_dotenv()
     sync_download_output()
     prune_cover_letters_for_sync()
+    migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
 
     do_applications = not args.assisted_only
