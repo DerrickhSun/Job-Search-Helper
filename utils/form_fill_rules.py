@@ -122,8 +122,6 @@ class FormFillRulesEngine:
                 if v:
                     return v
             return None
-        if t == "years_experience_total":
-            return str(max(1, len(resume.get("experience", [])) * 2))
         if t == "literal_fallbacks":
             for v in result.get("values") or []:
                 s = str(v).strip()
