@@ -933,7 +933,8 @@ def main():
         type=Path,
         default=None,
         metavar="PATH",
-        help="JSON file of company strings to never auto-apply to (default: data/company_blacklist.json). "
+        help="JSON file of company strings to skip (default: data/company_blacklist.json). "
+        "LinkedIn: no list-card click / apply; Greenhouse: omitted from job-list collection and helper. "
         "Matching ignores case and punctuation; see that file for the format.",
     )
     ap.add_argument(

@@ -21,6 +21,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
+from .company_blacklist import is_company_blacklisted, load_company_blacklist
 from .chrome_driver import (
     build_chrome,
     driver_session_alive,
@@ -744,18 +745,82 @@ def _scroll_greenhouse_jobs_to_load_more(
     )
 
 
+def _reveal_greenhouse_job_cards_for_collection(driver: Any) -> None:
+    """
+    Scroll each ``search-result`` card into view so lazy-hydrated **View job** / job-board links render.
+    """
+    try:
+        driver.execute_script(
+            """
+            try {
+              const sc = document.querySelector('[data-provides="scroll-container"]');
+              const cards = [...document.querySelectorAll('[data-provides="search-result"]')];
+              for (const card of cards) {
+                try {
+                  card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                  if (sc) {
+                    const r = card.getBoundingClientRect();
+                    const sr = sc.getBoundingClientRect();
+                    if (r.top < sr.top || r.bottom > sr.bottom) {
+                      sc.scrollTop += (r.top - sr.top) - Math.min(120, sr.height * 0.2);
+                    }
+                  }
+                } catch (e) {}
+              }
+            } catch (e) {}
+            """
+        )
+    except Exception as e:
+        log.debug("Greenhouse reveal cards: %s", e)
+    time.sleep(0.35)
+
+
+def _filter_greenhouse_listings_by_company_blacklist(
+    rows: list[dict[str, str]],
+    company_blacklist: list[str],
+) -> list[dict[str, str]]:
+    """Drop rows whose card ``company`` matches :func:`is_company_blacklisted`."""
+    if not company_blacklist:
+        return rows
+    kept: list[dict[str, str]] = []
+    skipped = 0
+    for row in rows:
+        company = (row.get("company") or "").strip()
+        if is_company_blacklisted(company, company_blacklist):
+            skipped += 1
+            log.debug(
+                "Greenhouse job list: skip blacklisted company %r (%s)",
+                company or "(unknown)",
+                (row.get("title") or row.get("url") or "").strip(),
+            )
+            continue
+        kept.append(row)
+    if skipped:
+        log.info(
+            "Greenhouse job list: skipped %d listing(s) from blacklisted companies.",
+            skipped,
+        )
+    return kept
+
+
 def collect_my_greenhouse_view_job_listings(
     driver: Any,
     *,
     skip_url_keys: frozenset[str] | None = None,
+    company_blacklist: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """
-    Collect **View job** links from MyGreenhouse job cards together with **company** and **title** parsed
-    from each card (more reliable than scraping the employer apply page, where company may be missing or
-    only present as a logo ``alt``).
+    Collect job-board apply URLs from MyGreenhouse ``search-result`` cards together with **company** and
+    **title** parsed from each card.
 
-    Each item is ``{"url": "...", "company": "...", "title": "..."}`` (``company`` / ``title`` may be empty
-    if the card layout differs). Order follows DOM; duplicate URLs are dropped (first card wins).
+    Prefer any ``job-boards.greenhouse.io/.../jobs/...`` (or ``gh_jid``) link inside the card; fall back to
+    legacy anchors whose visible label includes **View job**.
+
+    Each item is ``{"url": "...", "company": "...", "title": "..."}``. Order follows DOM; duplicate URLs
+    are dropped (first card wins).
+
+    If ``company_blacklist`` is set (from :func:`load_company_blacklist`), rows whose card ``company`` matches
+    the blacklist are omitted.
 
     If ``skip_url_keys`` is set (from :func:`load_greenhouse_skip_url_keys`), rows whose normalized URL
     matches a prior ``applied`` / ``apply_opened`` application, assisted CSV, recent dismissal
@@ -767,52 +832,117 @@ def collect_my_greenhouse_view_job_listings(
             try {
               const out = [];
               const seen = new Set();
-              for (const a of document.querySelectorAll('a[href]')) {
-                const label = (a.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                if (!label.includes('view job')) continue;
-                const h = (a.getAttribute('href') || '').trim();
-                if (!h) continue;
-                let abs;
-                try {
-                  abs = new URL(h, document.baseURI || location.href).href;
-                } catch (e) { continue; }
-                if (seen.has(abs)) continue;
-                seen.add(abs);
 
-                let card = a.closest('[data-provides="search-result"]');
-                if (!card) {
-                  let n = a;
-                  for (let depth = 0; depth < 10 && n; depth++) {
-                    n = n.parentElement;
-                    if (n && n.querySelector && n.querySelector('h4.section-title')) {
-                      card = n;
-                      break;
-                    }
-                  }
-                }
+              function cardMeta(card) {
                 let title = '';
                 let company = '';
-                if (card) {
-                  const titleEl = card.querySelector('h4.section-title');
-                  if (titleEl) {
-                    title = (titleEl.innerText || titleEl.textContent || '').trim();
-                    if (!title) title = (titleEl.getAttribute('title') || '').trim();
-                  }
-                  const col = titleEl ? titleEl.closest('.flex.flex-col') : null;
-                  if (col) {
-                    for (const p of col.querySelectorAll('p.body')) {
-                      if (p.classList.contains('body__secondary')) continue;
-                      const t = (p.textContent || '').trim();
-                      if (t && t !== title) { company = t; break; }
-                    }
-                  }
-                  if (!company) {
-                    const img = card.querySelector('img.company-logo__logo, .company-logo img[alt]');
-                    if (img) company = (img.getAttribute('alt') || '').trim();
+                if (!card) return { title, company };
+                const titleEl = card.querySelector('h4.section-title');
+                if (titleEl) {
+                  title = (titleEl.innerText || titleEl.textContent || '').trim();
+                  if (!title) title = (titleEl.getAttribute('title') || '').trim();
+                }
+                const col = titleEl ? titleEl.closest('.flex.flex-col') : null;
+                if (col) {
+                  for (const p of col.querySelectorAll('p.body')) {
+                    if (p.classList.contains('body__secondary')) continue;
+                    const t = (p.textContent || '').trim();
+                    if (t && t !== title) { company = t; break; }
                   }
                 }
-                out.push({ url: abs, title: title || '', company: company || '' });
+                if (!company) {
+                  const img = card.querySelector('img.company-logo__logo, .company-logo img[alt]');
+                  if (img) company = (img.getAttribute('alt') || '').trim();
+                }
+                return { title, company };
               }
+
+              function linkLabel(a) {
+                const bits = [
+                  a.textContent || '',
+                  a.getAttribute('aria-label') || '',
+                  a.getAttribute('title') || '',
+                ];
+                return bits.join(' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+              }
+
+              function isJobBoardHref(href) {
+                try {
+                  const u = new URL(href, document.baseURI || location.href);
+                  const host = (u.hostname || '').toLowerCase();
+                  if (!host.includes('greenhouse.io')) return false;
+                  const path = (u.pathname || '').toLowerCase();
+                  if (path.includes('/jobs/')) return true;
+                  if (u.searchParams.has('gh_jid')) return true;
+                  return false;
+                } catch (e) { return false; }
+              }
+
+              function pickJobUrlFromCard(card) {
+                const ranked = [];
+                for (const a of card.querySelectorAll('a[href]')) {
+                  const h = (a.getAttribute('href') || '').trim();
+                  if (!h || h.startsWith('#')) continue;
+                  let abs;
+                  try {
+                    abs = new URL(h, document.baseURI || location.href).href;
+                  } catch (e) { continue; }
+                  if (!isJobBoardHref(abs)) continue;
+                  const label = linkLabel(a);
+                  let score = 0;
+                  if (label.includes('view job')) score += 100;
+                  else if (label.includes('view role')) score += 80;
+                  else if (label.includes('view')) score += 40;
+                  if (a.classList && a.classList.contains('btn')) score += 30;
+                  if (abs.includes('/jobs/')) score += 10;
+                  ranked.push({ url: abs, score });
+                }
+                ranked.sort((x, y) => y.score - x.score);
+                return ranked.length ? ranked[0].url : '';
+              }
+
+              function pushRow(url, card) {
+                if (!url || seen.has(url)) return;
+                seen.add(url);
+                const meta = cardMeta(card);
+                out.push({
+                  url: url,
+                  title: meta.title || '',
+                  company: meta.company || '',
+                });
+              }
+
+              const cards = document.querySelectorAll('[data-provides="search-result"]');
+              for (const card of cards) {
+                const url = pickJobUrlFromCard(card);
+                if (url) pushRow(url, card);
+              }
+
+              if (!out.length) {
+                for (const a of document.querySelectorAll('a[href]')) {
+                  const label = linkLabel(a);
+                  if (!label.includes('view job')) continue;
+                  const h = (a.getAttribute('href') || '').trim();
+                  if (!h) continue;
+                  let abs;
+                  try {
+                    abs = new URL(h, document.baseURI || location.href).href;
+                  } catch (e) { continue; }
+                  let card = a.closest('[data-provides="search-result"]');
+                  if (!card) {
+                    let n = a;
+                    for (let depth = 0; depth < 10 && n; depth++) {
+                      n = n.parentElement;
+                      if (n && n.querySelector && n.querySelector('h4.section-title')) {
+                        card = n;
+                        break;
+                      }
+                    }
+                  }
+                  pushRow(abs, card);
+                }
+              }
+
               return out;
             } catch (e) { return []; }
             """
@@ -836,6 +966,7 @@ def collect_my_greenhouse_view_job_listings(
                 "company": (row.get("company") or "").strip(),
             }
         )
+    out = _filter_greenhouse_listings_by_company_blacklist(out, company_blacklist or [])
     if skip_url_keys:
         filtered: list[dict[str, str]] = []
         skipped = 0
@@ -860,12 +991,19 @@ def collect_my_greenhouse_view_job_hrefs(
     driver: Any,
     *,
     skip_url_keys: frozenset[str] | None = None,
+    company_blacklist: list[str] | None = None,
 ) -> list[str]:
     """
     Collect absolute **View job** URLs only (same cards as :func:`collect_my_greenhouse_view_job_listings`).
     Prefer the listings collector when you need company/title from the job board.
     """
-    return [x["url"] for x in collect_my_greenhouse_view_job_listings(driver, skip_url_keys=skip_url_keys) if x.get("url")]
+    return [
+        x["url"]
+        for x in collect_my_greenhouse_view_job_listings(
+            driver, skip_url_keys=skip_url_keys, company_blacklist=company_blacklist
+        )
+        if x.get("url")
+    ]
 
 
 def _coerce_greenhouse_job_board_entry(raw: Any) -> dict[str, str | None]:
@@ -923,6 +1061,7 @@ def _wait_for_greenhouse_view_job_links(
     poll_s = max(0.35, float(poll_s))
     min_count = max(1, int(min_count))
     last_n = 0
+    _reveal_greenhouse_job_cards_for_collection(driver)
     while time.monotonic() < deadline:
         listings = collect_my_greenhouse_view_job_listings(driver, skip_url_keys=None)
         last_n = len(listings)
@@ -1292,7 +1431,8 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
 
     ``view_job_entries`` is a list of URL strings (legacy) or dicts ``{"url", "company", "title"}`` from
     :func:`collect_my_greenhouse_view_job_listings` — company/title from the MyGreenhouse job card are used
-    for gates and cover letters when the apply page omits them. Rows whose URL matches a prior Greenhouse
+    for gates and cover letters when the apply page omits them. Rows from companies in
+    ``data/company_blacklist.json`` (``--company-blacklist``) and rows whose URL matches a prior Greenhouse
     ``applied`` / ``apply_opened`` record in ``data/applications.db`` are omitted (same URL normalization as
     when collecting).
 
@@ -1308,13 +1448,18 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
     entire list).
     """
     skip_keys = load_greenhouse_skip_url_keys()
+    company_blacklist = load_company_blacklist(getattr(args, "company_blacklist", None))
     seen: set[str] = set()
     ordered: list[dict[str, str | None]] = []
     skipped_dup = 0
+    skipped_blacklist = 0
     for raw in view_job_entries:
         entry = _coerce_greenhouse_job_board_entry(raw)
         u = entry.get("url") or ""
         if not u or u in seen:
+            continue
+        if company_blacklist and is_company_blacklisted(entry.get("company") or "", company_blacklist):
+            skipped_blacklist += 1
             continue
         if skip_keys:
             key = normalize_greenhouse_job_url(u)
@@ -1323,6 +1468,11 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
                 continue
         seen.add(u)
         ordered.append(entry)
+    if skipped_blacklist:
+        log.info(
+            "Greenhouse helper: omitted %d listing(s) from blacklisted companies.",
+            skipped_blacklist,
+        )
     if skipped_dup:
         log.info(
             "Greenhouse helper: omitted %d listing(s) whose URL matches a prior application, assisted record, "
@@ -2059,6 +2209,13 @@ def run_greenhouse_sign_in_flow(args) -> None:
 
         ready_max = float(getattr(args, "greenhouse_jobs_ready_max_seconds", 90.0))
         skip_keys = load_greenhouse_skip_url_keys()
+        company_blacklist = load_company_blacklist(getattr(args, "company_blacklist", None))
+        if company_blacklist:
+            log.info(
+                "Company blacklist active: %d entr%s",
+                len(company_blacklist),
+                "y" if len(company_blacklist) == 1 else "ies",
+            )
         if skip_keys:
             log.info(
                 "Greenhouse dedupe: %d distinct Greenhouse job URL(s) already in %s (applied / apply_opened).",
@@ -2124,7 +2281,28 @@ def run_greenhouse_sign_in_flow(args) -> None:
                 max_rounds=int(args.greenhouse_scroll_max_rounds),
                 pause_s=float(args.greenhouse_scroll_pause),
             )
-            batch = collect_my_greenhouse_view_job_listings(driver, skip_url_keys=skip_keys)
+            _reveal_greenhouse_job_cards_for_collection(driver)
+            batch = collect_my_greenhouse_view_job_listings(
+                driver, skip_url_keys=skip_keys, company_blacklist=company_blacklist
+            )
+            card_count, _ = _greenhouse_scroll_metrics(driver)
+            if card_count > 0 and not batch:
+                log.info(
+                    "Greenhouse: %d job card(s) in DOM but 0 URL(s) collected — retrying after "
+                    "scrolling each card into view.",
+                    card_count,
+                )
+                _reveal_greenhouse_job_cards_for_collection(driver)
+                time.sleep(0.5)
+                batch = collect_my_greenhouse_view_job_listings(
+                    driver, skip_url_keys=skip_keys, company_blacklist=company_blacklist
+                )
+            if card_count > 0 and not batch:
+                log.warning(
+                    "Greenhouse: %d search-result card(s) visible but no job-board URLs found. "
+                    "The MyGreenhouse list layout may have changed, or cards are empty placeholders.",
+                    card_count,
+                )
             added = 0
             for row in batch:
                 u = (row.get("url") or "").strip()
