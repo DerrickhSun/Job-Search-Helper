@@ -1,0 +1,13 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "age_18_or_older",
+      "comment": "Age of majority / legal age for employment",
+      "match": {
+        "all_substrings": ["18"],
+        "any_substrings": ["or older", "years of age", "at least 18", "least 18", "age 18", "are you 18"]
+      },
+      "answer": "Yes"
+    }
+  ]
+}

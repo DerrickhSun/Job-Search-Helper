@@ -1,0 +1,14 @@
+{
+  "textareas": [
+    {
+      "id": "cover_letter",
+      "match": { "all_substrings": ["cover"] },
+      "result": { "type": "cover_letter_full" }
+    },
+    {
+      "id": "additional_message",
+      "match": { "any_substrings": ["additional", "message"] },
+      "result": { "type": "cover_letter_truncated", "max_length": 500 }
+    }
+  ]
+}

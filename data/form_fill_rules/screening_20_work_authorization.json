@@ -1,0 +1,66 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "us_work_auth_without_sponsorship",
+      "comment": "Authorized in US without sponsorship (LinkedIn often says 'without the need for sponsorship')",
+      "match": {
+        "all_substrings": ["authorized", "united states", "sponsorship"],
+        "any_substrings": ["without the need", "without sponsorship", "not require sponsorship", "no sponsorship"]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "legally_authorized_us_any_employer",
+      "comment": "Legally authorized to work in the US for any employer (optional trailing *)",
+      "match": {
+        "all_substrings": ["legally authorized", "united states", "any employer"]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "authorized_to_work_in_united_states",
+      "comment": "Currently authorized to work in the United States (without requiring sponsorship phrasing in first rule)",
+      "match": {
+        "all_substrings": ["authorized", "united states"],
+        "any_substrings": ["work in", "to work", "currently authorized", "employed in", "accept employment"],
+        "not_substrings": ["any employer"]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "us_citizen",
+      "comment": "Are you a US / U.S. / United States citizen (or equivalent phrasing)",
+      "match": {
+        "all_substrings": ["citizen"],
+        "any_substrings": [
+          "us citizen",
+          "u.s. citizen",
+          "u.s citizen",
+          "united states citizen",
+          "citizen of the united states",
+          "citizen of the us",
+          "citizen of the usa",
+          "american citizen",
+          "citizenship in the united states",
+          "citizenship in the us"
+        ]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "us_person",
+      "comment": "Are you a U.S. person? (export-control 'U.S. person' / 'U.S. persons')",
+      "match": {
+        "any_substrings": [
+          "u.s. person",
+          "u.s person",
+          "us person",
+          "u. s. person",
+          "united states person",
+          "usa person"
+        ]
+      },
+      "answer": "Yes"
+    }
+  ]
+}

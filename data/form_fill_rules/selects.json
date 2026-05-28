@@ -1,0 +1,18 @@
+{
+  "selects": [
+    {
+      "id": "highest_education_level",
+      "comment": "Highest level of education completed — dropdown option label",
+      "match": {
+        "all_substrings": ["education"],
+        "any_substrings": ["highest level", "highest degree", "level of education", "highest education", "education level", "education completed"]
+      },
+      "result": { "type": "literal", "value": "Master's Degree" }
+    },
+    {
+      "id": "marketing_opt_in",
+      "match": { "starts_with": "would you like to receive" },
+      "result": { "type": "literal", "value": "No" }
+    }
+  ]
+}

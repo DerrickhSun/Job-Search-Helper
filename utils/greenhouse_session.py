@@ -2098,8 +2098,8 @@ def _click_checkbox_in_fieldset_by_label(driver: Any, fs: Any, choose_label: str
 
 def maybe_apply_greenhouse_checkbox_rules(driver: Any, args: Any) -> bool:
     """
-    For each ``fieldset.checkbox``, if ``data/form_fill_rules.json`` (``--form-fill-rules``) matches the
-    legend under ``checkbox_groups``, select ``choose_label`` for that rule.
+    For each ``fieldset.checkbox``, if the form fill rules (``data/form_fill_rules/`` or ``--form-fill-rules``)
+    match the legend under ``checkbox_groups``, select ``choose_label`` for that rule.
     """
     rules_path = Path(args.form_fill_rules) if getattr(args, "form_fill_rules", None) else DEFAULT_RULES_PATH
     try:

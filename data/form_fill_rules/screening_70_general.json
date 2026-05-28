@@ -1,0 +1,19 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "authorized_to_work",
+      "comment": "Generic US work authorization fallback — must stay after the visa/sponsorship rules",
+      "match": { "all_substrings": ["authorized", "work"] },
+      "answer": "Yes"
+    },
+    {
+      "id": "start_immediately",
+      "comment": "Availability — start immediately",
+      "match": {
+        "all_substrings": ["immediately"],
+        "any_substrings": ["start", "begin"]
+      },
+      "answer": "Yes"
+    }
+  ]
+}

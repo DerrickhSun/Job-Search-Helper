@@ -924,9 +924,10 @@ def main():
         default=None,
         metavar="PATH",
         help="JSON rules for LinkedIn Easy Apply and Greenhouse (``--site greenhouse``): screening, text "
-        "fields, textareas, selects, and ``checkbox_groups`` for Greenhouse fieldsets (default: "
-        "data/form_fill_rules.json). Greenhouse uses ``apply_source=greenhouse`` for "
-        "``choose_label_from_apply_source`` (e.g. how you heard); LinkedIn uses ``linkedin``.",
+        "fields, textareas, selects, and ``checkbox_groups`` for Greenhouse fieldsets. Accepts a directory "
+        "of JSON files merged in filename order (default: data/form_fill_rules/) or a single JSON file. "
+        "Greenhouse uses ``apply_source=greenhouse`` for ``choose_label_from_apply_source`` (e.g. how you "
+        "heard); LinkedIn uses ``linkedin``.",
     )
     ap.add_argument(
         "--company-blacklist",
