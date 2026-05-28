@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -22,8 +23,19 @@ DRIVER_SESSION_CLOSED_MSG = (
 DEFAULT_COOKIE_PATH = Path("data/selenium_linkedin_cookies.json")
 
 
+def _running_in_container() -> bool:
+    return os.path.exists("/.dockerenv") or os.environ.get("CHROME_DOCKER", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def build_chrome(headless: bool = False) -> webdriver.Chrome:
     opts = Options()
+    chrome_bin = (os.environ.get("CHROME_BIN") or os.environ.get("GOOGLE_CHROME_SHIM") or "").strip()
+    if chrome_bin:
+        opts.binary_location = chrome_bin
     if headless:
         opts.add_argument("--headless=new")
     opts.add_argument("--window-size=1400,900")
@@ -31,8 +43,19 @@ def build_chrome(headless: bool = False) -> webdriver.Chrome:
     opts.add_argument("--lang=en-US")
     # Reduce idle overhead vs default Chromium flags where helpful
     opts.add_argument("--disable-extensions")
+    if _running_in_container() or os.environ.get("CHROME_NO_SANDBOX", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
 
-    service = Service(ChromeDriverManager().install())
+    chromedriver_path = (os.environ.get("CHROMEDRIVER_PATH") or "").strip()
+    if chromedriver_path:
+        service = Service(chromedriver_path)
+    else:
+        service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=opts)
     if not headless:
         try:
