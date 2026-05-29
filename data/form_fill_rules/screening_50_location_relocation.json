@@ -48,6 +48,17 @@
       "answer": "Yes"
     },
     {
+      "id": "able_to_meet_onsite_requirement",
+      "comment": "Are you able to meet this on-site requirement?",
+      "match": {
+        "all_of_any": [
+          ["on-site", "onsite", "on site", "in office", "in-office", "in the office"],
+          ["requirement", "requirements", "able to meet", "meet this", "meet the"]
+        ]
+      },
+      "answer": "Yes"
+    },
+    {
       "id": "open_to_working_in_office_days_per_week",
       "comment": "Are you open to working from our [...] office [...] days a week?",
       "match": {
