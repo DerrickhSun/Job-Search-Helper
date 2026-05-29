@@ -1,0 +1,16 @@
+{
+  "checkbox_groups": [
+    {
+      "id": "hear_about_source",
+      "comment": "How did you hear — Greenhouse flow vs LinkedIn Easy Apply (apply_source on FormFillRulesEngine)",
+      "match": {
+        "regex": "how\\s+did\\s+you\\s+hear"
+      },
+      "choose_label_from_apply_source": {
+        "greenhouse": "Greenhouse",
+        "linkedin": "LinkedIn",
+        "default": "LinkedIn"
+      }
+    }
+  ]
+}

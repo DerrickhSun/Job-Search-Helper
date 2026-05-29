@@ -1,0 +1,141 @@
+{
+  "text_inputs": [
+    {
+      "id": "hear_about_free_text",
+      "comment": "Greenhouse-style free-text 'How did you hear' (not checkbox fieldset)",
+      "match": { "regex": "how\\s+did\\s+you\\s+hear" },
+      "result": {
+        "type": "literal_from_apply_source",
+        "when": {
+          "greenhouse": "Greenhouse",
+          "linkedin": "LinkedIn",
+          "default": "LinkedIn"
+        }
+      }
+    },
+    {
+      "id": "current_location",
+      "comment": "What is your current location? (optional trailing *)",
+      "match": { "all_substrings": ["current location"] },
+      "result": {
+        "type": "literal",
+        "value": "San Diego, California, United States"
+      }
+    },
+    {
+      "id": "where_are_you_located",
+      "comment": "Free-text location; try formats until the widget accepts one",
+      "match": {
+        "all_substrings": ["where"],
+        "any_substrings": ["you located", "your location", "where are you", "where do you live"],
+        "not_substrings": ["current location"]
+      },
+      "result": {
+        "type": "literal_fallbacks",
+        "values": [
+          "San Diego, California, United States",
+          "California, United States",
+          "United States",
+          "California"
+        ]
+      }
+    },
+    {
+      "id": "first_name",
+      "match": { "any_substrings": ["first name", "given name"] },
+      "result": { "type": "name_part", "part": "first" }
+    },
+    {
+      "id": "last_name",
+      "match": { "any_substrings": ["last name", "surname", "family name"] },
+      "result": { "type": "name_part", "part": "last" }
+    },
+    {
+      "id": "email",
+      "match": { "all_substrings": ["email"] },
+      "result": { "type": "resume_key_list", "keys": ["email"] }
+    },
+    {
+      "id": "phone",
+      "match": { "any_substrings": ["phone", "mobile"] },
+      "result": { "type": "resume_key_list", "keys": ["phone"] }
+    },
+    {
+      "id": "highest_education_level",
+      "comment": "Highest level of education completed (free-text variant; see selects for dropdowns)",
+      "match": {
+        "all_substrings": ["education"],
+        "any_substrings": ["highest level", "highest degree", "level of education", "highest education", "education level", "education completed"]
+      },
+      "result": { "type": "literal", "value": "Master's Degree" }
+    },
+    {
+      "id": "target_compensation",
+      "comment": "Target / targeted compensation (distinct from desired base salary; numeric)",
+      "match": {
+        "any_substrings": ["target compensation", "targeted compensation", "target total compensation", "targeted total compensation", "target salary", "targeted salary", "target pay", "target base"]
+      },
+      "result": { "type": "literal", "value": "100000" }
+    },
+    {
+      "id": "desired_base_salary",
+      "comment": "Desired / expected / base compensation, or annual salary range requirement (numeric)",
+      "match": {
+        "all_substrings": ["salary"],
+        "any_substrings": ["desired", "base salary", "expected salary", "compensation", "pay expectation", "salary range", "annual salary", "range requirement", "salary requirement", "salary expectation"]
+      },
+      "result": { "type": "literal", "value": "80000" }
+    },
+    {
+      "id": "city_state_currently_reside",
+      "comment": "City + state + reside; must match before generic city_blank",
+      "match": {
+        "all_substrings": ["city", "state"],
+        "any_substrings": ["currently reside", "you currently", "do you currently", "which city and state"]
+      },
+      "result": { "type": "literal", "value": "San Diego, California, United States" }
+    },
+    {
+      "id": "location_bracket",
+      "comment": "Labels like Location[...] (Workday-style); must run before city_blank if label contains 'city'",
+      "match": { "regex": "location\\[" },
+      "result": { "type": "literal", "value": "San Diego, California, United States" }
+    },
+    {
+      "id": "location_city",
+      "comment": "LinkedIn/Workday Location (city) / Location (city)* — autocomplete; press Enter after fill",
+      "match": { "regex": "location\\s*\\(\\s*city\\s*\\)(?:\\s*\\*)?" },
+      "result": {
+        "type": "literal",
+        "value": "San Diego, California, United States",
+        "press_enter_after_fill": true
+      }
+    },
+    {
+      "id": "city_blank",
+      "comment": "Other city-only prompts — leave blank when not covered above",
+      "match": { "all_substrings": ["city"], "not_substrings": ["location"] },
+      "result": { "type": "literal", "value": "" }
+    },
+    {
+      "id": "linkedin_url",
+      "match": { "all_substrings": ["linkedin"] },
+      "result": { "type": "resume_key_list", "keys": ["linkedin", "linkedin_url"] }
+    },
+    {
+      "id": "github_url",
+      "match": { "all_substrings": ["github"] },
+      "result": { "type": "resume_key_list", "keys": ["github_url", "github"] }
+    },
+    {
+      "id": "portfolio_url",
+      "match": { "all_substrings": ["portfolio"] },
+      "result": { "type": "resume_key_list", "keys": ["portfolio_url", "portfolio"] }
+    },
+    {
+      "id": "website_url",
+      "match": { "all_substrings": ["website"] },
+      "result": { "type": "resume_key_list", "keys": ["website", "website_url", "personal_website"] }
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 """
-Form fill rules loaded from ``data/form_fill_rules.json``.
+Form fill rules loaded from ``data/form_fill_rules/`` (a directory of JSON files) or, for backward
+compatibility, a single ``data/form_fill_rules.json`` file.
 
 Used for LinkedIn Easy Apply (text inputs, textareas, selects, screening yes/no) and for Greenhouse
 application pages (``checkbox_groups``: fieldset legend → option label to select). Pass ``apply_source``
@@ -7,6 +8,13 @@ application pages (``checkbox_groups``: fieldset legend → option label to sele
 can pick the right **How did you hear** option. ``text_inputs`` may use ``literal_fallbacks`` (``values[]``)
 or ``literal_from_apply_source`` (same ``when`` map as checkbox_groups). Edit the JSON to change behavior
 without changing Python code.
+
+Directory mode: every ``*.json`` file in the directory is loaded in **case-insensitive filename order**
+and merged. List-valued keys (``screening_yes_no``, ``text_inputs``, ``textareas``, ``selects``,
+``checkbox_groups``) are **concatenated** in that order; scalar keys (``schema_version``,
+``documentation``) take the value from the first file that defines them. Because the FIRST matching
+rule within a category wins, split a category across files using numeric filename prefixes (e.g.
+``screening_10_*.json`` before ``screening_20_*.json``) to control precedence.
 """
 
 from __future__ import annotations
@@ -19,7 +27,19 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-DEFAULT_RULES_PATH = Path(__file__).resolve().parent.parent / "data" / "form_fill_rules.json"
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DEFAULT_RULES_DIR = _DATA_DIR / "form_fill_rules"
+DEFAULT_RULES_FILE = _DATA_DIR / "form_fill_rules.json"
+DEFAULT_RULES_PATH = DEFAULT_RULES_DIR if DEFAULT_RULES_DIR.is_dir() else DEFAULT_RULES_FILE
+
+# List-valued top-level keys are concatenated across files; everything else is treated as a scalar.
+_MERGEABLE_LIST_KEYS = (
+    "screening_yes_no",
+    "text_inputs",
+    "textareas",
+    "selects",
+    "checkbox_groups",
+)
 
 
 def label_matches(normalized_label: str, spec: dict[str, Any]) -> bool:
@@ -71,35 +91,153 @@ class FormFillRulesEngine:
         self._data: dict[str, Any] = self._load()
 
     def _load(self) -> dict[str, Any]:
-        if not self._path.is_file():
-            raise FileNotFoundError(
-                f"Form fill rules not found: {self._path} — add data/form_fill_rules.json or pass rules_path."
-            )
-        with self._path.open(encoding="utf-8") as f:
-            data = json.load(f)
+        if self._path.is_dir():
+            return self._load_dir(self._path)
+        if self._path.is_file():
+            return self._load_file(self._path)
+        raise FileNotFoundError(
+            f"Form fill rules not found: {self._path} — add the data/form_fill_rules/ directory "
+            "(or a data/form_fill_rules.json file), or pass rules_path."
+        )
+
+    @staticmethod
+    def _read_json_object(path: Path) -> dict[str, Any]:
+        with path.open(encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON in form fill rules file {path}: {e}") from e
         if not isinstance(data, dict):
-            raise ValueError("form_fill_rules.json must be a JSON object")
-        log.info("Loaded form fill rules: %s", self._path.resolve())
+            raise ValueError(f"Form fill rules file must be a JSON object: {path}")
         return data
+
+    def _load_file(self, path: Path) -> dict[str, Any]:
+        data = self._read_json_object(path)
+        log.info("Loaded form fill rules: %s", path.resolve())
+        return data
+
+    def _load_dir(self, path: Path) -> dict[str, Any]:
+        files = sorted(path.glob("*.json"), key=lambda p: p.name.lower())
+        if not files:
+            raise FileNotFoundError(
+                f"No *.json rule files found in form fill rules directory: {path}"
+            )
+        merged: dict[str, Any] = {}
+        for fp in files:
+            part = self._read_json_object(fp)
+            for key, val in part.items():
+                if key in _MERGEABLE_LIST_KEYS:
+                    if not isinstance(val, list):
+                        raise ValueError(
+                            f"Key {key!r} in {fp} must be a list (got {type(val).__name__})."
+                        )
+                    merged.setdefault(key, []).extend(val)
+                else:
+                    merged.setdefault(key, val)
+        log.info(
+            "Loaded form fill rules: merged %d file(s) from %s",
+            len(files),
+            path.resolve(),
+        )
+        return merged
 
     @staticmethod
     def normalize_label(label: str) -> str:
-        return re.sub(r"\s+", " ", (label or "").lower()).strip()
+        n = re.sub(r"\s+", " ", (label or "").lower()).strip()
+        # Trailing asterisks (and any space before them) are common "required field" markers — drop them
+        # so "Question?*" / "Question *" match the same rules as "Question?".
+        return re.sub(r"[\s*]+$", "", n)
 
     def _matches(self, normalized_label: str, spec: dict[str, Any]) -> bool:
         return label_matches(normalized_label, spec)
 
     def screening_yes_no(self, label: str) -> str | None:
-        """Returns ``\"Yes\"``, ``\"No\"``, or ``None`` if no screening rule matches."""
+        """
+        Returns ``\"Yes\"``, ``\"No\"``, or ``None`` if no screening rule produces an answer.
+
+        A screening rule may use a fixed ``answer`` or, for label-dependent answers, ``answer_by_region``
+        (see :meth:`_resolve_region_answer`). A region rule that matches is **authoritative**: it stops the
+        scan and may intentionally return ``None`` (leave the field empty for the user to fill).
+        """
         n = self.normalize_label(label)
         if not n:
             return None
         for rule in self._data.get("screening_yes_no", []):
-            if self._matches(n, rule.get("match", {})):
-                ans = rule.get("answer")
-                if ans is not None:
-                    return str(ans).strip()
+            if not self._matches(n, rule.get("match", {})):
+                continue
+            region_cfg = rule.get("answer_by_region")
+            if region_cfg:
+                ans, decided = self._resolve_region_answer(n, region_cfg)
+                if decided:
+                    return ans
+                continue
+            ans = rule.get("answer")
+            if ans is not None:
+                return str(ans).strip()
         return None
+
+    @staticmethod
+    def _region_condition_matches(region_lower: str, cond: dict[str, Any]) -> bool:
+        """
+        True when ``region_lower`` satisfies a region condition. A condition matches if **any** listed term
+        matches across these operators:
+        - ``contains_any``: plain substring (e.g. ``\"computer science\"``).
+        - ``contains_word_any``: whole-word via ``\\b`` (e.g. the state abbreviation ``\"ca\"`` without
+          matching inside ``\"california\"``).
+        - ``contains_token_any``: token bounded by anything **except** alphanumerics, ``+`` or ``#`` — so
+          ``\"c\"`` matches ``c`` / ``c,`` but **not** ``c++`` or ``c#``, and ``\"sql\"`` matches standalone
+          ``sql`` but not ``mysql``. Use for ambiguous short language names.
+        """
+        for sub in cond.get("contains_any") or []:
+            s = str(sub).lower().strip()
+            if s and s in region_lower:
+                return True
+        for word in cond.get("contains_word_any") or []:
+            w = str(word).lower().strip()
+            if w and re.search(rf"\b{re.escape(w)}\b", region_lower):
+                return True
+        for tok in cond.get("contains_token_any") or []:
+            t = str(tok).lower().strip()
+            if t and re.search(rf"(?<![a-z0-9+#]){re.escape(t)}(?![a-z0-9+#])", region_lower):
+                return True
+        return False
+
+    def _resolve_region_answer(
+        self, normalized_label: str, cfg: dict[str, Any]
+    ) -> tuple[str | None, bool]:
+        """
+        Resolve a label-dependent Yes/No answer.
+
+        ``cfg`` keys:
+        - ``region_regex``: a regex run on the normalized label; group 1 (or the whole match) is the region.
+        - ``conditions``: ordered list; the first whose terms appear in the region wins (see
+          :meth:`_region_condition_matches`). Each has an ``answer`` (``\"Yes\"``/``\"No\"``/``null``).
+        - ``default_answer``: used when no condition matches (``null`` ⇒ leave empty).
+
+        Returns ``(answer, decided)``. ``decided`` is ``False`` only when ``region_regex`` does not capture a
+        region (so the caller can fall through to other rules); otherwise the region rule is authoritative,
+        and ``answer`` may be ``None`` to deliberately leave the field empty.
+        """
+        rx = cfg.get("region_regex")
+        if not rx:
+            return None, False
+        try:
+            m = re.search(rx, normalized_label, re.I)
+        except re.error as e:
+            log.warning("Invalid region_regex in form rules: %s (%s)", rx, e)
+            return None, False
+        if not m:
+            return None, False
+        region = (m.group(1) if m.groups() else m.group(0)) or ""
+        region_lower = region.strip().lower()
+        for cond in cfg.get("conditions") or []:
+            if self._region_condition_matches(region_lower, cond):
+                ans = cond.get("answer")
+                return (str(ans).strip() if ans is not None else None), True
+        if "default_answer" in cfg:
+            da = cfg.get("default_answer")
+            return (str(da).strip() if da is not None else None), True
+        return None, True
 
     def _apply_literal(self, result: dict[str, Any]) -> str:
         return str(result.get("value", ""))

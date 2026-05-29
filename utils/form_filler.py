@@ -63,6 +63,15 @@ JOB_TRUST_SAFETY_MODAL_DISMISS = (
 
 APPLY_ABORT_JOB_TRUST_SAFETY = "job_trust_safety_reminder"
 
+# LinkedIn daily Easy Apply submission cap. When reached, an inline feedback message appears (e.g.
+# "We limit daily submissions to maintain quality and prevent bots… Save this job and apply tomorrow.").
+APPLY_ABORT_DAILY_LIMIT = "linkedin_daily_application_limit"
+LINKEDIN_DAILY_LIMIT_MESSAGE = "artdeco-inline-feedback__message"
+LINKEDIN_DAILY_LIMIT_SUBSTRINGS = (
+    "we limit daily submissions",
+    "apply tomorrow",
+)
+
 # Success / follow-up UI after submit is often *not* inside ``.jobs-easy-apply-modal`` — same tab, different layer.
 POST_APPLY_DISMISS = (
     'button[aria-label="Not now"]',
@@ -759,6 +768,62 @@ class EasyApplyFiller:
                 continue
         return False
 
+    def _linkedin_daily_limit_reached(self, driver: Any) -> bool:
+        """
+        True when LinkedIn's daily Easy Apply submission cap message is on the page (inline feedback
+        such as "We limit daily submissions … Save this job and apply tomorrow.").
+
+        The message can sit under a grayed-out Apply button; such text is often not "visible" to Selenium,
+        so we read ``textContent`` (via JS) rather than ``element.text`` (which is empty for hidden nodes).
+        """
+        subs = list(LINKEDIN_DAILY_LIMIT_SUBSTRINGS)
+        try:
+            found = driver.execute_script(
+                """
+                const subs = arguments[0];
+                const nodes = document.querySelectorAll(
+                  '.artdeco-inline-feedback__message, .artdeco-inline-feedback, [class*="inline-feedback"]'
+                );
+                for (const el of nodes) {
+                  const t = (el.textContent || '').toLowerCase();
+                  for (const s of subs) { if (t.includes(s)) return true; }
+                }
+                return false;
+                """,
+                subs,
+            )
+            if found:
+                return True
+        except Exception as e:
+            log.debug("Daily-limit JS scan failed (%s); falling back to element scan.", e)
+
+        try:
+            els = driver.find_elements(By.CSS_SELECTOR, f".{LINKEDIN_DAILY_LIMIT_MESSAGE}")
+        except Exception:
+            els = []
+        for el in els:
+            try:
+                text = (el.get_attribute("textContent") or el.text or "").strip().lower()
+            except Exception:
+                continue
+            if text and any(s in text for s in LINKEDIN_DAILY_LIMIT_SUBSTRINGS):
+                return True
+        return False
+
+    def _abort_apply_for_daily_limit(self, driver: Any, job: dict, *, when: str) -> bool:
+        """If the daily-limit message is present, record the abort reason and signal the caller to stop."""
+        if not self._linkedin_daily_limit_reached(driver):
+            return False
+        log.warning(
+            "LinkedIn daily application limit reached (%s) at %s — %s. Stopping further applies.",
+            job.get("title"),
+            job.get("company"),
+            when,
+        )
+        self._dismiss_easy_apply_modal_if_open(driver, "after daily limit")
+        self._apply_abort_reason = APPLY_ABORT_DAILY_LIMIT
+        return True
+
     def _abort_apply_for_job_trust_safety(self, driver: Any, job: dict) -> bool:
         """
         If the pre-apply trust/safety modal is open, dismiss it and signal the caller to skip this job.
@@ -800,8 +865,17 @@ class EasyApplyFiller:
             # Leftover success / error modal blocks the next Apply on the same driver.
             self._dismiss_easy_apply_modal_if_open(driver, "before apply")
 
+            # When the daily submission cap is hit, LinkedIn replaces the Apply button with the limit
+            # message, so check before the (slow) apply-button poll.
+            if self._abort_apply_for_daily_limit(driver, job, when="Apply button replaced by limit message"):
+                return False
+
             apply_btn = self._find_apply_button(driver)
             if not apply_btn:
+                if self._abort_apply_for_daily_limit(
+                    driver, job, when="no Apply button — limit message shown"
+                ):
+                    return False
                 raise RuntimeError(
                     "Apply button not found: expected #jobs-apply-button-id or Easy Apply fallback"
                 )
@@ -812,6 +886,9 @@ class EasyApplyFiller:
             time.sleep(0.35)
 
             if self._abort_apply_for_job_trust_safety(driver, job):
+                return False
+
+            if self._abort_apply_for_daily_limit(driver, job, when="after clicking Apply"):
                 return False
 
             return self._fill_form(driver, resume, cover_letter, job)
@@ -1302,6 +1379,8 @@ class EasyApplyFiller:
                 btn.click()
                 self._after_ui_click()
                 time.sleep(0.6)
+                if self._abort_apply_for_daily_limit(driver, job, when="after clicking Submit"):
+                    return False
                 self._wait_then_dismiss_post_submit(driver, "after submit")
                 return True
             if review_btns:

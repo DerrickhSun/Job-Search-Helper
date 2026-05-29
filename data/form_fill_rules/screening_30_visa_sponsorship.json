@@ -1,0 +1,55 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "require_employment_visa_sponsorship_future",
+      "comment": "Will you now or in the future require employment visa sponsorship in the US (optional *)",
+      "match": {
+        "all_substrings": ["sponsorship", "united states"],
+        "any_substrings": [
+          "now or in the future",
+          "require employment visa",
+          "employment visa sponsorship"
+        ]
+      },
+      "answer": "No"
+    },
+    {
+      "id": "sponsorship_need_now_or_future",
+      "comment": "Other visa / sponsorship need now or in the future — answer No",
+      "match": {
+        "all_substrings": ["sponsorship"],
+        "any_substrings": [
+          "now or in the future",
+          "in the future need",
+          "will you need",
+          "require sponsorship",
+          "need sponsorship",
+          "now, or will you",
+          "will you in the future"
+        ],
+        "not_substrings": ["require employment visa", "employment visa sponsorship"]
+      },
+      "answer": "No"
+    },
+    {
+      "id": "sponsorship_and_visa_terms",
+      "comment": "Visa / employment sponsorship",
+      "match": {
+        "all_of_any": [
+          ["sponsorship", " sponsor", "sponsor "],
+          ["visa", "h-1", "h1b", "h1-b", "immigration", "employment visa"]
+        ]
+      },
+      "answer": "No"
+    },
+    {
+      "id": "sponsorship_need_will",
+      "comment": "Sponsorship + require/will you (do not use plain 'need' — it matches 'without the need for sponsorship')",
+      "match": {
+        "all_substrings": ["sponsorship"],
+        "any_substrings": ["require", "requiring", "will you", "will we need to sponsor", "need sponsorship", "need a visa", "need visa", "need h-1", "need h1b"]
+      },
+      "answer": "No"
+    }
+  ]
+}

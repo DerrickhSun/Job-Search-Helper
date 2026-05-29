@@ -5,17 +5,19 @@ Two-stage evaluation:
 1) **Hard gates** (``gates_pass``) — all must pass or the job is skipped without a fit score:
    - Education: candidate's highest degree at or above the job's minimum (ordinal scale).
    - Experience: candidate's estimated years >= the job's minimum when the posting states one.
-     If the posting asks for **senior-level** experience, or the **job title** contains **Senior**, **Lead**, or
-     **Manager** as a role level, but gives **no numeric** years floor, the gate assumes **5 years** (regex
-     backstop + LLM instruction).
+     If the posting asks for **senior-level** experience, or the **job title** contains **Senior**, **Lead**,
+     **Manager**, or **Director** as a role level, but gives **no numeric** years floor, the gate assumes
+     **5 years** (regex backstop + LLM instruction).
    - **Clearance (regex):** evaluation is **per line** (split on newlines in description + title) so patterns
      cannot span unrelated sentences. If **any one line** contains ``active`` … ``clearance`` (both words on
      that same line) and that **same line** does **not** contain ``eligible`` or ``valid`` as whole words, the
      job is skipped (treated as requiring an already-held clearance with no eligible/valid-clearance wording
      on that line).
+   - **Location restriction (regex):** if the posting says it is "open to ONLY candidates currently based in
+     <area>" (or similar) and ``<area>`` mentions neither **California** nor **San Diego**, the job is skipped.
 
    Unstated minima (education ``unspecified`` / years ``-1`` or missing) impose no bar, except the
-   title/level-without-number case above (Senior / Lead / Manager in title, or senior-level experience in copy).
+   title/level-without-number case above (Senior / Lead / Manager / Director in title, or senior-level experience in copy).
 
 2) **Fit rating** (``fit_score``) — a float in ``[0, 1]`` from an LLM (skills, roles, domain vs the
    posting). Compared to ``--min-score`` after gates pass. ``score()`` returns this fit when gates pass,
@@ -91,8 +93,8 @@ anywhere state a numeric minimum years of experience (no "3+ years", "at least 5
 minimum_years_experience to **5**.
 
 Title role level without a number: the same **5** applies when the **job title** contains any of these
-as **whole words** (case-insensitive): **Senior**, **Lead**, or **Manager** — e.g. "Senior Software Engineer",
-"Team Lead", "Engineering Manager", "Product Manager" — and there is still **no** numeric years floor in the
+as **whole words** (case-insensitive): **Senior**, **Lead**, **Manager**, or **Director** — e.g. "Senior Software Engineer",
+"Team Lead", "Engineering Manager", "Product Manager", "Director of Engineering" — and there is still **no** numeric years floor in the
 title or description. If numeric minima are stated anywhere, use the **largest** such number only — do not
 add 5 on top when explicit year floors already exist.
 
@@ -239,11 +241,12 @@ class JobMatcher:
         ok_edu = _education_gate(cand_edu, req_edu)
         ok_exp = _experience_gate(cand_years, req_years)
         ok_clear = _clearance_eligibility_gate_passes(job)
+        ok_loc = _location_restriction_gate_passes(job)
 
         r = _as_str_list(getattr(result, "rationale", None))
         log.debug(
             "Gates: candidate edu_rank=%s years≈%.1f | required edu=%s years=%s | "
-            "edu_ok=%s exp_ok=%s clear_ok=%s | %s",
+            "edu_ok=%s exp_ok=%s clear_ok=%s loc_ok=%s | %s",
             cand_edu,
             cand_years,
             req_edu,
@@ -251,6 +254,7 @@ class JobMatcher:
             ok_edu,
             ok_exp,
             ok_clear,
+            ok_loc,
             r,
         )
 
@@ -261,11 +265,11 @@ class JobMatcher:
             if req_years is not None and req_years >= 0
             else "unspecified"
         )
-        if ok_edu and ok_exp and ok_clear:
+        if ok_edu and ok_exp and ok_clear and ok_loc:
             log.info(
                 "Gates passed [llm+regex] %s%r at %r | eff min yrs=%s min edu=%s | "
                 "candidate yrs≈%.1f (date-span/roles heuristic; see _estimate_years_experience) "
-                "edu=%s (rank %d) | clearance_gate=ok",
+                "edu=%s (rank %d) | clearance_gate=ok | location_gate=ok",
                 jlabel,
                 job.get("title", ""),
                 job.get("company", ""),
@@ -277,7 +281,7 @@ class JobMatcher:
             )
             return True
         log.info(
-            "Gates failed [llm+regex] %s%r at %r | edu_ok=%s exp_ok=%s clear_ok=%s | "
+            "Gates failed [llm+regex] %s%r at %r | edu_ok=%s exp_ok=%s clear_ok=%s loc_ok=%s | "
             "need min edu %s min yrs %s | have edu %s (rank %s) yrs≈%.1f",
             jlabel,
             job.get("title", ""),
@@ -285,6 +289,7 @@ class JobMatcher:
             ok_edu,
             ok_exp,
             ok_clear,
+            ok_loc,
             req_edu,
             need_y,
             EDU_ORDER[cand_edu],
@@ -302,8 +307,9 @@ class JobMatcher:
         ok_edu = _education_gate(cand_edu, req_edu)
         ok_exp = _experience_gate(cand_years, req_years)
         ok_clear = _clearance_eligibility_gate_passes(job)
+        ok_loc = _location_restriction_gate_passes(job)
         log.debug(
-            "Fallback gates: cand edu=%s yrs≈%.1f req edu=%s yrs=%s -> edu_ok=%s exp_ok=%s clear_ok=%s",
+            "Fallback gates: cand edu=%s yrs≈%.1f req edu=%s yrs=%s -> edu_ok=%s exp_ok=%s clear_ok=%s loc_ok=%s",
             cand_edu,
             cand_years,
             req_edu,
@@ -311,6 +317,7 @@ class JobMatcher:
             ok_edu,
             ok_exp,
             ok_clear,
+            ok_loc,
         )
         jid = job.get("id", "")
         jlabel = f"id={jid} " if jid else ""
@@ -319,10 +326,10 @@ class JobMatcher:
             if req_years is not None and req_years >= 0
             else "unspecified"
         )
-        if ok_edu and ok_exp and ok_clear:
+        if ok_edu and ok_exp and ok_clear and ok_loc:
             log.info(
                 "Gates passed [regex_fallback] %s%r at %r | min yrs=%s min edu=%s | "
-                "candidate yrs≈%.1f edu=%s (rank %d) | clearance_gate=ok",
+                "candidate yrs≈%.1f edu=%s (rank %d) | clearance_gate=ok | location_gate=ok",
                 jlabel,
                 job.get("title", ""),
                 job.get("company", ""),
@@ -334,7 +341,7 @@ class JobMatcher:
             )
             return True
         log.info(
-            "Gates failed [regex_fallback] %s%r at %r | edu_ok=%s exp_ok=%s clear_ok=%s | "
+            "Gates failed [regex_fallback] %s%r at %r | edu_ok=%s exp_ok=%s clear_ok=%s loc_ok=%s | "
             "need min edu %s min yrs %s | have edu %s (rank %s) yrs≈%.1f",
             jlabel,
             job.get("title", ""),
@@ -342,6 +349,7 @@ class JobMatcher:
             ok_edu,
             ok_exp,
             ok_clear,
+            ok_loc,
             req_edu,
             need_y,
             EDU_ORDER[cand_edu],
@@ -391,6 +399,37 @@ def _clearance_eligibility_gate_passes(job: dict) -> bool:
         log.info(
             "Clearance gate: skip — same line has active…clearance without 'eligible' or 'valid': %s",
             line[:240] + ("…" if len(line) > 240 else ""),
+        )
+        return False
+    return True
+
+
+# "This role is open to ONLY candidates currently based in <area>" and similar; capture the area text
+# (within a single line — `.` does not match newlines without DOTALL) up to a sentence/clause break.
+_RE_OPEN_ONLY_BASED_IN = re.compile(
+    r"open\s+(?:to\s+)?only\s+(?:to\s+)?candidates.{0,40}?\bbased\s+(?:in|out\s+of)\s+(.{1,80}?)(?:[.\n;]|$)",
+    re.IGNORECASE,
+)
+_LOCATION_ALLOWED_SUBSTRINGS = ("california", "san diego")
+
+
+def _location_restriction_gate_passes(job: dict) -> bool:
+    """
+    False (skip job) when the posting restricts applicants to a specific area — phrasing like
+    "This role is open to ONLY candidates currently based in <area>" — and <area> mentions neither
+    ``California`` nor ``San Diego`` (case-insensitive).
+
+    If no such restriction phrase is present, the gate passes (most postings have no hard location bar).
+    """
+    blob = f"{job.get('description') or ''}\n{job.get('title') or ''}"
+    for m in _RE_OPEN_ONLY_BASED_IN.finditer(blob):
+        area = (m.group(1) or "").strip()
+        area_l = area.lower()
+        if any(s in area_l for s in _LOCATION_ALLOWED_SUBSTRINGS):
+            continue
+        log.info(
+            "Location gate: skip — role restricted to candidates based in %r (no California/San Diego).",
+            area[:120] + ("…" if len(area) > 120 else ""),
         )
         return False
     return True
@@ -593,8 +632,9 @@ def _extract_job_requirements_regex(description: str, title: str | None = None) 
 
 def _title_implies_five_years_role_level_no_numeric_floor(title: str | None) -> bool:
     """
-    True when the job **title** suggests mid/senior role level via whole-word **Senior**, **Lead**, or
-    **Manager** (case-insensitive). Used only when no numeric year minima exist in title + description.
+    True when the job **title** suggests mid/senior role level via whole-word **Senior**, **Lead**,
+    **Manager**, or **Director** (case-insensitive). Used only when no numeric year minima exist in
+    title + description.
     """
     if not (title or "").strip():
         return False
@@ -605,6 +645,7 @@ def _title_implies_five_years_role_level_no_numeric_floor(title: str | None) -> 
             r"\bsenior\b",
             r"\blead\b",
             r"\bmanager\b",
+            r"\bdirector\b",
         )
     )
 

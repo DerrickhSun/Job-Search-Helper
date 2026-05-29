@@ -1,0 +1,27 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "bachelors_degree_in_field",
+      "comment": "Do you have a Bachelor's degree in <field>? Yes if field mentions Computer Science or Math; else No.",
+      "match": {
+        "all_substrings": ["bachelor", "degree"]
+      },
+      "answer_by_region": {
+        "region_regex": "bachelor'?s?(?:\\s+degree)?\\s+in\\s+(.{1,160}?)(?:[?.\\n;]|$)",
+        "conditions": [
+          { "contains_any": ["computer science", "math"], "answer": "Yes" }
+        ],
+        "default_answer": "No"
+      }
+    },
+    {
+      "id": "bachelors_degree_any",
+      "comment": "Bare 'Do you have a Bachelor's degree?' (no field) — candidate holds a Master's, so Yes. Runs after bachelors_degree_in_field, which is authoritative when a field is named.",
+      "match": {
+        "all_substrings": ["bachelor", "degree"]
+      },
+      "answer": "Yes"
+    }
+  ]
+}
+

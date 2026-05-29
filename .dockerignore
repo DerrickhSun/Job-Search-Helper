@@ -1,0 +1,42 @@
+# Git and editor
+.git
+.gitignore
+.cursor
+.vscode
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+
+# Secrets and local env
+.env
+.env.*
+
+# Large / machine-specific runtime data (mount at run time)
+data/applications.db
+data/bot.log
+data/listings_log.jsonl
+data/selenium_*.json
+data/resume_profile.json
+data/helper_external_apply_events.jsonl
+
+# Outputs and generated assets (mount at run time)
+output/**
+!output/.gitkeep
+
+# Docs and misc
+*.md
+docs/
+scripts/
+agent-transcripts/
+
+# OS
+.DS_Store
+Thumbs.db

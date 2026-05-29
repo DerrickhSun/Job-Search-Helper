@@ -1,0 +1,39 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "relatives_at_employer",
+      "comment": "Relatives / family employed there",
+      "match": {
+        "all_of_any": [
+          ["relative", "relatives", "family member"],
+          ["employed", "work", "working"]
+        ]
+      },
+      "answer": "No"
+    },
+    {
+      "id": "previously_employed_by",
+      "comment": "Previously employed by this company",
+      "match": { "all_substrings": ["employed by"] },
+      "answer": "No"
+    },
+    {
+      "id": "were_you_referred",
+      "comment": "Were you referred (by an employee)? — yes/no; phrased to avoid 'who referred you?' text fields",
+      "match": {
+        "any_substrings": [
+          "were you referred",
+          "have you been referred",
+          "are you being referred",
+          "referred by a current",
+          "referred by an employee",
+          "referred by someone",
+          "employee referral",
+          "did anyone refer you",
+          "did someone refer you"
+        ]
+      },
+      "answer": "No"
+    }
+  ]
+}

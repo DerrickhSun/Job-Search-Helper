@@ -80,6 +80,28 @@ python scripts/upload_outputs_to_s3.py
 
 ---
 
+## Docker
+
+Build and run with Chromium inside the image (headless by default; mount your `.env`, `data/`, `output/`, and resume):
+
+```bash
+docker build -t job-applyer .
+
+docker run --rm -it \
+  --env-file .env \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/output:/app/output" \
+  -v "$(pwd)/resume.pdf:/app/resume.pdf:ro" \
+  job-applyer \
+  --resume resume.pdf --keywords "software engineer" --location "United States"
+```
+
+On Windows PowerShell, use `${PWD}` instead of `$(pwd)` for volume paths.
+
+LinkedIn/Greenhouse sign-in and 2FA are easiest with cookies created on the host (`data/selenium_*_cookies.json`) and mounted into the container. For a visible browser in Docker you need X11 or VNC; otherwise use `--no-headless` on the host.
+
+---
+
 ## First Run Tips
 
 1. The browser is visible by default so you can complete LinkedIn 2FA; use `--headless` only when you do not need the UI

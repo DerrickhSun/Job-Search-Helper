@@ -1,0 +1,39 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "scalable_cloud_infrastructure_experience",
+      "comment": "Developing/maintaining scalable cloud infrastructure (typos like infrasture)",
+      "match": {
+        "all_substrings": ["experience", "cloud", "scalable"],
+        "any_substrings": ["developing", "maintaining", "infrastructure", "infrasture"]
+      },
+      "answer": "No"
+    },
+    {
+      "id": "proficient_in_python",
+      "comment": "Proficiency in Python screening",
+      "match": {
+        "regex": "\\bproficient\\b.{0,120}\\bpython\\b|\\bpython\\b.{0,120}\\bproficient\\b"
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "familiar_with_programming_languages",
+      "comment": "Familiar with programming languages such as <list>? Yes if list has Python/Java/C/SQL/HTML/CSS (C and SQL token-bounded so C++/C#/MySQL do not count); else No.",
+      "match": {
+        "any_substrings": ["programming language", "programming languages", "coding language", "coding languages"]
+      },
+      "answer_by_region": {
+        "region_regex": "(?:such as|including|like|e\\.?g\\.?)\\s+(.{1,200}?)(?:[?.\\n;]|$)",
+        "conditions": [
+          {
+            "contains_word_any": ["python", "java", "sql", "html", "css"],
+            "contains_token_any": ["c"],
+            "answer": "Yes"
+          }
+        ],
+        "default_answer": "No"
+      }
+    }
+  ]
+}

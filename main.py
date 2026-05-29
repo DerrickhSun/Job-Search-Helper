@@ -43,6 +43,7 @@ from utils.consulting_filter import (
 from utils.cover_letter import CoverLetterGenerator
 from utils.dspy_lm import configure_dspy
 from utils.form_filler import (
+    APPLY_ABORT_DAILY_LIMIT,
     APPLY_ABORT_JOB_TRUST_SAFETY,
     DEFAULT_HEADSHOT_IMAGE,
     EasyApplyFiller,
@@ -50,7 +51,7 @@ from utils.form_filler import (
 from utils.greenhouse_session import DEFAULT_GREENHOUSE_COOKIE_PATH, run_greenhouse_sign_in_flow
 from utils.helper_browser import run_helper_mode
 from utils.job_records import DEFAULT_LISTINGS_LOG
-from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher
+from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher, StopApplyPipeline
 from utils.matcher import JobMatcher, print_job_fit_debug
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
@@ -515,6 +516,11 @@ def run(args):
         log.info("  → Easy Apply (same browser session)...")
         success = filler.apply(job, resume, cover_letter, driver=driver)
         abort_reason = filler.consume_apply_abort_reason()
+        if not success and abort_reason == APPLY_ABORT_DAILY_LIMIT:
+            log.warning(
+                "  → LinkedIn daily application limit reached — stopping the run (more jobs tomorrow)."
+            )
+            raise StopApplyPipeline("LinkedIn daily application limit reached")
         if not success and abort_reason == APPLY_ABORT_JOB_TRUST_SAFETY:
             tracker.log(job, status="skipped", score=fit)
             if searcher.dismiss_current_job(
@@ -924,9 +930,10 @@ def main():
         default=None,
         metavar="PATH",
         help="JSON rules for LinkedIn Easy Apply and Greenhouse (``--site greenhouse``): screening, text "
-        "fields, textareas, selects, and ``checkbox_groups`` for Greenhouse fieldsets (default: "
-        "data/form_fill_rules.json). Greenhouse uses ``apply_source=greenhouse`` for "
-        "``choose_label_from_apply_source`` (e.g. how you heard); LinkedIn uses ``linkedin``.",
+        "fields, textareas, selects, and ``checkbox_groups`` for Greenhouse fieldsets. Accepts a directory "
+        "of JSON files merged in filename order (default: data/form_fill_rules/) or a single JSON file. "
+        "Greenhouse uses ``apply_source=greenhouse`` for ``choose_label_from_apply_source`` (e.g. how you "
+        "heard); LinkedIn uses ``linkedin``.",
     )
     ap.add_argument(
         "--company-blacklist",

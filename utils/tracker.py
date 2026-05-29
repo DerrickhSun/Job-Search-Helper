@@ -262,16 +262,54 @@ class ApplicationTracker:
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         header = ("", "company", "", "date", "url", "title")
+
+        # Non-destructive export: preserve rows already in the target CSV (e.g. the copy downloaded from
+        # S3 / written by another machine), since this machine's local DB does not contain applies recorded
+        # elsewhere. Without this, regenerating from the local DB would clobber cross-machine history.
+        existing_rows: list[list[str]] = []
+        existing_keys: set[str] = set()
+        if out.is_file():
+            try:
+                with open(out, newline="", encoding="utf-8") as f:
+                    for ri, row in enumerate(csv.reader(f)):
+                        if ri == 0:
+                            continue  # header
+                        if not any((c or "").strip() for c in row):
+                            continue
+                        existing_rows.append(row)
+                        url = row[4] if len(row) > 4 else ""
+                        k = _sheet_export_url_dedupe_key(url or "")
+                        if k:
+                            existing_keys.add(k)
+            except OSError as e:
+                log.warning(
+                    "Could not read existing %s for merge (%s); rewriting from local DB only.",
+                    out.resolve(),
+                    e,
+                )
+                existing_rows = []
+                existing_keys = set()
+
+        new_rows: list[tuple] = []
+        for company, url, title, applied_at in written:
+            k = _sheet_export_url_dedupe_key(url or "")
+            if k and k in existing_keys:
+                continue  # already in the CSV (this run, or another machine) — keep the existing row
+            job = {"company": company or "", "url": url or "", "title": title or ""}
+            new_rows.append(applied_sheet_row(job, format_apply_date_mdy(applied_at or "")))
+
         with open(out, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(header)
-            for company, url, title, applied_at in written:
-                job = {"company": company or "", "url": url or "", "title": title or ""}
-                writer.writerow(applied_sheet_row(job, format_apply_date_mdy(applied_at or "")))
+            for row in existing_rows:
+                writer.writerow(row)
+            for row in new_rows:
+                writer.writerow(row)
 
         log.info(
-            "Exported %d job(s) (statuses=%s) to %s (sheet column layout)",
-            len(written),
+            "Exported %d new job(s) + %d preserved existing row(s) (statuses=%s) to %s (sheet column layout)",
+            len(new_rows),
+            len(existing_rows),
             ",".join(statuses),
             out,
         )

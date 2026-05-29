@@ -39,6 +39,14 @@ from .job_records import append_listing_record
 
 log = logging.getLogger(__name__)
 
+
+class StopApplyPipeline(Exception):
+    """
+    Raised from a ``process_listing`` callback to stop :meth:`JobSearcher.run_search_apply_pipeline`
+    cleanly (no more listings/pages/keywords), e.g. when LinkedIn's daily application limit is hit.
+    """
+
+
 # After ``driver.get`` on ``https://www.linkedin.com/login``, wait so a delayed auto-login / device-trust
 # redirect can complete before we interact with the form.
 LINKEDIN_LOGIN_PAGE_POST_NAV_DELAY_S = 10.0
@@ -350,6 +358,7 @@ class JobSearcher:
         seen_job_ids: set[str] = set()
         apply_goal_met = False
         driver_closed = False
+        stop_requested = False
         kw_list = normalize_search_keywords(keywords)
 
         try:
@@ -357,7 +366,7 @@ class JobSearcher:
             self._login(driver)
 
             for kw_index, keyword in enumerate(kw_list):
-                if driver_closed:
+                if driver_closed or stop_requested:
                     break
                 if not driver_session_alive(driver):
                     log_driver_session_closed()
@@ -519,6 +528,9 @@ class JobSearcher:
 
                         try:
                             process_listing(driver, job)
+                        except StopApplyPipeline as e:
+                            log.warning("Stopping search/apply pipeline early: %s", e)
+                            stop_requested = True
                         except Exception:
                             log.exception(
                                 "Pipeline error for %s at %s",
@@ -528,6 +540,8 @@ class JobSearcher:
 
                         page_done += 1
                         processed += 1
+                        if stop_requested:
+                            break
                         if (
                             max_applies is not None
                             and apply_counter is not None
@@ -540,7 +554,7 @@ class JobSearcher:
                             )
                             break
 
-                    if apply_goal_met or driver_closed:
+                    if apply_goal_met or driver_closed or stop_requested:
                         break
 
                     if max_listings is not None and processed >= max_listings:

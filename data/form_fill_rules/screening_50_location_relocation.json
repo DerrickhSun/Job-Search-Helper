@@ -1,0 +1,74 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "commuting_distance_of_area",
+      "comment": "Are you within commuting distance of <area>? Yes if San Diego; leave empty if California/CA (not San Diego); No otherwise.",
+      "match": {
+        "any_substrings": ["commuting distance", "commutable distance", "commute distance"]
+      },
+      "answer_by_region": {
+        "region_regex": "commut(?:ing|able|e)\\s+distance\\s+(?:of|to|from|to the|of the)\\s+(.{1,80}?)(?:[?.\\n;]|$)",
+        "conditions": [
+          { "contains_any": ["san diego"], "answer": "Yes" },
+          { "contains_any": ["california"], "contains_word_any": ["ca"], "answer": null }
+        ],
+        "default_answer": "No"
+      }
+    },
+    {
+      "id": "willing_to_relocate",
+      "comment": "Willing to relocate / relocation",
+      "match": {
+        "all_substrings": ["relocat"],
+        "any_substrings": ["willing to", "would you be willing", "willing"]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "on_site_acknowledge_commute_relocate",
+      "comment": "Acknowledge on-site role; willing to commute and/or relocate (optional *)",
+      "match": {
+        "all_substrings": ["acknowledge"],
+        "all_of_any": [
+          ["on-site", "on site"],
+          ["commute", "relocate"]
+        ]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "able_to_work_onsite_or_relocate",
+      "comment": "Are you able to work onsite in the [...] location of this job posting, or relocate to do so?",
+      "match": {
+        "all_of_any": [
+          ["onsite", "on-site", "on site", "in office", "in-office", "in the office"],
+          ["relocate", "relocat", "location of this", "this location", "job location"]
+        ]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "able_to_meet_onsite_requirement",
+      "comment": "Are you able to meet this on-site requirement?",
+      "match": {
+        "all_of_any": [
+          ["on-site", "onsite", "on site", "in office", "in-office", "in the office"],
+          ["requirement", "requirements", "able to meet", "meet this", "meet the"]
+        ]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "open_to_working_in_office_days_per_week",
+      "comment": "Are you open to working from our [...] office [...] days a week?",
+      "match": {
+        "all_substrings": ["office"],
+        "all_of_any": [
+          ["open to", "willing to", "comfortable", "able to"],
+          ["days a week", "days per week", "days/week", "day a week", "day per week", "days in office", "days in the office", "days onsite", "days on-site", "days on site"]
+        ]
+      },
+      "answer": "Yes"
+    }
+  ]
+}
