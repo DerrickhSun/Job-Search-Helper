@@ -1119,6 +1119,55 @@ class EasyApplyFiller:
         return False
 
     @staticmethod
+    def _value_looks_like_placeholder_blank(value: str) -> bool:
+        """
+        True for LinkedIn placeholder text used in repeatable cards (e.g. ``--``, ``- -``, ``– –``, ``— —``).
+        """
+        raw = (value or "").strip()
+        if not raw:
+            return True
+        compact = raw.replace(" ", "")
+        compact = compact.replace("\u2013", "-").replace("\u2014", "-")
+        return compact in ("-", "--")
+
+    def _has_empty_repeatable_education_grouping(self, root: Any) -> bool:
+        """
+        Detect LinkedIn Easy Apply repeatable ``Education`` cards that are effectively blank.
+
+        Some flows pre-populate card shells where School shows placeholder dashes (``--``).
+        Treat this as an unfillable required section so we abandon the apply in auto mode.
+        """
+        for grouping in root.find_elements(By.CSS_SELECTOR, ".jobs-easy-apply-repeatable-groupings__groupings"):
+            try:
+                heading = " ".join((grouping.text or "").split()).lower()
+            except Exception:
+                heading = ""
+            if "education" not in heading:
+                continue
+            cards = grouping.find_elements(By.CSS_SELECTOR, ".artdeco-card")
+            if not cards:
+                return True
+            for card in cards:
+                fields: dict[str, str] = {}
+                for row in card.find_elements(By.CSS_SELECTOR, ".mb1"):
+                    try:
+                        name = ""
+                        value = ""
+                        labels = row.find_elements(By.CSS_SELECTOR, "span.t-12")
+                        vals = row.find_elements(By.CSS_SELECTOR, "span.t-14")
+                        if labels:
+                            name = " ".join((labels[0].text or "").split()).lower()
+                        if vals:
+                            value = " ".join((vals[0].text or "").split())
+                        if name:
+                            fields[name] = value
+                    except Exception:
+                        continue
+                if "school" in fields and self._value_looks_like_placeholder_blank(fields["school"]):
+                    return True
+        return False
+
+    @staticmethod
     def _button_is_dismiss(btn: Any) -> bool:
         al = (btn.get_attribute("aria-label") or "").lower()
         return "dismiss" in al
@@ -1683,6 +1732,18 @@ class EasyApplyFiller:
                 return True
             log.warning("No fill root: no LinkedIn Easy Apply modal and no Workday-style apply fields found")
             return False
+
+        if self._has_empty_repeatable_education_grouping(root):
+            if assist:
+                log.debug(
+                    "Assist: detected repeatable education section with empty School placeholder; leaving for user"
+                )
+            else:
+                log.warning(
+                    "Detected repeatable Education section with empty School placeholder "
+                    "(LinkedIn draft card values like '--') — abandoning"
+                )
+                return False
 
         filled_cover_letter_as_text = False
 
