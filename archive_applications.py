@@ -21,7 +21,6 @@ uploads after (same as ``main.py``; see docs/s3_outputs.md).
 from __future__ import annotations
 
 import argparse
-import csv
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -36,48 +35,24 @@ from utils.output_paths import (
 )
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.s3_outputs import sync_download_output, sync_upload_output
-
-HEADER = ("", "company", "", "date", "url", "title")
-
-
-def _is_header_row(row: list[str]) -> bool:
-    if not row or len(row) < 2:
-        return False
-    return (row[0] or "").strip() == "" and (row[1] or "").strip().lower() == "company"
+from utils.sheet_csv import read_sheet_csv, union_sheet_rows, write_sheet_csv
 
 
 def _archive_one(*, active_csv: Path, history_csv: Path) -> int:
-    """Append non-header rows from ``active_csv`` to ``history_csv``; reset ``active_csv`` to header only. Returns row count."""
-    active_csv.parent.mkdir(parents=True, exist_ok=True)
-    history_csv.parent.mkdir(parents=True, exist_ok=True)
+    """
+    Merge ``active_csv`` rows into ``history_csv`` (deduped by job URL, same process as ``sync.py``),
+    then reset ``active_csv`` to header only. Returns the number of newly-added (non-duplicate) rows.
+    """
+    active_header, active_rows = read_sheet_csv(active_csv)
+    history_header, history_rows = read_sheet_csv(history_csv)
 
-    rows: list[list[str]] = []
-    if active_csv.is_file():
-        with active_csv.open(newline="", encoding="utf-8") as f:
-            rows = list(csv.reader(f))
+    merged = union_sheet_rows(history_rows, active_rows)
+    added = len(merged) - len(history_rows)
 
-    header = list(HEADER)
-    data_rows: list[list[str]] = []
-    for row in rows:
-        if not row:
-            continue
-        if _is_header_row(row):
-            header = row
-            continue
-        data_rows.append(row)
+    write_sheet_csv(history_csv, history_header or active_header, merged)
+    write_sheet_csv(active_csv, active_header, [])
 
-    history_exists = history_csv.is_file() and history_csv.stat().st_size > 0
-    with history_csv.open("a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if not history_exists:
-            w.writerow(header)
-        w.writerows(data_rows)
-
-    with active_csv.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(header)
-
-    return len(data_rows)
+    return added
 
 
 def main() -> None:
@@ -109,12 +84,12 @@ def main() -> None:
     try:
         if do_applications:
             n = _archive_one(active_csv=APPLICATIONS_CSV, history_csv=APPLICATIONS_ARCHIVE_CSV)
-            print(f"Applications: archived {n} data row(s) -> {APPLICATIONS_ARCHIVE_CSV.resolve()}")
+            print(f"Applications: archived {n} new (deduped) row(s) -> {APPLICATIONS_ARCHIVE_CSV.resolve()}")
             print(f"Applications: reset {APPLICATIONS_CSV.resolve()} to header only.")
 
         if do_assisted:
             n = _archive_one(active_csv=ASSISTED_APPLICATIONS_CSV, history_csv=ASSISTED_APPLICATIONS_HISTORY_CSV)
-            print(f"Assisted: archived {n} data row(s) -> {ASSISTED_APPLICATIONS_HISTORY_CSV.resolve()}")
+            print(f"Assisted: archived {n} new (deduped) row(s) -> {ASSISTED_APPLICATIONS_HISTORY_CSV.resolve()}")
             print(f"Assisted: reset {ASSISTED_APPLICATIONS_CSV.resolve()} to header only.")
     finally:
         prune_cover_letters_for_sync()

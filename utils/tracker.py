@@ -19,57 +19,22 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 from .apply_sheets import (
     _is_applications_sheet_header_row,
+    _sheet_export_url_dedupe_key,
     applied_sheet_row,
     format_apply_date_mdy,
-    linkedin_job_id_from_sheet_job_url,
     linkedin_job_ids_from_applications_sheet_csvs,
+    normalize_greenhouse_job_url,
 )
 from .output_paths import APPLICATIONS_ARCHIVE_CSV, APPLICATIONS_CSV
+from .sheet_csv import read_sheet_csv, union_sheet_rows, write_sheet_csv
 
 log = logging.getLogger(__name__)
 
 DEFAULT_APPLICATIONS_SHEET_CSV = APPLICATIONS_CSV
 DEFAULT_APPLICATIONS_ARCHIVE_CSV = APPLICATIONS_ARCHIVE_CSV
-
-
-def normalize_greenhouse_job_url(url: str) -> str:
-    """
-    Canonical comparison key for Greenhouse-related job URLs: scheme + host + path (lowercased),
-    no query string or fragment — so the same job with different ``gh_src`` / token params still matches
-    rows already stored in the applications DB.
-    """
-    u = (url or "").strip()
-    if not u:
-        return ""
-    try:
-        p = urlparse(u)
-        scheme = (p.scheme or "https").lower()
-        netloc = (p.netloc or "").lower()
-        path = (p.path or "").rstrip("/")
-        return f"{scheme}://{netloc}{path}".lower()
-    except Exception:
-        return u.lower()
-
-
-def _sheet_export_url_dedupe_key(url: str) -> str:
-    """
-    Stable key for matching an applications-sheet row (column E) to the archive / active CSV.
-    LinkedIn uses numeric job id; Greenhouse uses :func:`normalize_greenhouse_job_url`; else full URL lowercased.
-    """
-    jid = linkedin_job_id_from_sheet_job_url(url)
-    if jid:
-        return f"li:{jid}"
-    u = (url or "").strip()
-    if not u:
-        return ""
-    if "greenhouse" in u.lower():
-        k = normalize_greenhouse_job_url(u)
-        return f"gh:{k}" if k else ""
-    return f"u:{u.lower()}"
 
 
 def _archive_row_keys_for_export_dedupe(archive_csv: Path) -> frozenset[str]:
@@ -260,55 +225,26 @@ class ApplicationTracker:
             written.append((company, url, title, applied_at))
 
         out = Path(path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        header = ("", "company", "", "date", "url", "title")
 
-        # Non-destructive export: preserve rows already in the target CSV (e.g. the copy downloaded from
-        # S3 / written by another machine), since this machine's local DB does not contain applies recorded
-        # elsewhere. Without this, regenerating from the local DB would clobber cross-machine history.
-        existing_rows: list[list[str]] = []
-        existing_keys: set[str] = set()
-        if out.is_file():
-            try:
-                with open(out, newline="", encoding="utf-8") as f:
-                    for ri, row in enumerate(csv.reader(f)):
-                        if ri == 0:
-                            continue  # header
-                        if not any((c or "").strip() for c in row):
-                            continue
-                        existing_rows.append(row)
-                        url = row[4] if len(row) > 4 else ""
-                        k = _sheet_export_url_dedupe_key(url or "")
-                        if k:
-                            existing_keys.add(k)
-            except OSError as e:
-                log.warning(
-                    "Could not read existing %s for merge (%s); rewriting from local DB only.",
-                    out.resolve(),
-                    e,
-                )
-                existing_rows = []
-                existing_keys = set()
-
-        new_rows: list[tuple] = []
-        for company, url, title, applied_at in written:
-            k = _sheet_export_url_dedupe_key(url or "")
-            if k and k in existing_keys:
-                continue  # already in the CSV (this run, or another machine) — keep the existing row
-            job = {"company": company or "", "url": url or "", "title": title or ""}
-            new_rows.append(applied_sheet_row(job, format_apply_date_mdy(applied_at or "")))
-
-        with open(out, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-            for row in existing_rows:
-                writer.writerow(row)
-            for row in new_rows:
-                writer.writerow(row)
+        # Non-destructive export (same merge process as sync.py / archive rollover): preserve rows already
+        # in the target CSV (e.g. the copy downloaded from S3 / written by another machine), since this
+        # machine's local DB does not contain applies recorded elsewhere. Without this, regenerating from
+        # the local DB would clobber cross-machine history.
+        existing_header, existing_rows = read_sheet_csv(out)
+        db_rows = [
+            applied_sheet_row(
+                {"company": company or "", "url": url or "", "title": title or ""},
+                format_apply_date_mdy(applied_at or ""),
+            )
+            for company, url, title, applied_at in written
+        ]
+        merged = union_sheet_rows(existing_rows, db_rows)
+        write_sheet_csv(out, existing_header, merged)
 
         log.info(
-            "Exported %d new job(s) + %d preserved existing row(s) (statuses=%s) to %s (sheet column layout)",
-            len(new_rows),
+            "Exported %d job(s) (%d new from local DB, %d preserved, statuses=%s) to %s (sheet column layout)",
+            len(merged),
+            len(merged) - len(existing_rows),
             len(existing_rows),
             ",".join(statuses),
             out,

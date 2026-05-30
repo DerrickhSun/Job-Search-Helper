@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -126,6 +127,46 @@ def linkedin_job_ids_from_applications_sheet_csvs(paths: Sequence[Path | str]) -
         except Exception as e:
             log.warning("Could not read %s for LinkedIn apply dedupe: %s", p.resolve(), e)
     return frozenset(out)
+
+
+def normalize_greenhouse_job_url(url: str) -> str:
+    """
+    Canonical comparison key for Greenhouse-related job URLs: scheme + host + path (lowercased),
+    no query string or fragment — so the same job with different ``gh_src`` / token params still matches
+    rows already stored in the applications DB.
+    """
+    u = (url or "").strip()
+    if not u:
+        return ""
+    try:
+        p = urlparse(u)
+        scheme = (p.scheme or "https").lower()
+        netloc = (p.netloc or "").lower()
+        path = (p.path or "").rstrip("/")
+        return f"{scheme}://{netloc}{path}".lower()
+    except Exception:
+        return u.lower()
+
+
+def sheet_export_url_dedupe_key(url: str) -> str:
+    """
+    Stable key for matching an applications-sheet row (column E) to the archive / active CSV.
+    LinkedIn uses numeric job id; Greenhouse uses :func:`normalize_greenhouse_job_url`; else full URL lowercased.
+    """
+    jid = linkedin_job_id_from_sheet_job_url(url)
+    if jid:
+        return f"li:{jid}"
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if "greenhouse" in u.lower():
+        k = normalize_greenhouse_job_url(u)
+        return f"gh:{k}" if k else ""
+    return f"u:{u.lower()}"
+
+
+# Backwards-compatible private alias (older imports used the leading underscore).
+_sheet_export_url_dedupe_key = sheet_export_url_dedupe_key
 
 
 def append_applied_job_row(
