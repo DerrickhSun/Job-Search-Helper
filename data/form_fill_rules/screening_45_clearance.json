@@ -1,0 +1,22 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "willing_obtain_us_secret_clearance",
+      "comment": "Willing/able to obtain or maintain an Active US Secret Clearance",
+      "match": {
+        "all_substrings": ["clearance"],
+        "any_substrings": [
+          "secret",
+          "us secret",
+          "u.s. secret",
+          "active us secret",
+          "active u.s. secret"
+        ],
+        "all_of_any": [
+          ["willing", "able", "obtain", "maintain", "obtain/maintain"]
+        ]
+      },
+      "answer": "Yes"
+    }
+  ]
+}

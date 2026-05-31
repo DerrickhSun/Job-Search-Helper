@@ -32,6 +32,9 @@ DEFAULT_RULES_DIR = _DATA_DIR / "form_fill_rules"
 DEFAULT_RULES_FILE = _DATA_DIR / "form_fill_rules.json"
 DEFAULT_RULES_PATH = DEFAULT_RULES_DIR if DEFAULT_RULES_DIR.is_dir() else DEFAULT_RULES_FILE
 
+# Special screening answer: close the apply flow and choose Discard (not Save) on the draft dialog.
+DISCARD_APPLY = "__discard_apply__"
+
 # List-valued top-level keys are concatenated across files; everything else is treated as a scalar.
 _MERGEABLE_LIST_KEYS = (
     "screening_yes_no",
@@ -151,6 +154,15 @@ class FormFillRulesEngine:
     def _matches(self, normalized_label: str, spec: dict[str, Any]) -> bool:
         return label_matches(normalized_label, spec)
 
+    @staticmethod
+    def _coerce_screening_answer(raw: Any) -> str | None:
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if s == DISCARD_APPLY:
+            return DISCARD_APPLY
+        return s
+
     def screening_yes_no(self, label: str) -> str | None:
         """
         Returns ``\"Yes\"``, ``\"No\"``, or ``None`` if no screening rule produces an answer.
@@ -173,7 +185,7 @@ class FormFillRulesEngine:
                 continue
             ans = rule.get("answer")
             if ans is not None:
-                return str(ans).strip()
+                return self._coerce_screening_answer(ans)
         return None
 
     @staticmethod
@@ -232,11 +244,9 @@ class FormFillRulesEngine:
         region_lower = region.strip().lower()
         for cond in cfg.get("conditions") or []:
             if self._region_condition_matches(region_lower, cond):
-                ans = cond.get("answer")
-                return (str(ans).strip() if ans is not None else None), True
+                return self._coerce_screening_answer(cond.get("answer")), True
         if "default_answer" in cfg:
-            da = cfg.get("default_answer")
-            return (str(da).strip() if da is not None else None), True
+            return self._coerce_screening_answer(cfg.get("default_answer")), True
         return None, True
 
     def _apply_literal(self, result: dict[str, Any]) -> str:

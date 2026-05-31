@@ -23,7 +23,7 @@ from selenium.webdriver.support.ui import Select
 
 from .chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies
 from .cover_letter import cover_letter_docx_path_unique, write_cover_letter_docx
-from .form_fill_rules import FormFillRulesEngine
+from .form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
 
 log = logging.getLogger(__name__)
 
@@ -1249,12 +1249,13 @@ class EasyApplyFiller:
         al = (btn.get_attribute("aria-label") or "").lower()
         return "dismiss" in al
 
-    def _click_save_on_dismiss_followup(self, driver: Any) -> None:
+    def _click_dismiss_followup(self, driver: Any, *, discard: bool) -> None:
         """
         After **Dismiss**, LinkedIn often opens a second dialog: save the application draft or discard.
-        Choose **Save** so the flow can finish cleanly.
+        Choose **Save** (default abandon) or **Discard** when a form rule rejects the job.
         """
         time.sleep(0.45)
+        want = "discard" if discard else "save"
         for dialog in driver.find_elements(By.CSS_SELECTOR, '[role="dialog"], .artdeco-modal'):
             try:
                 if not dialog.is_displayed():
@@ -1263,6 +1264,44 @@ class EasyApplyFiller:
                 continue
             blob = (dialog.text or "").lower()
             if blob and "discard" not in blob and "draft" not in blob and "save" not in blob:
+                continue
+            if discard:
+                for sel in (
+                    'button[aria-label="Discard"]',
+                    'button[aria-label="discard"]',
+                    'button[aria-label*="Discard application"]',
+                ):
+                    for btn in dialog.find_elements(By.CSS_SELECTOR, sel):
+                        try:
+                            if not btn.is_displayed() or not btn.is_enabled():
+                                continue
+                            al = (btn.get_attribute("aria-label") or "").lower()
+                            if "discard" not in al:
+                                continue
+                            if self.highlight:
+                                focus_element(driver, btn, pause=0.15)
+                            btn.click()
+                            self._after_ui_click()
+                            log.info("Clicked Discard on dismiss follow-up (save vs discard)")
+                            time.sleep(0.35)
+                            return
+                        except Exception:
+                            continue
+                for btn in dialog.find_elements(By.TAG_NAME, "button"):
+                    try:
+                        if not btn.is_displayed() or not btn.is_enabled():
+                            continue
+                        if (btn.text or "").strip().lower() != "discard":
+                            continue
+                        if self.highlight:
+                            focus_element(driver, btn, pause=0.15)
+                        btn.click()
+                        self._after_ui_click()
+                        log.info("Clicked Discard (visible text) on dismiss follow-up")
+                        time.sleep(0.35)
+                        return
+                    except Exception:
+                        continue
                 continue
             for sel in DRAFT_SAVE_ARIA:
                 for btn in dialog.find_elements(By.CSS_SELECTOR, sel):
@@ -1285,19 +1324,23 @@ class EasyApplyFiller:
                 try:
                     if not btn.is_displayed() or not btn.is_enabled():
                         continue
-                    if (btn.text or "").strip().lower() != "save":
+                    if (btn.text or "").strip().lower() != want:
                         continue
                     if self.highlight:
                         focus_element(driver, btn, pause=0.15)
                     btn.click()
                     self._after_ui_click()
-                    log.info("Clicked Save (visible text) on dismiss follow-up")
+                    log.info("Clicked %s (visible text) on dismiss follow-up", want.capitalize())
                     time.sleep(0.35)
                     return
                 except Exception:
                     continue
 
-    def _click_dismiss_header(self, driver: Any) -> bool:
+    def _click_save_on_dismiss_followup(self, driver: Any) -> None:
+        """After **Dismiss**, choose **Save** on the draft follow-up dialog."""
+        self._click_dismiss_followup(driver, discard=False)
+
+    def _click_dismiss_header(self, driver: Any, *, discard_draft: bool = False) -> bool:
         """Close the flow via the header **Dismiss** control (``aria-label`` Dismiss / dismiss)."""
         for sel in (
             'button[aria-label="Dismiss"]',
@@ -1311,7 +1354,7 @@ class EasyApplyFiller:
                         btn.click()
                         self._after_ui_click()
                         time.sleep(0.45)
-                        self._click_save_on_dismiss_followup(driver)
+                        self._click_dismiss_followup(driver, discard=discard_draft)
                         return True
                 except Exception:
                     continue
@@ -1323,12 +1366,35 @@ class EasyApplyFiller:
         Always returns False (apply did not complete).
         """
         log.warning("Abandoning Easy Apply for %s — %s", job.get("id"), reason)
-        if self._click_dismiss_header(driver):
+        if self._click_dismiss_header(driver, discard_draft=False):
             self._dismiss_easy_apply_modal_if_open(driver, "after abandon dismiss")
             return False
         log.warning("Dismiss button not found; trying generic modal cleanup")
         self._dismiss_easy_apply_modal_if_open(driver, "abandon fallback")
         return False
+
+    def _abandon_apply_and_discard(self, driver: Any, job: dict, reason: str) -> bool:
+        """
+        Close and discard the in-progress application (Dismiss, then Discard on the draft dialog).
+        Always returns False (apply did not complete).
+        """
+        log.warning("Discarding Easy Apply for %s — %s", job.get("id"), reason)
+        if self._click_dismiss_header(driver, discard_draft=True):
+            self._dismiss_easy_apply_modal_if_open(driver, "after discard dismiss")
+            return False
+        log.warning("Dismiss button not found; trying generic modal cleanup")
+        self._dismiss_easy_apply_modal_if_open(driver, "discard fallback")
+        return False
+
+    def _handle_screening_discard(self, driver: Any, job: dict, ans: str | None, *, assist: bool) -> bool:
+        """If ``ans`` is :data:`DISCARD_APPLY`, discard the apply unless in assist mode. Returns True when handled."""
+        if ans != DISCARD_APPLY:
+            return False
+        if assist:
+            log.debug("Assist: form rule requested discard — leaving apply open for user label handling")
+            return False
+        self._abandon_apply_and_discard(driver, job, "screening rule rejected this job (discard apply)")
+        return True
 
     def _fill_form(self, driver, resume: dict, cover_letter: str, job: dict) -> bool:
         max_steps = 10
@@ -1563,6 +1629,8 @@ class EasyApplyFiller:
 
                 required = self._linkedin_radio_fieldset_is_required(fs)
                 ans = self._rules.screening_yes_no(label)
+                if self._handle_screening_discard(driver, job, ans, assist=assist):
+                    return False, processed_names
                 if ans is None:
                     if required and not assist:
                         log.warning(
@@ -1854,6 +1922,9 @@ class EasyApplyFiller:
                     continue
                 required = self._element_is_required(input_el)
                 candidates = self._rules.text_input_fill_candidates(label, resume)
+                if candidates and DISCARD_APPLY in candidates:
+                    if self._handle_screening_discard(driver, job, DISCARD_APPLY, assist=assist):
+                        return False
                 if not candidates:
                     if assist and "email" in (label or "").lower():
                         log.debug(
@@ -1872,6 +1943,8 @@ class EasyApplyFiller:
                     continue
                 filled = False
                 for try_val in candidates:
+                    if try_val == DISCARD_APPLY:
+                        continue
                     if not try_val:
                         continue
                     self._activate_text_control_before_fill(driver, input_el)
@@ -1944,6 +2017,8 @@ class EasyApplyFiller:
                         continue
 
                 text = self._answer_textarea(label, cover_letter)
+                if self._handle_screening_discard(driver, job, text, assist=assist):
+                    return False
                 if text is None and is_cover and (cover_letter or "").strip():
                     text = cover_letter
                 required = self._element_is_required(ta)
@@ -1987,6 +2062,8 @@ class EasyApplyFiller:
                     continue
                 opt_els = sel_el.find_elements(By.TAG_NAME, "option")
                 preferred = self._answer_select_value(label, opt_els)
+                if self._handle_screening_discard(driver, job, preferred, assist=assist):
+                    return False
                 dd = Select(sel_el)
                 if preferred:
                     self._apply_select_choice(dd, opt_els, preferred)
@@ -2032,6 +2109,8 @@ class EasyApplyFiller:
                 if any(r.is_selected() for r in radios):
                     continue
                 ans = self._rules.screening_yes_no(label)
+                if self._handle_screening_discard(driver, job, ans, assist=assist):
+                    return False
                 if ans is None:
                     # Legacy: prefer Yes when value hints yes (unknown questions) — not in assist mode
                     if not assist and any(
@@ -2047,9 +2126,30 @@ class EasyApplyFiller:
                                 self._after_field_fill()
                                 break
                     continue
-                want_yes = ans.strip().lower() == "yes"
-                if self._click_yes_no_in_radio_group(driver, radios, want_yes):
-                    self._after_field_fill()
+                if ans.strip().lower() in ("yes", "no"):
+                    want_yes = ans.strip().lower() == "yes"
+                    if self._click_yes_no_in_radio_group(driver, radios, want_yes):
+                        self._after_field_fill()
+                else:
+                    try:
+                        fs = radios[0].find_element(By.XPATH, "./ancestor::fieldset[1]")
+                    except Exception:
+                        fs = None
+                    clicked = False
+                    if fs is not None:
+                        clicked = self._click_choice_in_radio_container(driver, fs, ans)
+                    if not clicked:
+                        for r in radios:
+                            val = (r.get_attribute("value") or "").strip()
+                            if val and self._choice_labels_equivalent(ans, val):
+                                if self.highlight:
+                                    focus_element(driver, r, pause=0.2)
+                                r.click()
+                                self._after_field_fill()
+                                clicked = True
+                                break
+                    if clicked:
+                        self._after_field_fill()
             except Exception as e:
                 log.debug("Skipping radio group %s: %s", name, e)
 

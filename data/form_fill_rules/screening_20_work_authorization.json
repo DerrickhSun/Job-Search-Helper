@@ -28,6 +28,14 @@
       "answer": "Yes"
     },
     {
+      "id": "us_work_authorization_status",
+      "comment": "Current U.S. work authorization status dropdown (1 OPT/CPT, 2 H1-B, 3 Green Card, 4 U.S. Citizen)",
+      "match": {
+        "all_substrings": ["work authorization", "status"]
+      },
+      "answer": "4"
+    },
+    {
       "id": "us_citizen",
       "comment": "Are you a US / U.S. / United States citizen (or equivalent phrasing)",
       "match": {
@@ -59,6 +67,15 @@
           "united states person",
           "usa person"
         ]
+      },
+      "answer": "Yes"
+    },
+    {
+      "id": "prove_us_work_authorization_documents",
+      "comment": "If offered, can you provide documents proving authorization to work in the U.S.?",
+      "match": {
+        "all_substrings": ["documents", "authorization", "work"],
+        "any_substrings": ["u.s", "united states"]
       },
       "answer": "Yes"
     }

@@ -14,6 +14,22 @@
       "answer": "No"
     },
     {
+      "id": "immigration_employment_benefits_sponsorship",
+      "comment": "Need sponsorship for immigration employment benefits (STEM OPT, H-1B, L-1, O-1, TN, I-140/AOS, etc.)",
+      "match": {
+        "all_substrings": ["sponsorship"],
+        "any_substrings": [
+          "immigration employment benefits",
+          "now or will you later need sponsorship",
+          "stem opt",
+          "i-140/aos",
+          "i-140",
+          "job flexibility"
+        ]
+      },
+      "answer": "No"
+    },
+    {
       "id": "sponsorship_need_now_or_future",
       "comment": "Other visa / sponsorship need now or in the future — answer No",
       "match": {

@@ -9,7 +9,9 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import queue
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,10 @@ from .resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_o
 from .tracker import ApplicationTracker, normalize_greenhouse_job_url
 
 log = logging.getLogger(__name__)
+
+# Serializes appends to the dismissed / assisted CSVs: with --greenhouse-prefetch the scanner thread and
+# the presenter (main) thread can both write, and CSV appends are not atomic across threads.
+_GREENHOUSE_CSV_WRITE_LOCK = threading.Lock()
 
 MY_GREENHOUSE_ORIGIN = "https://my.greenhouse.io"
 GREENHOUSE_SIGN_IN_URL = f"{MY_GREENHOUSE_ORIGIN}/users/sign_in"
@@ -326,13 +332,14 @@ def _append_greenhouse_dismissed(listing_url: str, *, source: str = "terminal") 
         log.warning("Greenhouse dismiss: empty URL — not writing CSV.")
         return
     GREENHOUSE_DISMISSED_CSV.parent.mkdir(parents=True, exist_ok=True)
-    new_file = not GREENHOUSE_DISMISSED_CSV.is_file()
     row_date = date.today().isoformat()
-    with GREENHOUSE_DISMISSED_CSV.open("a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if new_file:
-            w.writerow(["url", "dismissed_on"])
-        w.writerow([u, row_date])
+    with _GREENHOUSE_CSV_WRITE_LOCK:
+        new_file = not GREENHOUSE_DISMISSED_CSV.is_file()
+        with GREENHOUSE_DISMISSED_CSV.open("a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new_file:
+                w.writerow(["url", "dismissed_on"])
+            w.writerow([u, row_date])
     log.info(
         "Recorded Greenhouse dismiss (%s) to %s",
         source,
@@ -1324,14 +1331,15 @@ def _append_assisted_greenhouse_application(job: dict[str, Any]) -> None:
     from .apply_sheets import applied_sheet_row, format_apply_date_mdy
 
     ASSISTED_GREENHOUSE_CSV.parent.mkdir(parents=True, exist_ok=True)
-    new_file = not ASSISTED_GREENHOUSE_CSV.is_file()
     iso = datetime.now(timezone.utc).isoformat()
     row = applied_sheet_row(job, format_apply_date_mdy(iso))
-    with ASSISTED_GREENHOUSE_CSV.open("a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if new_file:
-            w.writerow(("", "company", "", "date", "url", "title"))
-        w.writerow(row)
+    with _GREENHOUSE_CSV_WRITE_LOCK:
+        new_file = not ASSISTED_GREENHOUSE_CSV.is_file()
+        with ASSISTED_GREENHOUSE_CSV.open("a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new_file:
+                w.writerow(("", "company", "", "date", "url", "title"))
+            w.writerow(row)
     log.info("Recorded assisted Greenhouse application to %s", ASSISTED_GREENHOUSE_CSV.resolve())
 
 
@@ -1421,6 +1429,186 @@ def _run_greenhouse_post_gate_automation(
         resume=resume,
     )
     maybe_apply_greenhouse_checkbox_rules(driver, args)
+
+
+def _run_greenhouse_application_helper_concurrent(
+    driver: Any,
+    args: Any,
+    ordered: list[dict[str, str | None]],
+    total: int,
+    resume: dict[str, Any],
+    matcher: JobMatcher,
+) -> bool:
+    """
+    Producer/consumer variant of the Greenhouse helper loop.
+
+    A second **headless** Chrome (no window — listing pages are public) scans ``ordered`` against the gates
+    and pushes each passing ``(index, entry, job)`` onto a small queue; the logged-in ``driver`` (visible
+    unless ``--headless``) navigates to each queued job, presents/autofills it, and runs the same n/s/d/q
+    prompt as the sequential path. While the queue is empty but the scanner is still running, the presenter
+    logs a "Loading" message about every 10s.
+
+    Returns ``True`` when the concurrent path ran (caller should return), or ``False`` when the scanner
+    browser could not be started (caller should fall back to the single-driver sequential scan).
+    """
+    try:
+        scanner = build_chrome(headless=True)
+    except Exception as e:
+        log.warning("Greenhouse prefetch: could not start scanner Chrome (%s).", e)
+        return False
+    log.info(
+        "Greenhouse prefetch: scanner Chrome headless (presenter uses the logged-in window).",
+    )
+
+    work_q: queue.Queue = queue.Queue(maxsize=10)
+    stop_event = threading.Event()
+
+    def _producer() -> None:
+        try:
+            for k, entry in enumerate(ordered):
+                if stop_event.is_set():
+                    break
+                if not driver_session_alive(scanner):
+                    log.warning("Greenhouse prefetch: scanner session closed — stopping scan.")
+                    break
+                url = (entry.get("url") or "").strip()
+                if not url:
+                    continue
+                log.info("Greenhouse prefetch: scanning listing %d/%d for gates …", k + 1, total)
+                if not navigate_greenhouse_listing(scanner, url, index=k + 1, total=total):
+                    if not driver_session_alive(scanner):
+                        break
+                    continue
+                job = _scrape_greenhouse_job_for_cover_letter(
+                    scanner,
+                    url,
+                    company_from_search_card=entry.get("company"),
+                    title_from_search_card=entry.get("title"),
+                )
+                if not matcher.gates_pass(resume, job):
+                    log.info(
+                        "Greenhouse prefetch: gates failed for listing %d/%d (%s at %s).",
+                        k + 1,
+                        total,
+                        job.get("title"),
+                        job.get("company"),
+                    )
+                    print_job_fit_debug(
+                        job.get("company"),
+                        job.get("title"),
+                        None,
+                        note="greenhouse_gates_failed_scan",
+                    )
+                    _append_greenhouse_dismissed(url, source="gates_failed")
+                    continue
+                log.info(
+                    "Greenhouse prefetch: gates passed for listing %d/%d (%s at %s) — queued for presentation.",
+                    k + 1,
+                    total,
+                    job.get("title"),
+                    job.get("company"),
+                )
+                # Block until the presenter makes room, but wake periodically so stop_event is honored.
+                while not stop_event.is_set():
+                    try:
+                        work_q.put((k, entry, job), timeout=1.0)
+                        break
+                    except queue.Full:
+                        continue
+        except Exception as e:
+            log.warning("Greenhouse prefetch: scanner thread error: %s", e)
+        finally:
+            try:
+                scanner.quit()
+            except Exception:
+                pass
+            work_q.put(None)  # sentinel: scanning complete
+
+    producer = threading.Thread(target=_producer, name="greenhouse-scanner", daemon=True)
+    producer.start()
+
+    presented_any = False
+    try:
+        while True:
+            if not driver_session_alive(driver):
+                log_driver_session_closed()
+                break
+            try:
+                item = work_q.get(timeout=10.0)
+            except queue.Empty:
+                if producer.is_alive():
+                    log.info("Loading — still scanning for the next matching job …")
+                    continue
+                break  # scanner finished; sentinel already drained or none queued
+            if item is None:
+                if not presented_any:
+                    log.warning(
+                        "No collected listing passed education/experience gates (scanned %d). "
+                        "Browser left on the last page reached for manual review.",
+                        total,
+                    )
+                else:
+                    log.info("Greenhouse helper: no more gate-passing listings — stopping.")
+                break
+
+            k, entry, job = item
+            url = (entry.get("url") or "").strip()
+            log.info(
+                "Greenhouse helper: presenting listing %d/%d (%s at %s) — autofill / cover / checkbox.",
+                k + 1,
+                total,
+                job.get("title"),
+                job.get("company"),
+            )
+            if not navigate_greenhouse_listing(driver, url, index=k + 1, total=total):
+                if not driver_session_alive(driver):
+                    log_driver_session_closed()
+                    break
+                log.warning(
+                    "Greenhouse helper: could not navigate presenter to listing %d/%d — skipping.",
+                    k + 1,
+                    total,
+                )
+                continue
+            _run_greenhouse_post_gate_automation(
+                driver,
+                args,
+                url,
+                company_from_search_card=entry.get("company"),
+                title_from_search_card=entry.get("title"),
+                resume=resume,
+            )
+            presented_any = True
+
+            pub = _assisted_greenhouse_job_publication_dict(entry, job)
+            remaining_after_current = max(0, total - (k + 1))
+            action = _prompt_greenhouse_after_assisted_job(
+                listing_num=k + 1,
+                total=total,
+                remaining_after_current=remaining_after_current,
+                company=pub.get("company") or "Company",
+                title=pub.get("title") or "Role",
+            )
+            log.info("Greenhouse helper: post-job prompt returned action=%r", action)
+            if action == "stay":
+                log.info(
+                    "Greenhouse helper: stopping — stay at this job (Enter / q / unrecognized / EOF on prompt)."
+                )
+                break
+            if action == "next_applied":
+                _append_assisted_greenhouse_application(pub)
+            elif action == "next_dismiss":
+                _append_greenhouse_dismissed((pub.get("url") or url).strip(), source="terminal_d")
+    finally:
+        stop_event.set()
+        # Unblock a producer that may be waiting on a full queue, then wait for it to quit the scanner.
+        try:
+            while True:
+                work_q.get_nowait()
+        except queue.Empty:
+            pass
+        producer.join(timeout=15.0)
+    return True
 
 
 def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: list[Any]) -> None:
@@ -1513,6 +1701,17 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
 
     matcher = JobMatcher()
     total = len(ordered)
+
+    # Concurrent prefetch: a headless scanner Chrome queues gate-passing jobs while the logged-in driver
+    # (visible unless --headless) presents/autofills them.
+    # Only meaningful when the manual next-listing prompt loop is on (otherwise we present just one job).
+    if bool(getattr(args, "greenhouse_prefetch", True)) and bool(
+        getattr(args, "greenhouse_manual_next_listing", True)
+    ):
+        if _run_greenhouse_application_helper_concurrent(driver, args, ordered, total, resume, matcher):
+            return
+        log.info("Greenhouse prefetch unavailable — falling back to single-driver sequential scan.")
+
     chosen_index = -1
     gate_pass_job: dict[str, Any] | None = None
     for i, entry in enumerate(ordered, start=1):

@@ -1,6 +1,27 @@
 {
   "screening_yes_no": [
     {
+      "id": "currently_live_in_location",
+      "comment": "Do you currently live in <location>? Yes if San Diego; leave empty if CA/California; discard apply otherwise.",
+      "match": {
+        "all_substrings": ["currently live in"],
+        "any_substrings": [
+          "resumes from applicants outside",
+          "outside the region",
+          "will not be considered"
+        ]
+      },
+      "answer_by_region": {
+        "region_regex": "currently live in\\s+(.{1,80}?)(?:\\?|\\s*\\(|\\s*\\[)",
+        "conditions": [
+          { "contains_any": ["san diego"], "answer": "Yes" },
+          { "contains_any": ["california"], "answer": null },
+          { "contains_word_any": ["ca"], "answer": null }
+        ],
+        "default_answer": "__discard_apply__"
+      }
+    },
+    {
       "id": "commuting_distance_of_area",
       "comment": "Are you within commuting distance of <area>? Yes if San Diego; leave empty if California/CA (not San Diego); No otherwise.",
       "match": {
@@ -13,6 +34,26 @@
           { "contains_any": ["california"], "contains_word_any": ["ca"], "answer": null }
         ],
         "default_answer": "No"
+      }
+    },
+    {
+      "id": "onsite_work_in_location_willing_office",
+      "comment": "Role requires onsite work in <location>; willing/able to work in the office as required? Yes if San Diego; else leave empty.",
+      "match": {
+        "all_substrings": ["onsite", "office"],
+        "any_substrings": [
+          "requires onsite work",
+          "work in the office",
+          "as required",
+          "willing and able"
+        ]
+      },
+      "answer_by_region": {
+        "region_regex": "requires\\s+onsite\\s+work\\s+in\\s+(.{1,80}?)(?:\\.|\\?|\\s+are you)",
+        "conditions": [
+          { "contains_any": ["san diego"], "answer": "Yes" }
+        ],
+        "default_answer": null
       }
     },
     {

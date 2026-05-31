@@ -1,0 +1,13 @@
+{
+  "screening_yes_no": [
+    {
+      "id": "job_search_stage",
+      "comment": "What stage of job search are you in? (1 Awaiting offer, 2 Interviewing, 3 Just starting, 4 Not actively looking)",
+      "match": {
+        "all_substrings": ["job search"],
+        "any_substrings": ["stage of job search", "what stage", "stage are you"]
+      },
+      "answer": "2"
+    }
+  ]
+}

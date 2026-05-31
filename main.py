@@ -671,6 +671,16 @@ def main():
         "Use --no-greenhouse-manual-next-listing to exit after the first passing job without prompts.",
     )
     ap.add_argument(
+        "--greenhouse-prefetch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Greenhouse helper: run gate scanning in a **headless** second Chrome (no extra window) and "
+        "queue passing jobs so there is no wait between presented jobs in the logged-in window (navigate, "
+        "autofill, n/s/d/q prompt; 'Loading' about every 10s while the scanner is still looking). Only "
+        "applies when --greenhouse-manual-next-listing is on. Use --no-greenhouse-prefetch for single-driver "
+        "sequential scanning (default: on).",
+    )
+    ap.add_argument(
         "--greenhouse-prompt-before-close",
         action=argparse.BooleanOptionalAction,
         default=True,
