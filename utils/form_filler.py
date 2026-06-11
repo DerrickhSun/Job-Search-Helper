@@ -15,13 +15,21 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, WebDriverException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
 
-from .chrome_driver import DEFAULT_COOKIE_PATH, build_chrome, focus_element, load_cookies
+from .chrome_driver import (
+    DEFAULT_COOKIE_PATH,
+    build_chrome,
+    driver_session_alive,
+    focus_element,
+    interruptible_sleep,
+    load_cookies,
+    log_driver_session_closed,
+)
 from .cover_letter import cover_letter_docx_path_unique, write_cover_letter_docx
 from .form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
 
@@ -742,6 +750,8 @@ class EasyApplyFiller:
 
     def _dismiss_job_trust_safety_modal(self, driver: Any) -> bool:
         """Close the trust/safety reminder dialog via its Dismiss (X) control."""
+        if self._stop_dismiss_if_driver_closed(driver):
+            return False
         modal = self._job_trust_safety_modal_element(driver)
         if modal is None:
             return False
@@ -860,10 +870,13 @@ class EasyApplyFiller:
                 self._pause()
                 time.sleep(1.5)
 
-            time.sleep(self.easy_apply_wait_seconds)
+            if not interruptible_sleep(self.easy_apply_wait_seconds, driver):
+                return False
 
             # Leftover success / error modal blocks the next Apply on the same driver.
             self._dismiss_easy_apply_modal_if_open(driver, "before apply")
+            if self._stop_dismiss_if_driver_closed(driver):
+                return False
 
             # When the daily submission cap is hit, LinkedIn replaces the Apply button with the limit
             # message, so check before the (slow) apply-button poll.
@@ -892,6 +905,9 @@ class EasyApplyFiller:
                 return False
 
             return self._fill_form(driver, resume, cover_letter, job)
+        except WebDriverException:
+            log_driver_session_closed()
+            return False
         except Exception as e:
             log.error("Application failed for %s at %s: %s", job["title"], job["company"], e)
             if driver:
@@ -913,16 +929,27 @@ class EasyApplyFiller:
         aid = SEL["apply_button_id"]
         pause = max(0.25, min(0.6, self.step_delay))
         for _ in range(24):
+            if not driver_session_alive(driver):
+                log_driver_session_closed()
+                return None
             try:
                 el = driver.find_element(By.ID, aid)
                 if el.is_displayed():
                     return el
             except NoSuchElementException:
                 pass
-            els = driver.find_elements(By.CSS_SELECTOR, SEL["easy_apply_btn"])
+            except Exception:
+                log_driver_session_closed()
+                return None
+            try:
+                els = driver.find_elements(By.CSS_SELECTOR, SEL["easy_apply_btn"])
+            except Exception:
+                log_driver_session_closed()
+                return None
             if els:
                 return els[0]
-            time.sleep(pause)
+            if not interruptible_sleep(pause, driver):
+                return None
         try:
             return driver.find_element(By.ID, aid)
         except NoSuchElementException:
@@ -1008,6 +1035,13 @@ class EasyApplyFiller:
                     continue
         return False
 
+    def _stop_dismiss_if_driver_closed(self, driver: Any) -> bool:
+        """Return True when the browser session is gone — dismiss/cleanup should stop."""
+        if driver_session_alive(driver):
+            return False
+        log_driver_session_closed()
+        return True
+
     def _close_extra_browser_windows(self, driver: Any) -> None:
         """
         If LinkedIn opened a second window/tab, close it and return focus to the **jobs** tab.
@@ -1015,6 +1049,8 @@ class EasyApplyFiller:
         We prefer a handle whose URL looks like the job search/detail page so we do not close the
         main session when the new tab briefly becomes ``current_window_handle``.
         """
+        if not driver_session_alive(driver):
+            return
         try:
             handles = list(driver.window_handles)
         except Exception:
@@ -1057,6 +1093,8 @@ class EasyApplyFiller:
 
     def _click_done_or_close_in_modal(self, driver: Any) -> bool:
         """Try Done (post-submit), Dismiss, then other post-apply controls. Returns True if something was clicked."""
+        if self._stop_dismiss_if_driver_closed(driver):
+            return False
         extra = self._visible_post_apply_control(driver)
         if extra:
             try:
@@ -1112,6 +1150,8 @@ class EasyApplyFiller:
         Close any overlay that blocks the next **Apply**: Easy Apply sheet, post-submit success in another
         layer, or an extra browser window.
         """
+        if self._stop_dismiss_if_driver_closed(driver):
+            return
         self._close_extra_browser_windows(driver)
         if not self._blocking_apply_ui_open(driver):
             return
@@ -1120,12 +1160,15 @@ class EasyApplyFiller:
             f" ({context})" if context else "",
         )
         for attempt in range(18):
+            if self._stop_dismiss_if_driver_closed(driver):
+                return
             self._close_extra_browser_windows(driver)
             if not self._blocking_apply_ui_open(driver):
                 return
             if not self._click_done_or_close_in_modal(driver):
                 self._click_dismiss_header(driver)
-            time.sleep(0.35)
+            if not interruptible_sleep(0.35, driver):
+                return
         if self._blocking_apply_ui_open(driver):
             log.warning(
                 "Apply-blocking UI may still be visible after dismiss attempts%s — next apply may fail",
@@ -1134,11 +1177,16 @@ class EasyApplyFiller:
 
     def _wait_then_dismiss_post_submit(self, driver: Any, context: str) -> None:
         """After **Submit**, success UI may mount a moment later in a different modal layer."""
+        if self._stop_dismiss_if_driver_closed(driver):
+            return
         self._close_extra_browser_windows(driver)
         for _ in range(22):
+            if self._stop_dismiss_if_driver_closed(driver):
+                return
             if self._blocking_apply_ui_open(driver):
                 break
-            time.sleep(0.35)
+            if not interruptible_sleep(0.35, driver):
+                return
         self._dismiss_easy_apply_modal_if_open(driver, context)
 
     @staticmethod
@@ -1254,6 +1302,8 @@ class EasyApplyFiller:
         After **Dismiss**, LinkedIn often opens a second dialog: save the application draft or discard.
         Choose **Save** (default abandon) or **Discard** when a form rule rejects the job.
         """
+        if self._stop_dismiss_if_driver_closed(driver):
+            return
         time.sleep(0.45)
         want = "discard" if discard else "save"
         for dialog in driver.find_elements(By.CSS_SELECTOR, '[role="dialog"], .artdeco-modal'):
@@ -1342,6 +1392,8 @@ class EasyApplyFiller:
 
     def _click_dismiss_header(self, driver: Any, *, discard_draft: bool = False) -> bool:
         """Close the flow via the header **Dismiss** control (``aria-label`` Dismiss / dismiss)."""
+        if self._stop_dismiss_if_driver_closed(driver):
+            return False
         for sel in (
             'button[aria-label="Dismiss"]',
             'button[aria-label="dismiss"]',
@@ -1365,6 +1417,8 @@ class EasyApplyFiller:
         Leave the application without submitting: click **Dismiss** so the same session can apply elsewhere.
         Always returns False (apply did not complete).
         """
+        if self._stop_dismiss_if_driver_closed(driver):
+            return False
         log.warning("Abandoning Easy Apply for %s — %s", job.get("id"), reason)
         if self._click_dismiss_header(driver, discard_draft=False):
             self._dismiss_easy_apply_modal_if_open(driver, "after abandon dismiss")
@@ -1378,6 +1432,8 @@ class EasyApplyFiller:
         Close and discard the in-progress application (Dismiss, then Discard on the draft dialog).
         Always returns False (apply did not complete).
         """
+        if self._stop_dismiss_if_driver_closed(driver):
+            return False
         log.warning("Discarding Easy Apply for %s — %s", job.get("id"), reason)
         if self._click_dismiss_header(driver, discard_draft=True):
             self._dismiss_easy_apply_modal_if_open(driver, "after discard dismiss")

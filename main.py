@@ -312,6 +312,12 @@ def run(args):
             max_listings_cap,
         )
 
+    def _require_browser_session(drv) -> None:
+        """Stop the pipeline when the main Chrome window was closed during non-browser work (e.g. LLM)."""
+        if not driver_session_alive(drv):
+            log_driver_session_closed()
+            raise StopApplyPipeline("browser closed")
+
     def maybe_skip_from_list_card_preview(driver, peek: dict) -> bool:
         """
         Blacklist / consulting memory / listing-company heuristics using only list-card text (no job click).
@@ -371,9 +377,7 @@ def run(args):
         return False
 
     def process_listing(driver, job: dict) -> None:
-        if not driver_session_alive(driver):
-            log_driver_session_closed()
-            return
+        _require_browser_session(driver)
 
         if tracker.already_applied(job["id"]):
             log.info("Skipping (already applied): %s at %s", job["title"], job["company"])
@@ -399,6 +403,7 @@ def run(args):
             )
             print_job_fit_debug(job.get("company"), job.get("title"), None, note="gates_failed")
             tracker.log(job, status="skipped", score=0.0)
+            _require_browser_session(driver)
             if searcher.dismiss_current_job(driver, reason="gates-failed", job_id=str(job.get("id") or "")):
                 log.info("  → Dismissed on LinkedIn to avoid revisiting this non-qualifying listing.")
             return
@@ -416,6 +421,8 @@ def run(args):
             log.info("  → Below fit threshold (%.0f%%), skipping apply", args.min_score * 100)
             tracker.log(job, status="skipped", score=fit)
             return
+
+        _require_browser_session(driver)
 
         # Company-based consulting checks come last so requirement/fit disqualifications short-circuit first.
         if args.skip_consulting and is_consulting_listing_from_job_posting_text_only(job):
@@ -459,6 +466,7 @@ def run(args):
 
         if args.skip_consulting:
             company_link_li = searcher.selected_job_company_link(driver)
+            _require_browser_session(driver)
             if consulting_memory is not None and company_link_li:
                 slug_only = linkedin_company_slug_from_url(company_link_li)
                 if slug_only and consulting_memory.matches(
@@ -513,6 +521,7 @@ def run(args):
                 return
 
         cover_letter = cover_gen.generate(resume, job)
+        _require_browser_session(driver)
         log.info("  → Easy Apply (same browser session)...")
         success = filler.apply(job, resume, cover_letter, driver=driver)
         abort_reason = filler.consume_apply_abort_reason()

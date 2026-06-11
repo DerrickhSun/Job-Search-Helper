@@ -20,7 +20,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, WebDriverException
 
 # Sentinel for "unlimited" quota math (last page, no max_jobs cap).
 _MAX_QUOTA = 2**30
@@ -31,6 +31,7 @@ from .chrome_driver import (
     build_chrome,
     driver_session_alive,
     focus_element,
+    interruptible_sleep,
     load_cookies,
     log_driver_session_closed,
     save_cookies,
@@ -388,7 +389,12 @@ class JobSearcher:
                 url = f"https://www.linkedin.com/jobs/search/?{query}"
 
                 log.info("Navigating to: %s", url)
-                driver.get(url)
+                try:
+                    driver.get(url)
+                except WebDriverException:
+                    log_driver_session_closed()
+                    driver_closed = True
+                    break
                 self._pause()
                 time.sleep(1.2)
 
@@ -400,7 +406,9 @@ class JobSearcher:
                         driver_closed = True
                         break
 
-                    self._wait_job_list(driver)
+                    if not self._wait_job_list(driver):
+                        driver_closed = True
+                        break
 
                     has_next = self._has_next_page(driver)
                     remaining = self._remaining_slots(processed, max_listings)
@@ -423,7 +431,13 @@ class JobSearcher:
                         self._ensure_job_links_count(driver, quota)
                     else:
                         self._expand_virtualized_job_list(driver)
+                    if self._driver_stopped(driver):
+                        driver_closed = True
+                        break
                     self._scroll_job_list_to_top(driver)
+                    if self._driver_stopped(driver):
+                        driver_closed = True
+                        break
 
                     n = len(self._find_job_card_links(driver, expand=False))
                     log.info("Found %d job list link(s) in the DOM after loading", n)
@@ -449,7 +463,13 @@ class JobSearcher:
                         if i >= len(links_now):
                             if has_next:
                                 self._ensure_job_links_count(driver, quota)
+                                if self._driver_stopped(driver):
+                                    driver_closed = True
+                                    break
                                 self._scroll_job_list_to_top(driver)
+                                if self._driver_stopped(driver):
+                                    driver_closed = True
+                                    break
                                 links_now = self._find_job_card_links(driver, expand=False)
                         if i >= len(links_now):
                             log.warning(
@@ -531,6 +551,11 @@ class JobSearcher:
                         except StopApplyPipeline as e:
                             log.warning("Stopping search/apply pipeline early: %s", e)
                             stop_requested = True
+                            if "browser" in str(e).lower():
+                                driver_closed = True
+                        except WebDriverException:
+                            log_driver_session_closed()
+                            driver_closed = True
                         except Exception:
                             log.exception(
                                 "Pipeline error for %s at %s",
@@ -540,7 +565,7 @@ class JobSearcher:
 
                         page_done += 1
                         processed += 1
-                        if stop_requested:
+                        if driver_closed or stop_requested:
                             break
                         if (
                             max_applies is not None
@@ -581,14 +606,27 @@ class JobSearcher:
                         break
 
                     time.sleep(self.next_page_wait_seconds)
-                    next_els = driver.find_elements(By.CSS_SELECTOR, SEL["next_page"])
+                    if self._driver_stopped(driver):
+                        driver_closed = True
+                        break
+                    try:
+                        next_els = driver.find_elements(By.CSS_SELECTOR, SEL["next_page"])
+                    except WebDriverException:
+                        log_driver_session_closed()
+                        driver_closed = True
+                        break
                     if not next_els:
                         log.info("No further results pages")
                         break
                     next_btn = next_els[0]
                     if self.highlight:
                         focus_element(driver, next_btn, pause=self.step_delay)
-                    next_btn.click()
+                    try:
+                        next_btn.click()
+                    except WebDriverException:
+                        log_driver_session_closed()
+                        driver_closed = True
+                        break
                     self._pause()
                     time.sleep(1.2)
 
@@ -598,19 +636,31 @@ class JobSearcher:
             if not driver_closed:
                 save_cookies(driver, self.session_file)
             return processed
+        except WebDriverException:
+            log_driver_session_closed()
+            return processed
         finally:
             try:
                 driver.quit()
             except Exception:
                 pass
 
-    def _wait_job_list(self, driver) -> None:
-        if self.job_cards_wait_seconds > 0:
-            log.info(
-                "Waiting %.1fs for job list to render",
-                self.job_cards_wait_seconds,
-            )
-            time.sleep(self.job_cards_wait_seconds)
+    def _driver_stopped(self, driver) -> bool:
+        """True when the browser session is gone — list scroll / pagination should stop."""
+        if driver_session_alive(driver):
+            return False
+        log_driver_session_closed()
+        return True
+
+    def _wait_job_list(self, driver) -> bool:
+        """Wait for the job list to render. Returns False if the driver session ended."""
+        if self.job_cards_wait_seconds <= 0:
+            return not self._driver_stopped(driver)
+        log.info(
+            "Waiting %.1fs for job list to render",
+            self.job_cards_wait_seconds,
+        )
+        return interruptible_sleep(self.job_cards_wait_seconds, driver)
 
     def _left_rail_job_links(self, driver):
         """Primary selector: title links inside virtualized list rows (avoids right-pane duplicates)."""
@@ -618,6 +668,16 @@ class JobSearcher:
             By.CSS_SELECTOR,
             'li[data-occludable-job-id] a[href*="/jobs/view/"]',
         )
+
+    def _count_left_rail_job_links(self, driver) -> int | None:
+        """Return left-rail link count, or None when the browser session is no longer usable."""
+        if self._driver_stopped(driver):
+            return None
+        try:
+            return len(self._left_rail_job_links(driver))
+        except WebDriverException:
+            log_driver_session_closed()
+            return None
 
     def _job_list_scroll_pick_js(self) -> str:
         """Returns JS that defines ``pick()`` → scrollable job-list element or null."""
@@ -644,12 +704,17 @@ class JobSearcher:
             };
         """
 
-    def _apply_job_list_scroll(self, driver, mode: str) -> None:
+    def _apply_job_list_scroll(self, driver, mode: str) -> bool:
         """
         ``mode``: ``top`` | ``bottom`` | ``page_down`` — scroll the left-rail list, not the window only.
         ``page_down`` nudges by ~one viewport so virtualization mounts rows in the middle, not only at the end.
+
+        Returns False when the browser session is no longer usable.
         """
-        driver.execute_script(
+        if self._driver_stopped(driver):
+            return False
+        try:
+            driver.execute_script(
             self._job_list_scroll_pick_js()
             + """
             const mode = arguments[0];
@@ -666,12 +731,17 @@ class JobSearcher:
               el.scrollTop = Math.min(el.scrollHeight, el.scrollTop + step);
             }
             """,
-            mode,
-        )
+                mode,
+            )
+            return True
+        except WebDriverException:
+            log_driver_session_closed()
+            return False
 
     def _scroll_job_list_to_top(self, driver) -> None:
         """After loading the list, scroll back to the first card so indices match top-to-bottom order."""
-        self._apply_job_list_scroll(driver, "top")
+        if not self._apply_job_list_scroll(driver, "top"):
+            return
         time.sleep(0.35)
 
     def _tail_load_job_list(self, driver) -> int | None:
@@ -679,13 +749,21 @@ class JobSearcher:
         After the count stops rising briefly, LinkedIn may still append rows (network / observers).
         Extra bottom + page-down passes; return new count if it grew, else None.
         """
-        before = len(self._left_rail_job_links(driver))
+        before = self._count_left_rail_job_links(driver)
+        if before is None:
+            return None
         best = before
         for _ in range(self.job_list_tail_pass_rounds):
-            self._apply_job_list_scroll(driver, "bottom")
-            self._apply_job_list_scroll(driver, "page_down")
+            if self._driver_stopped(driver):
+                return None
+            if not self._apply_job_list_scroll(driver, "bottom"):
+                return None
+            if not self._apply_job_list_scroll(driver, "page_down"):
+                return None
             time.sleep(self.job_list_scroll_pause * 1.25)
-            cur = len(self._left_rail_job_links(driver))
+            cur = self._count_left_rail_job_links(driver)
+            if cur is None:
+                return None
             if cur > best:
                 best = cur
         if best > before:
@@ -708,11 +786,17 @@ class JobSearcher:
         stable = 0
         last_n = -1
         for round_i in range(self.job_list_scroll_max_rounds):
-            n = len(self._left_rail_job_links(driver))
+            if self._driver_stopped(driver):
+                return
+            n = self._count_left_rail_job_links(driver)
+            if n is None:
+                return
             if n > 0 and n == last_n:
                 stable += 1
                 if stable >= self.job_list_scroll_stable_rounds:
                     grown = self._tail_load_job_list(driver)
+                    if grown is None and not driver_session_alive(driver):
+                        return
                     if grown is not None:
                         stable = 0
                         last_n = grown
@@ -726,8 +810,10 @@ class JobSearcher:
             else:
                 stable = 0
             last_n = n
-            self._apply_job_list_scroll(driver, "bottom")
-            self._apply_job_list_scroll(driver, "page_down")
+            if not self._apply_job_list_scroll(driver, "bottom"):
+                return
+            if not self._apply_job_list_scroll(driver, "page_down"):
+                return
             time.sleep(self.job_list_scroll_pause)
 
         log.info(
@@ -745,8 +831,12 @@ class JobSearcher:
         ``_expand_virtualized_job_list``). Pipeline callers usually pass ``expand=False`` after
         a single expand per page.
         """
+        if self._driver_stopped(driver):
+            return []
         if expand:
             self._expand_virtualized_job_list(driver)
+            if self._driver_stopped(driver):
+                return []
         attempts: list[tuple[str, str]] = [
             # Two-pane jobs UI: relative ``/jobs/view/ID/`` (no currentJobId, no linkedin.com in href)
             ("css", 'li.scaffold-layout__list-item[data-occludable-job-id] a[href*="/jobs/view/"]'),
@@ -776,10 +866,14 @@ class JobSearcher:
             ("css", 'a[href*="currentJobId"]'),
         ]
         for kind, sel in attempts:
-            if kind == "css":
-                links = driver.find_elements(By.CSS_SELECTOR, sel)
-            else:
-                links = driver.find_elements(By.XPATH, sel)
+            try:
+                if kind == "css":
+                    links = driver.find_elements(By.CSS_SELECTOR, sel)
+                else:
+                    links = driver.find_elements(By.XPATH, sel)
+            except WebDriverException:
+                log_driver_session_closed()
+                return []
             if links:
                 log.info("Matched %d job list link(s) via %s %r", len(links), kind, sel)
                 return links
@@ -814,12 +908,19 @@ class JobSearcher:
         virtualization may require several passes before that many ``<a>`` nodes exist.
         """
         if min_count <= 0:
-            return len(self._left_rail_job_links(driver))
+            n = self._count_left_rail_job_links(driver)
+            return n if n is not None else 0
         prev = -1
         best = 0
         for attempt in range(10):
+            if self._driver_stopped(driver):
+                return best
             self._expand_virtualized_job_list(driver)
+            if self._driver_stopped(driver):
+                return best
             self._scroll_job_list_to_top(driver)
+            if self._driver_stopped(driver):
+                return best
             n = len(self._find_job_card_links(driver, expand=False))
             best = max(best, n)
             if n >= min_count:
@@ -1039,6 +1140,8 @@ class JobSearcher:
         If ``job_id`` is provided, targets that exact ``data-occludable-job-id`` row first.
         Returns True when a dismiss button was found/clicked, otherwise False.
         """
+        if self._driver_stopped(driver):
+            return False
         selectors: list[str] = []
         jid = (job_id or "").strip()
         if jid:
@@ -1064,8 +1167,9 @@ class JobSearcher:
         for css in selectors:
             try:
                 matches = driver.find_elements(By.CSS_SELECTOR, css)
-            except Exception:
-                matches = []
+            except WebDriverException:
+                self._driver_stopped(driver)
+                return False
             if matches:
                 btn = matches[0]
                 break
@@ -1102,6 +1206,8 @@ class JobSearcher:
         """
         Return the selected job's company LinkedIn URL from the detail pane, or empty string.
         """
+        if self._driver_stopped(driver):
+            return ""
         selectors = (
             ".job-details-jobs-unified-top-card__company-name a[href]",
             ".jobs-unified-top-card__company-name a[href]",
@@ -1111,10 +1217,15 @@ class JobSearcher:
         for css in selectors:
             try:
                 matches = driver.find_elements(By.CSS_SELECTOR, css)
-            except Exception:
-                matches = []
+            except WebDriverException:
+                self._driver_stopped(driver)
+                return ""
             for el in matches:
-                href = (el.get_attribute("href") or "").strip()
+                try:
+                    href = (el.get_attribute("href") or "").strip()
+                except WebDriverException:
+                    self._driver_stopped(driver)
+                    return ""
                 if "linkedin.com/company/" in href:
                     return href
         return ""

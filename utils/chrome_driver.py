@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -21,6 +22,12 @@ DRIVER_SESSION_CLOSED_MSG = (
 )
 
 DEFAULT_COOKIE_PATH = Path("data/selenium_linkedin_cookies.json")
+
+# Cap how long a health probe may block when Chrome was killed (chromedriver can hang otherwise).
+_DRIVER_ALIVE_PROBE_TIMEOUT = 3.0
+
+# HTTP read timeout for WebDriver commands (fail faster when the browser window is gone).
+_DRIVER_COMMAND_TIMEOUT = 12.0
 
 
 def _running_in_container() -> bool:
@@ -57,6 +64,10 @@ def build_chrome(headless: bool = False) -> webdriver.Chrome:
     else:
         service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=opts)
+    try:
+        driver.command_executor.set_timeout(_DRIVER_COMMAND_TIMEOUT)
+    except Exception:
+        log.debug("Could not set WebDriver command timeout", exc_info=True)
     if not headless:
         try:
             driver.maximize_window()
@@ -65,15 +76,52 @@ def build_chrome(headless: bool = False) -> webdriver.Chrome:
     return driver
 
 
+def _probe_driver_session_alive(driver: webdriver.Chrome) -> bool:
+    """Fast session probe — must not call ``execute_script`` (can hang when Chrome was killed)."""
+    try:
+        handles = driver.window_handles
+        if not handles:
+            return False
+        current = driver.current_window_handle
+        return current in handles
+    except WebDriverException:
+        return False
+
+
 def driver_session_alive(driver: webdriver.Chrome | None) -> bool:
     """False when Chrome was closed or the WebDriver session is no longer reachable."""
     if driver is None:
         return False
-    try:
-        _ = driver.window_handles
-        return True
-    except WebDriverException:
-        return False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_probe_driver_session_alive, driver)
+        try:
+            return fut.result(timeout=_DRIVER_ALIVE_PROBE_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            log.debug(
+                "driver_session_alive: probe timed out after %.1fs",
+                _DRIVER_ALIVE_PROBE_TIMEOUT,
+            )
+            return False
+
+
+def interruptible_sleep(
+    seconds: float,
+    driver: webdriver.Chrome | None,
+    *,
+    poll: float = 0.4,
+) -> bool:
+    """
+    Sleep up to ``seconds``, polling session health. Returns False when the driver session ended.
+    """
+    if seconds <= 0:
+        return driver_session_alive(driver)
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if not driver_session_alive(driver):
+            log_driver_session_closed()
+            return False
+        time.sleep(min(poll, max(0.0, deadline - time.time())))
+    return driver_session_alive(driver)
 
 
 def log_driver_session_closed() -> None:
