@@ -8,13 +8,17 @@ conflicts when an existing rule disagrees with the extension answer.
 
 from __future__ import annotations
 
+import codecs
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from utils.form_fill_rules import FormFillRulesEngine, label_matches
+from utils.form_fill_rules import FormFillRulesEngine, label_matches, normalize_label_for_exact
+
+log = logging.getLogger(__name__)
 from utils.output_paths import FORM_FILL_RULES_DIR
 
 AUTO_RULES_FILENAME = "auto_rules.json"
@@ -227,10 +231,69 @@ def resolve_rule_answer(
 
 
 def question_to_match(question: str) -> dict[str, Any]:
-    n = FormFillRulesEngine.normalize_label(question).rstrip("?").strip()
-    if len(n) <= 96:
-        return {"all_substrings": [n]}
-    return {"regex": re.escape(n[:120])}
+    """Extension-derived rules match the full normalized question text only (not substrings)."""
+    return {"exact": normalize_label_for_exact(question)}
+
+
+def upgrade_extension_auto_rule_match(match: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """
+    Convert legacy extension ``all_substrings`` / ``regex`` matchers to ``exact``.
+
+    Returns ``(new_match, changed)``.
+    """
+    if match.get("exact") is not None:
+        return match, False
+    subs = match.get("all_substrings")
+    if isinstance(subs, list) and len(subs) == 1:
+        s = str(subs[0] or "").strip()
+        if s:
+            return {"exact": normalize_label_for_exact(s)}, True
+    rx = match.get("regex")
+    if isinstance(rx, str) and rx.strip() and len(match) == 1:
+        try:
+            literal = codecs.decode(rx, "unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            return match, False
+        if literal.strip():
+            return {"exact": normalize_label_for_exact(literal)}, True
+    return match, False
+
+
+def migrate_extension_auto_rules_to_exact(
+    *,
+    rules_dir: Path | None = None,
+    dry_run: bool = False,
+) -> int:
+    """
+    Rewrite ``extension_auto_*`` rules in ``auto_rules.json`` to use ``match.exact``.
+
+    Returns the number of rules updated.
+    """
+    path = auto_rules_path(rules_dir)
+    data = _read_json_object(path)
+    if not data:
+        return 0
+    changed = 0
+    for category in RULE_CATEGORIES:
+        rules = data.get(category)
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            if not str(rule.get("id", "")).startswith("extension_auto_"):
+                continue
+            old = rule.get("match") or {}
+            if not isinstance(old, dict):
+                continue
+            new, did = upgrade_extension_auto_rule_match(old)
+            if did:
+                rule["match"] = new
+                changed += 1
+    if changed and not dry_run:
+        _write_json_object(path, data)
+        log.info("Migrated %d extension auto rule(s) to exact match in %s", changed, path)
+    return changed
 
 
 def _slug_from_question(question: str) -> str:

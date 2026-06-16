@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 from utils.apply_sheets import applied_sheet_row
 from utils.extension_rules import (
     SAVED_JOBS_QUESTIONS_FILENAME,
+    migrate_extension_auto_rules_to_exact,
     process_extension_questions,
     print_questions_summary,
     resolve_questions_file_path,
@@ -271,6 +272,9 @@ def main() -> int:
     prune_cover_letters_for_sync()
     migrate_legacy_root_archive_files()
     migrate_form_fill_rules()
+    migrated = migrate_extension_auto_rules_to_exact(dry_run=args.dry_run)
+    if migrated:
+        print(f"Migrated {migrated} extension auto rule(s) to exact label matching.")
 
     downloads = (args.downloads_dir or _default_downloads_dir()).expanduser().resolve()
     if not downloads.is_dir():

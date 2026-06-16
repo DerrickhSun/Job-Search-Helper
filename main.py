@@ -53,6 +53,7 @@ from utils.helper_browser import run_helper_mode
 from utils.job_records import DEFAULT_LISTINGS_LOG
 from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher, StopApplyPipeline
 from utils.matcher import JobMatcher, print_job_fit_debug
+from utils.extension_rules import migrate_extension_auto_rules_to_exact
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
     migrate_legacy_consulting_companies_file,
@@ -603,6 +604,7 @@ def main():
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
     migrate_form_fill_rules()
+    migrate_extension_auto_rules_to_exact()
 
     ap = argparse.ArgumentParser(
         description="Job tools: LinkedIn Easy Apply pipeline, or Greenhouse MyGreenhouse application helper."

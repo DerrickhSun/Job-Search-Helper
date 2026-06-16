@@ -55,14 +55,26 @@ _MERGEABLE_LIST_KEYS = (
 )
 
 
+def normalize_label_for_exact(label: str) -> str:
+    """Normalized label for ``match.exact`` comparison (case/whitespace; trailing ``?`` / ``*``)."""
+    return FormFillRulesEngine.normalize_label(label).rstrip("?").strip()
+
+
 def label_matches(normalized_label: str, spec: dict[str, Any]) -> bool:
     """
     Return whether a normalized form label/question string satisfies ``spec``.
 
     Used by :class:`FormFillRulesEngine` for LinkedIn and Greenhouse rule matching.
+
+    When ``exact`` is set, the label must equal that string after :func:`normalize_label_for_exact`
+    (other match keys are ignored). Hand-written rules may still use substring/regex matchers.
     """
     if not spec:
         return False
+    if spec.get("exact") is not None:
+        want = normalize_label_for_exact(str(spec["exact"]))
+        got = normalize_label_for_exact(normalized_label)
+        return got == want
     n = normalized_label
     if spec.get("all_substrings"):
         for s in spec["all_substrings"]:
