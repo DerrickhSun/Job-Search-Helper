@@ -56,6 +56,7 @@ from utils.matcher import JobMatcher, print_job_fit_debug
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
     migrate_legacy_consulting_companies_file,
+    migrate_form_fill_rules,
     migrate_legacy_root_archive_files,
 )
 from utils.s3_outputs import sync_download_output, sync_upload_output
@@ -601,6 +602,7 @@ def main():
     prune_cover_letters_for_sync()
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
+    migrate_form_fill_rules()
 
     ap = argparse.ArgumentParser(
         description="Job tools: LinkedIn Easy Apply pipeline, or Greenhouse MyGreenhouse application helper."
@@ -950,7 +952,8 @@ def main():
         metavar="PATH",
         help="JSON rules for LinkedIn Easy Apply and Greenhouse (``--site greenhouse``): screening, text "
         "fields, textareas, selects, and ``checkbox_groups`` for Greenhouse fieldsets. Accepts a directory "
-        "of JSON files merged in filename order (default: data/form_fill_rules/) or a single JSON file. "
+        "of JSON files merged in filename order (default: output/form_fill_rules/, synced via S3) "
+        "or a single JSON file. "
         "Greenhouse uses ``apply_source=greenhouse`` for ``choose_label_from_apply_source`` (e.g. how you "
         "heard); LinkedIn uses ``linkedin``.",
     )

@@ -1,16 +1,21 @@
 # AWS S3 for outputs (between machines)
 
-Use S3 as a remote copy of `output/` (CSVs, archives, cover letters, `consulting_companies.json`, etc.) so you do not need to git-push results when switching devices. The `output/` tree is **gitignored** (only `output/.gitkeep` is tracked) to avoid merge conflicts; use S3 or a fresh run to populate it on each machine.
+Use S3 as a remote copy of `output/` (CSVs, archives, cover letters, **form fill rules**, `consulting_companies.json`, etc.) so you do not need to git-push results when switching devices. The `output/` tree is **gitignored** (only `output/.gitkeep` is tracked) to avoid merge conflicts; use S3 or a fresh run to populate it on each machine.
+
+**Form fill rules** live at `output/form_fill_rules/` (including `auto_rules.json` from the browser extension). Bundled defaults ship in `defaults/form_fill_rules/` for first-time seeding only — edit the runtime copy under `output/`, not git.
 
 ### Pruning old cover letters (faster sync)
 
-Large `output/coverletters/` folders slow S3 upload/download. By default, `main.py` and `archive_applications.py` delete local and S3 cover letter `.docx` files **older than 7 days** (by file modification time locally; S3 `LastModified` remotely) before each sync.
+Large `output/coverletters/` folders slow S3 upload/download. By default, `main.py` and `archive_applications.py` delete local and S3 cover letter `.docx` files **older than 7 days** (by file modification time locally; S3 `LastModified` remotely) before each sync, then delete the **oldest** files if more than **100** remain.
 
 In `.env`:
 
 ```bash
-COVER_LETTER_MAX_AGE_DAYS=7   # default; set 0 to disable pruning
+COVER_LETTER_MAX_AGE_DAYS=7   # default; set 0 to disable age pruning
+COVER_LETTER_MAX_COUNT=100    # default; set 0 to disable count cap
 ```
+
+After S3 download, cover letter local mtimes are set from S3 `LastModified` so age/count pruning stays correct across machines (otherwise every download would look "new").
 
 Manual prune (dry run first):
 

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import shutil
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path("output")
 ARCHIVE_DIR = OUTPUT_DIR / "archive"
 COVERLETTERS_DIR = OUTPUT_DIR / "coverletters"
+FORM_FILL_RULES_DIR = OUTPUT_DIR / "form_fill_rules"
 
 APPLICATIONS_CSV = OUTPUT_DIR / "applications.csv"
 APPLICATIONS_ARCHIVE_CSV = ARCHIVE_DIR / "applications_archive.csv"
@@ -16,6 +21,60 @@ GREENHOUSE_DISMISSED_CSV = OUTPUT_DIR / "greenhouse_dismissed.csv"
 CONSULTING_COMPANIES_JSON = OUTPUT_DIR / "consulting_companies.json"
 
 LEGACY_CONSULTING_COMPANIES_JSON = Path("data/consulting_companies.json")
+LEGACY_FORM_FILL_RULES_DIR = Path("data/form_fill_rules")
+LEGACY_FORM_FILL_RULES_FILE = Path("data/form_fill_rules.json")
+FORM_FILL_RULES_SEED_DIR = Path("defaults/form_fill_rules")
+
+
+def _dir_has_json_rules(path: Path) -> bool:
+    return path.is_dir() and any(path.glob("*.json"))
+
+
+def _copy_json_rules(src: Path, dest: Path) -> int:
+    dest.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for src_file in sorted(src.glob("*.json"), key=lambda p: p.name.lower()):
+        shutil.copy2(src_file, dest / src_file.name)
+        copied += 1
+    return copied
+
+
+def migrate_form_fill_rules() -> None:
+    """
+    Ensure ``output/form_fill_rules/`` exists (S3-synced runtime rules).
+
+    When the directory has no ``*.json`` yet:
+    1. Copy from legacy ``data/form_fill_rules/`` (one-time upgrade from git-tracked layout).
+    2. Else copy bundled defaults from ``defaults/form_fill_rules/``.
+    """
+    if _dir_has_json_rules(FORM_FILL_RULES_DIR):
+        return
+
+    if _dir_has_json_rules(LEGACY_FORM_FILL_RULES_DIR):
+        n = _copy_json_rules(LEGACY_FORM_FILL_RULES_DIR, FORM_FILL_RULES_DIR)
+        log.info(
+            "Migrated %d form fill rule file(s) from %s -> %s",
+            n,
+            LEGACY_FORM_FILL_RULES_DIR,
+            FORM_FILL_RULES_DIR,
+        )
+        return
+
+    if _dir_has_json_rules(FORM_FILL_RULES_SEED_DIR):
+        n = _copy_json_rules(FORM_FILL_RULES_SEED_DIR, FORM_FILL_RULES_DIR)
+        log.info(
+            "Seeded %d form fill rule file(s) from %s -> %s",
+            n,
+            FORM_FILL_RULES_SEED_DIR,
+            FORM_FILL_RULES_DIR,
+        )
+        return
+
+    log.warning(
+        "No form fill rules found — expected S3 sync, %s, or %s",
+        LEGACY_FORM_FILL_RULES_DIR,
+        FORM_FILL_RULES_SEED_DIR,
+    )
 
 
 def migrate_legacy_consulting_companies_file() -> None:

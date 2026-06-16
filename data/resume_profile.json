@@ -91,13 +91,15 @@
     {
       "degree": "M.S. in Computer Science",
       "institution": "Purdue University",
-      "year": "August 2024 - May 2026"
+      "year": "August 2024 - May 2026",
+      "status": "Graduated"
     },
     {
       "degree": "B.A. in Computer Science and in Applied Math",
       "institution": "UC Berkeley",
-      "year": "June 2020 - May 2024"
+      "year": "June 2020 - May 2024",
+      "status": "Graduated"
     }
   ],
-  "summary": "M.S. in Computer Science with software engineering skills, industry internship, and \nresearch in machine learning. Experience automating workflows, building predictive models, and \noptimizing AI architectures. US Citizen. Available to work immediately, open to relocation. \nEducation \n❖ Purdue University, M.S. in Computer Science           \n                     August 2024 – May 2026 \no Specialization in AI and Machine Learning with focus on Computer Security \no Advanced courses: Deep learning, P"
+  "summary": "Recent M.S. in Computer Science graduate with software engineering skills, industry internship, and \nresearch in machine learning. Experience automating workflows, building predictive models, and \noptimizing AI architectures. US Citizen. Available to work immediately, open to relocation. \nEducation \n❖ Purdue University, M.S. in Computer Science           \n                     August 2024 – May 2026 \no Specialization in AI and Machine Learning with focus on Computer Security \no Advanced courses: Deep learning, P"
 }

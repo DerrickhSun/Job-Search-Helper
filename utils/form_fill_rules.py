@@ -1,6 +1,7 @@
 """
-Form fill rules loaded from ``data/form_fill_rules/`` (a directory of JSON files) or, for backward
-compatibility, a single ``data/form_fill_rules.json`` file.
+Form fill rules loaded from ``output/form_fill_rules/`` (S3-synced with ``output/``), seeded from
+``defaults/form_fill_rules/`` on first run. Legacy paths ``data/form_fill_rules/`` and
+``data/form_fill_rules.json`` are still supported for ``--form-fill-rules`` overrides.
 
 Used for LinkedIn Easy Apply (text inputs, textareas, selects, screening yes/no) and for Greenhouse
 application pages (``checkbox_groups``: fieldset legend → option label to select). Pass ``apply_source``
@@ -27,10 +28,19 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-DEFAULT_RULES_DIR = _DATA_DIR / "form_fill_rules"
-DEFAULT_RULES_FILE = _DATA_DIR / "form_fill_rules.json"
-DEFAULT_RULES_PATH = DEFAULT_RULES_DIR if DEFAULT_RULES_DIR.is_dir() else DEFAULT_RULES_FILE
+from .output_paths import FORM_FILL_RULES_DIR, LEGACY_FORM_FILL_RULES_DIR, LEGACY_FORM_FILL_RULES_FILE
+
+DEFAULT_RULES_DIR = FORM_FILL_RULES_DIR
+DEFAULT_RULES_FILE = LEGACY_FORM_FILL_RULES_FILE
+DEFAULT_RULES_PATH = (
+    DEFAULT_RULES_DIR
+    if DEFAULT_RULES_DIR.is_dir() and any(DEFAULT_RULES_DIR.glob("*.json"))
+    else LEGACY_FORM_FILL_RULES_DIR
+    if LEGACY_FORM_FILL_RULES_DIR.is_dir()
+    else DEFAULT_RULES_FILE
+    if DEFAULT_RULES_FILE.is_file()
+    else DEFAULT_RULES_DIR
+)
 
 # Special screening answer: close the apply flow and choose Discard (not Save) on the draft dialog.
 DISCARD_APPLY = "__discard_apply__"
@@ -99,8 +109,8 @@ class FormFillRulesEngine:
         if self._path.is_file():
             return self._load_file(self._path)
         raise FileNotFoundError(
-            f"Form fill rules not found: {self._path} — add the data/form_fill_rules/ directory "
-            "(or a data/form_fill_rules.json file), or pass rules_path."
+            f"Form fill rules not found: {self._path} — add JSON files under output/form_fill_rules/ "
+            "(synced via S3), or pass rules_path."
         )
 
     @staticmethod

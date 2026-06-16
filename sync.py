@@ -35,6 +35,7 @@ from utils.output_paths import (
     ASSISTED_APPLICATIONS_CSV,
     ASSISTED_APPLICATIONS_HISTORY_CSV,
     migrate_legacy_consulting_companies_file,
+    migrate_form_fill_rules,
     migrate_legacy_root_archive_files,
 )
 from utils.s3_outputs import sync_download_output, sync_upload_output
@@ -61,6 +62,7 @@ def main() -> None:
     prune_cover_letters_for_sync()
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
+    migrate_form_fill_rules()
 
     s3_app_archive = read_sheet_csv(APPLICATIONS_ARCHIVE_CSV)
     s3_assisted_archive = read_sheet_csv(ASSISTED_APPLICATIONS_HISTORY_CSV)

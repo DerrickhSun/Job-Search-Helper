@@ -2,7 +2,7 @@
 Import screening / text answers captured by the browser extension into form fill rules.
 
 Parses ``saved_jobs_application_questions.txt``, compares each Q/A pair to existing rules in
-``data/form_fill_rules/``, appends new rules to ``auto_rules.json``, and interactively resolves
+``output/form_fill_rules/``, appends new rules to ``auto_rules.json``, and interactively resolves
 conflicts when an existing rule disagrees with the extension answer.
 """
 
@@ -14,11 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from utils.form_fill_rules import (
-    DEFAULT_RULES_DIR,
-    FormFillRulesEngine,
-    label_matches,
-)
+from utils.form_fill_rules import FormFillRulesEngine, label_matches
+from utils.output_paths import FORM_FILL_RULES_DIR
 
 AUTO_RULES_FILENAME = "auto_rules.json"
 RULE_CATEGORIES = ("screening_yes_no", "text_inputs", "textareas", "selects")
@@ -57,7 +54,7 @@ class RuleIndex:
     """Merged rule lists with file provenance (same merge order as :class:`FormFillRulesEngine`)."""
 
     def __init__(self, rules_dir: Path | None = None) -> None:
-        self.rules_dir = Path(rules_dir or DEFAULT_RULES_DIR)
+        self.rules_dir = Path(rules_dir or FORM_FILL_RULES_DIR)
         self.screening_yes_no: list[RuleRef] = []
         self.text_inputs: list[RuleRef] = []
         self.textareas: list[RuleRef] = []
@@ -269,7 +266,7 @@ def new_rule_for_question(question: str, answer: str) -> tuple[str, dict[str, An
 
 
 def auto_rules_path(rules_dir: Path | None = None) -> Path:
-    base = Path(rules_dir or DEFAULT_RULES_DIR)
+    base = Path(rules_dir or FORM_FILL_RULES_DIR)
     return base / AUTO_RULES_FILENAME
 
 
@@ -327,7 +324,7 @@ def classify_extension_questions(
     ``(question, category, rule_dict)`` tuples to append.
     """
     index = RuleIndex(rules_dir)
-    engine = FormFillRulesEngine(rules_path=rules_dir or DEFAULT_RULES_DIR, apply_source="linkedin")
+    engine = FormFillRulesEngine(rules_path=rules_dir or FORM_FILL_RULES_DIR, apply_source="linkedin")
     resume = resume if resume is not None else _load_resume_for_rule_resolution()
 
     skipped: list[ExtensionQuestion] = []

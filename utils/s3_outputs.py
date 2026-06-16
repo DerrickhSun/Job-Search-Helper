@@ -103,6 +103,12 @@ def sync_download_output(local_dir: Path | str = OUTPUT_DIR) -> int:
                 dest = root / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 s3.download_file(bucket, key, str(dest))
+                # Preserve S3 object age on cover letters so local prune by mtime stays meaningful.
+                if "coverletters" in dest.parts:
+                    last_mod = obj.get("LastModified")
+                    if last_mod is not None:
+                        ts = last_mod.timestamp()
+                        os.utime(dest, (ts, ts))
                 downloaded += 1
     except (ClientError, BotoCoreError, OSError) as e:
         log.error("S3 download failed (s3://%s/%s): %s", bucket, list_prefix, e)

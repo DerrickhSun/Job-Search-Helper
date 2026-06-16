@@ -56,8 +56,9 @@ GREENHOUSE_DASHBOARD_URL = f"{MY_GREENHOUSE_ORIGIN}/dashboard"
 DEFAULT_GREENHOUSE_COOKIE_PATH = Path("data/selenium_greenhouse_cookies.json")
 DEFAULT_APPLICATIONS_DB = Path("data/applications.db")
 
-# After opening MyGreenhouse sign-in, wait so a delayed redirect / trusted-device login can complete.
+# After opening MyGreenhouse sign-in, poll briefly for a cookie-based redirect before touching the form.
 GREENHOUSE_SIGN_IN_POST_NAV_DELAY_S = 10.0
+GREENHOUSE_SIGN_IN_REDIRECT_POLL_S = 0.5
 
 # Harvest job description from embedded boards (same priority idea as EasyApplyFiller).
 GREENHOUSE_DESCRIPTION_IFRAME_SELECTORS: tuple[str, ...] = (
@@ -614,6 +615,53 @@ def _try_submit_my_greenhouse_email_step(driver: Any, email: str) -> None:
             log.info("Submitted MyGreenhouse email step (Enter).")
         except Exception as e:
             log.debug("MyGreenhouse email step: no button click, Enter failed: %s", e)
+
+
+def _greenhouse_page_says_expired(driver: Any) -> bool:
+    """True when MyGreenhouse shows the Devise-style stale-session / CSRF error."""
+    try:
+        blob = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
+    except Exception:
+        return False
+    if "expired" not in blob:
+        return False
+    return any(
+        phrase in blob
+        for phrase in (
+            "page has expired",
+            "page expired",
+            "session expired",
+            "please try again",
+            "sign in again",
+        )
+    )
+
+
+def _open_my_greenhouse_sign_in(driver: Any) -> None:
+    """Navigate to the candidate sign-in page (fresh GET for a new CSRF token)."""
+    driver.get(GREENHOUSE_SIGN_IN_URL)
+    time.sleep(0.35)
+
+
+def _try_my_greenhouse_email_sign_in(driver: Any, email: str) -> None:
+    """
+    Fill and submit the email step on a **fresh** sign-in page.
+
+    Reloads once when MyGreenhouse responds with "page has expired" (stale CSRF / session).
+    """
+    email = (email or "").strip()
+    if not email:
+        return
+    _open_my_greenhouse_sign_in(driver)
+    _try_submit_my_greenhouse_email_step(driver, email)
+    time.sleep(0.5)
+    if _greenhouse_page_says_expired(driver):
+        log.warning(
+            "MyGreenhouse sign-in page reported expired — reloading sign-in and retrying email once."
+        )
+        _open_my_greenhouse_sign_in(driver)
+        _try_submit_my_greenhouse_email_step(driver, email)
+        time.sleep(0.5)
 
 
 def _wait_for_my_greenhouse_dashboard(
@@ -2297,7 +2345,7 @@ def _click_checkbox_in_fieldset_by_label(driver: Any, fs: Any, choose_label: str
 
 def maybe_apply_greenhouse_checkbox_rules(driver: Any, args: Any) -> bool:
     """
-    For each ``fieldset.checkbox``, if the form fill rules (``data/form_fill_rules/`` or ``--form-fill-rules``)
+    For each ``fieldset.checkbox``, if the form fill rules (``output/form_fill_rules/`` or ``--form-fill-rules``)
     match the legend under ``checkbox_groups``, select ``choose_label`` for that rule.
     """
     rules_path = Path(args.form_fill_rules) if getattr(args, "form_fill_rules", None) else DEFAULT_RULES_PATH
@@ -2370,22 +2418,23 @@ def run_greenhouse_sign_in_flow(args) -> None:
         load_greenhouse_cookies(driver, path)
 
         log.info("Opening MyGreenhouse sign-in (candidates): %s", GREENHOUSE_SIGN_IN_URL)
-        driver.get(GREENHOUSE_SIGN_IN_URL)
+        _open_my_greenhouse_sign_in(driver)
         log.info(
-            "Waiting %.0fs on the sign-in page in case the session completes automatically.",
+            "Polling up to %.0fs for a cookie-based redirect to the dashboard …",
             GREENHOUSE_SIGN_IN_POST_NAV_DELAY_S,
         )
-        time.sleep(GREENHOUSE_SIGN_IN_POST_NAV_DELAY_S)
-
-        if _is_candidate_dashboard(driver.current_url or ""):
+        if _wait_for_my_greenhouse_dashboard(
+            driver,
+            max_seconds=GREENHOUSE_SIGN_IN_POST_NAV_DELAY_S,
+            poll_s=GREENHOUSE_SIGN_IN_REDIRECT_POLL_S,
+        ):
             log.info("Already on dashboard (session from cookies).")
             _save_greenhouse_session_cookies(driver, path, "dashboard already active")
         else:
             cache_path = Path(getattr(args, "resume_cache", DEFAULT_RESUME_CACHE_PATH))
             profile_email = _read_resume_profile_email(cache_path)
             if profile_email:
-                _try_submit_my_greenhouse_email_step(driver, profile_email)
-                time.sleep(0.6)
+                _try_my_greenhouse_email_sign_in(driver, profile_email)
             else:
                 log.debug(
                     "No usable email in %s — enter email manually in the browser if prompted.",

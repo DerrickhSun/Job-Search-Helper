@@ -27,7 +27,9 @@ except ImportError:
 
 from utils.output_cleanup import (  # noqa: E402
     prune_local_cover_letters,
+    prune_local_cover_letters_by_count,
     prune_s3_cover_letters,
+    prune_s3_cover_letters_by_count,
 )
 
 
@@ -56,8 +58,10 @@ def main() -> int:
     remote = 0
     if not args.s3_only:
         local = prune_local_cover_letters(max_age_days=args.days, dry_run=args.dry_run)
+        local += prune_local_cover_letters_by_count(dry_run=args.dry_run)
     if not args.local_only:
         remote = prune_s3_cover_letters(max_age_days=args.days, dry_run=args.dry_run)
+        remote += prune_s3_cover_letters_by_count(dry_run=args.dry_run)
 
     print(f"local: {local}  s3: {remote}")
     return 0

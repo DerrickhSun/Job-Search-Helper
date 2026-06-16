@@ -18,6 +18,8 @@ data/selenium_greenhouse_cookies.json
 data/applications.db
 data/bot.log
 data/listings_log.jsonl
+data/form_fill_rules/
+data/form_fill_rules.json
 
 # Bot outputs (CSVs, cover letters, screenshots — sync via S3; see docs/s3_outputs.md)
 output/

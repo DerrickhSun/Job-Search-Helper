@@ -2,7 +2,7 @@
 Read job data exported by the browser extension from the user's Downloads folder.
 
 Imports saved jobs into ``output/assisted_applications.csv`` and merges screening answers into
-``data/form_fill_rules/auto_rules.json`` (with interactive conflict resolution).
+``output/form_fill_rules/auto_rules.json`` (with interactive conflict resolution).
 
 The extension writes:
   - saved_jobs.txt — one job per line: ``company, title, url`` or ``company, YYYY-MM-DD, title, url``
@@ -28,6 +28,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from utils.apply_sheets import applied_sheet_row
 from utils.extension_rules import (
     SAVED_JOBS_QUESTIONS_FILENAME,
@@ -35,11 +37,14 @@ from utils.extension_rules import (
     print_questions_summary,
     resolve_questions_file_path,
 )
+from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
     ASSISTED_APPLICATIONS_CSV,
     ASSISTED_APPLICATIONS_HISTORY_CSV,
+    migrate_form_fill_rules,
     migrate_legacy_root_archive_files,
 )
+from utils.s3_outputs import sync_download_output, sync_upload_output
 from utils.sheet_csv import (
     read_sheet_csv,
     sheet_row_key,
@@ -261,6 +266,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    load_dotenv()
+    sync_download_output()
+    prune_cover_letters_for_sync()
+    migrate_legacy_root_archive_files()
+    migrate_form_fill_rules()
+
     downloads = (args.downloads_dir or _default_downloads_dir()).expanduser().resolve()
     if not downloads.is_dir():
         print(f"Downloads folder not found: {downloads}", file=sys.stderr)
@@ -325,6 +336,10 @@ def main() -> int:
             print(f"=== {SAVED_JOBS_QUESTIONS_FILENAME} ===")
             print(f"Not found: {questions_path.resolve()}")
             print()
+
+    if not args.print_only and not args.dry_run:
+        prune_cover_letters_for_sync()
+        sync_upload_output()
 
     return exit_code
 

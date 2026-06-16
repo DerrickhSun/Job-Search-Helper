@@ -41,8 +41,8 @@ RUN pip install -r requirements.txt
 
 COPY main.py .
 COPY utils ./utils
+COPY defaults/form_fill_rules ./defaults/form_fill_rules
 COPY data/company_blacklist.json ./data/
-COPY data/form_fill_rules ./data/form_fill_rules
 COPY output/.gitkeep ./output/
 
 RUN mkdir -p data output
