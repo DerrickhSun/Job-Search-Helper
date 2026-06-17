@@ -79,7 +79,7 @@ S3_OUTPUT_PREFIX=devices/home-pc/
 When `S3_OUTPUT_BUCKET` is set in `.env` (with AWS credentials), every `python main.py` run:
 
 1. **Downloads** from S3 into `output/` **before** reading archives/CSVs (right after `load_dotenv()`, before legacy path migration).
-2. **Uploads** the full `output/` tree **after** the run finishes (including `--export-csv`, helper, and Greenhouse flows), even if the run errors or you press Ctrl+C.
+2. **Uploads** the full `output/` tree **after** the run finishes (including `--export-csv`, `--filter`, and Greenhouse flows), even if the run errors or you press Ctrl+C.
 
 If `S3_OUTPUT_BUCKET` is unset, sync is skipped (no error).
 

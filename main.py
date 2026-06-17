@@ -49,7 +49,6 @@ from utils.form_filler import (
     EasyApplyFiller,
 )
 from utils.greenhouse_session import DEFAULT_GREENHOUSE_COOKIE_PATH, run_greenhouse_sign_in_flow
-from utils.helper_browser import run_helper_mode
 from utils.job_records import DEFAULT_LISTINGS_LOG
 from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher, StopApplyPipeline
 from utils.matcher import JobMatcher, print_job_fit_debug
@@ -116,12 +115,12 @@ def run(args):
                 MAX_EASY_APPLY_PER_RUN,
             )
 
-    if args.debug_jobs_page and args.helper:
-        raise SystemExit("error: use either --debug-jobs-page or --helper, not both")
+    if args.debug_jobs_page and args.filter:
+        raise SystemExit("error: use either --debug-jobs-page or --filter, not both")
 
-    if args.site == "greenhouse" and (args.debug_jobs_page or args.helper):
+    if args.site == "greenhouse" and (args.debug_jobs_page or args.filter):
         raise SystemExit(
-            "error: --debug-jobs-page and --helper are for LinkedIn only; use --site linkedin (default) or omit --site."
+            "error: --debug-jobs-page and --filter are for LinkedIn only; use --site linkedin (default) or omit --site."
         )
 
     if args.site == "greenhouse":
@@ -157,41 +156,7 @@ def run(args):
         log.info("Debug session finished.")
         return
 
-    if args.helper:
-        configure_dspy()
-        resume = load_or_build_resume(
-            Path(args.resume),
-            Path(args.resume_cache),
-            force_reparse=args.force_resume_parse,
-        )
-        log.info(
-            "Helper mode: browse LinkedIn and apply yourself; the bot assists Easy Apply fields when the "
-            "modal is open. Type r + Enter here to record an apply, q + Enter to quit."
-        )
-        log.info("Profile: %d skills, %d roles, %d projects", len(resume["skills"]), len(resume["experience"]), len(resume.get("projects") or []))
-        if args.easy_apply_only:
-            log.info("Job search filter: Easy Apply only (LinkedIn f_AL).")
-        else:
-            log.info("Job search filter: all listings (no f_AL).")
-        if args.posted_within_24h:
-            log.info("Job search filter: posted in the past 24 hours (LinkedIn f_TPR=r86400).")
-        else:
-            log.info("Job search filter: any date posted (no f_TPR).")
-        if args.headless:
-            log.warning("Helper mode usually needs a visible window — omit --headless to see the browser.")
-        tracker = ApplicationTracker("data/applications.db")
-        account_first = first_name_from_resume(resume)
-        matcher = JobMatcher()
-        cover_gen = CoverLetterGenerator()
-        run_helper_mode(
-            args=args,
-            resume=resume,
-            tracker=tracker,
-            matcher=matcher,
-            cover_gen=cover_gen,
-            account_first=account_first,
-        )
-        return
+    filter_mode = bool(getattr(args, "filter", False))
 
     configure_dspy()
 
@@ -214,7 +179,14 @@ def run(args):
         args.location,
         "; ".join(repr(k) for k in args.keywords),
     )
-    if args.easy_apply_only:
+    if filter_mode:
+        log.info(
+            "Filter mode: skip Easy Apply listings; save suitable external-apply jobs on LinkedIn "
+            "(apply later via browser extension)."
+        )
+        if args.easy_apply_only:
+            log.warning("Filter mode ignores --easy-apply-only (needs non-Easy Apply listings).")
+    elif args.easy_apply_only:
         log.info("Job search filter: Easy Apply only (LinkedIn f_AL).")
     else:
         log.info(
@@ -235,23 +207,25 @@ def run(args):
         )
 
     matcher = JobMatcher()
-    cover_gen = CoverLetterGenerator()
+    cover_gen = None if filter_mode else CoverLetterGenerator()
     company_blacklist = load_company_blacklist(args.company_blacklist)
     if company_blacklist:
         log.info("Company blacklist active: %d entr%s", len(company_blacklist), "y" if len(company_blacklist) == 1 else "ies")
 
-    filler = EasyApplyFiller(
-        headless=args.headless,
-        step_delay=args.step_delay,
-        highlight=not args.no_highlight,
-        easy_apply_wait_seconds=args.easy_apply_wait,
-        apply_click_gap_seconds=args.apply_click_gap,
-        apply_review_pause_after_fill_seconds=args.apply_review_pause,
-        apply_first_empty_field_pause_after_nav_seconds=args.apply_first_empty_pause,
-        cover_letter_docx_dir=args.cover_letter_dir,
-        form_fill_rules_path=args.form_fill_rules,
-        headshot_image_path=args.headshot,
-    )
+    filler = None
+    if not filter_mode:
+        filler = EasyApplyFiller(
+            headless=args.headless,
+            step_delay=args.step_delay,
+            highlight=not args.no_highlight,
+            easy_apply_wait_seconds=args.easy_apply_wait,
+            apply_click_gap_seconds=args.apply_click_gap,
+            apply_review_pause_after_fill_seconds=args.apply_review_pause,
+            apply_first_empty_field_pause_after_nav_seconds=args.apply_first_empty_pause,
+            cover_letter_docx_dir=args.cover_letter_dir,
+            form_fill_rules_path=args.form_fill_rules,
+            headshot_image_path=args.headshot,
+        )
 
     searcher = _job_searcher_from_args(args, account_first_name=account_first)
     consulting_memory_path = (
@@ -297,7 +271,15 @@ def run(args):
         return company_lookup_driver
 
     apply_stats = {"applied": 0}
-    if max_applies_cap is not None:
+    if filter_mode:
+        if max_applies_cap is not None:
+            log.info(
+                "Will stop after %d successful save(s) this run (--max-applies; use 0 for no cap).",
+                max_applies_cap,
+            )
+        else:
+            log.info("No successful-save cap (--max-applies 0).")
+    elif max_applies_cap is not None:
         log.info(
             "Will stop after %d successful Easy Apply(ies) this run (--max-applies; use 0 for no cap).",
             max_applies_cap,
@@ -376,10 +358,23 @@ def run(args):
                 log.info("  → Dismissed on LinkedIn from list card.")
             return True
 
+        if filter_mode and peek.get("easy_apply"):
+            log.info(
+                "Skipping from list card (Easy Apply — filter mode targets external apply only): %s at %s",
+                title or "(no title)",
+                company or "(no company)",
+            )
+            tracker.log(peek, status="skipped", score=0.0)
+            if searcher.dismiss_current_job(driver, reason="easy-apply-list-card", job_id=jid):
+                log.info("  → Dismissed on LinkedIn from list card.")
+            return True
+
         return False
 
     def process_listing(driver, job: dict) -> None:
         _require_browser_session(driver)
+
+        jid = str(job.get("id") or "").strip()
 
         if tracker.already_applied(job["id"]):
             log.info("Skipping (already applied): %s at %s", job["title"], job["company"])
@@ -388,7 +383,21 @@ def run(args):
             log.info("Skipping (company blacklisted): %s at %s", job["title"], job["company"])
             tracker.log(job, status="blacklisted", score=0.0)
             return
-        if not job.get("easy_apply"):
+
+        if filter_mode:
+            if job.get("easy_apply"):
+                log.info(
+                    "Skipping (Easy Apply — filter mode targets external apply only): %s at %s",
+                    job["title"],
+                    job["company"],
+                )
+                tracker.log(job, status="skipped", score=0.0)
+                if searcher.dismiss_current_job(
+                    driver, reason="easy-apply", job_id=jid
+                ):
+                    log.info("  → Dismissed on LinkedIn.")
+                return
+        elif not job.get("easy_apply"):
             log.info(
                 "Skipping (no Easy Apply on card — external apply not implemented yet): %s at %s",
                 job["title"],
@@ -522,6 +531,16 @@ def run(args):
                     log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
                 return
 
+        if filter_mode:
+            log.info("  → Saving on LinkedIn (filter mode)...")
+            success = searcher.save_current_job(driver, job_id=jid)
+            if success:
+                apply_stats["applied"] += 1
+                log.info("  ✓ Saved on LinkedIn (apply later via extension).")
+            else:
+                log.warning("  ✗ Could not click Save — check the browser.")
+            return
+
         cover_letter = cover_gen.generate(resume, job)
         _require_browser_session(driver)
         log.info("  → Easy Apply (same browser session)...")
@@ -558,12 +577,13 @@ def run(args):
             log.warning("  ✗ Application failed — check output/screenshots/")
 
     processed = 0
+    search_easy_apply_only = False if filter_mode else args.easy_apply_only
     try:
         processed = searcher.run_search_apply_pipeline(
             keywords=list(args.keywords),
             location=args.location,
             max_listings=max_listings_cap,
-            easy_apply_only=args.easy_apply_only,
+            easy_apply_only=search_easy_apply_only,
             listings_log_path=args.listings_log,
             process_listing=process_listing,
             max_applies=max_applies_cap,
@@ -589,12 +609,20 @@ def run(args):
         except Exception:
             log.exception("Failed to export application CSVs from SQLite tracker.")
 
-    log.info(
-        "Finished search pipeline: %d listing(s) processed, %d successful apply(ies) (see %s).",
-        processed,
-        apply_stats["applied"],
-        args.listings_log,
-    )
+    if filter_mode:
+        log.info(
+            "Finished filter pipeline: %d listing(s) processed, %d saved on LinkedIn (see %s).",
+            processed,
+            apply_stats["applied"],
+            args.listings_log,
+        )
+    else:
+        log.info(
+            "Finished search pipeline: %d listing(s) processed, %d successful apply(ies) (see %s).",
+            processed,
+            apply_stats["applied"],
+            args.listings_log,
+        )
 
 
 def main():
@@ -607,7 +635,7 @@ def main():
     migrate_extension_auto_rules_to_exact()
 
     ap = argparse.ArgumentParser(
-        description="Job tools: LinkedIn Easy Apply pipeline, or Greenhouse MyGreenhouse application helper."
+        description="Job tools: LinkedIn Easy Apply or filter mode, or Greenhouse MyGreenhouse application helper."
     )
     ap.add_argument(
         "--site",
@@ -818,39 +846,11 @@ def main():
         help="Open LinkedIn job search after login, then wait for Enter; skips resume, scraping, and applies.",
     )
     ap.add_argument(
-        "--helper",
+        "--filter",
         action="store_true",
-        help="Manual apply mode: open job search; you click jobs and submit applications. The bot fills "
-        "recognized Easy Apply fields when the modal is open. In this terminal: r = record apply, q = quit.",
-    )
-    ap.add_argument(
-        "--helper-poll",
-        type=float,
-        default=0.75,
-        metavar="SEC",
-        help="Seconds between background scans for the Easy Apply modal (default: 0.75).",
-    )
-    ap.add_argument(
-        "--helper-review-pause",
-        type=float,
-        default=0.0,
-        metavar="SEC",
-        help="Seconds to pause after each assisted field fill in helper mode (default: 0).",
-    )
-    ap.add_argument(
-        "--helper-scan-all-tabs",
-        action="store_true",
-        help="Helper mode: scan every tab for Easy Apply / Workday (may briefly activate each tab in Chrome). "
-        "Default checks only WebDriver's current tab (no tab switching). Use when apply opens Workday in a "
-        "new tab; Selenium does not know which tab you last clicked.",
-    )
-    ap.add_argument(
-        "--helper-downloads-dir",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="Helper mode: folder for cover letter .docx files when an external apply tab is detected "
-        "(default: your Downloads folder).",
+        help="LinkedIn filter mode: same gates/fit/consulting checks as auto-apply, but **skip Easy Apply** "
+        "listings and click **Save** on suitable external-apply jobs (LinkedIn keeps the saved list; apply "
+        "later via browser extension). Uses --max-applies as a cap on successful saves (0 = no cap).",
     )
     ap.add_argument(
         "--job-cards-wait",
@@ -976,7 +976,6 @@ def main():
         "the substring ``IT`` (capital I + T only, case-sensitive — matches body-shop style names, not the word "
         "'it' in lowercase), or the description suggests "
         "a consultancy/staffing employer (consultant, consulting firm/company, consultancy, client company, "
-        "singular ``our client`` but not ``our clients``, "
         "etc.; bare 'consulting' in the description is ignored to avoid industry-experience false positives). "
         "Default: on. Use --no-skip-consulting to disable.",
     )

@@ -19,7 +19,7 @@ Names containing the substring ``IT`` (capital **I** + capital **T** only — ca
 In **posting text** (title + description), bare ``consulting`` is *not* matched alone: postings often list
 prior experience in ``quantitative consulting``, ``management consulting``, etc., without the employer being
 a consultancy. Instead we match employer-style phrases (``consulting firm``, ``our consulting team``,
-``consultancy``, ``consultant`` roles, ``client company``, singular ``our client`` but not ``our clients``, …).
+``consultancy``, ``consultant`` roles, ``client company``, …).
 The same description-style patterns are applied to the **title** as well as the description.
 """
 
@@ -33,8 +33,6 @@ _COMPANY_TALENT = re.compile(r"\btalent\b", re.IGNORECASE)
 _DESC_CONSULTANT = re.compile(r"\bconsultants?\b", re.IGNORECASE)
 _DESC_CONSULTANCY = re.compile(r"\bconsultancy\b", re.IGNORECASE)
 _DESC_CLIENT_COMPANY = re.compile(r"client\s+company", re.IGNORECASE)
-# Singular "our client" (staffing/third-party); \b after "client" avoids matching the prefix of "our clients".
-_DESC_OUR_CLIENT_SINGULAR = re.compile(r"\bour\s+client\b", re.IGNORECASE)
 # Employer is a consulting org (avoids "… experience in … consulting, or …" industry lists).
 _DESC_CONSULTING_ORG = re.compile(
     r"\bconsulting\s+(?:firm|company|companies|agency|agencies|group|groups|practice|practices)\b",
@@ -63,8 +61,6 @@ def _posting_text_consulting_signals(title: str, description: str) -> bool:
     if _DESC_CONSULTANCY.search(text):
         return True
     if _DESC_CLIENT_COMPANY.search(text):
-        return True
-    if _DESC_OUR_CLIENT_SINGULAR.search(text):
         return True
     if _COMPANY_CONSULTING.search(text):
         return True

@@ -9,7 +9,7 @@ Logs every job to SQLite and exports CSV in the same 6-column layout as Google S
 - ``output/archive/applications_archive.csv`` — optional archive (see root ``archive_applications.py``,
   which also archives assisted rows by default); LinkedIn
   ``already_applied`` also matches job ids found in column E of this file
-- ``apply_opened.csv`` — status ``apply_opened`` (helper: external apply tab opened)
+- ``apply_opened.csv`` — status ``apply_opened`` (legacy external-apply-tab captures)
 - ``consulting`` — skipped for staffing / consulting heuristics (see ``consulting_filter``)
 """
 
@@ -190,7 +190,7 @@ class ApplicationTracker:
         """
         Export rows in the Google Sheet layout: A empty, B company, C empty, D date, E url, F title.
 
-        Default ``statuses`` is ``("applied",)`` (manual helper ``r`` / successful auto-applies).
+        Default ``statuses`` is ``("applied",)`` (successful auto-applies / manual records).
         Rows whose job URL already appears in ``output/archive/applications_archive.csv`` are omitted
         so ``--export-csv`` does not refill ``applications.csv`` with jobs you have already archived
         (which would duplicate them on the next archive run).

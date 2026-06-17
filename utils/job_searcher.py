@@ -209,6 +209,20 @@ SEL = {
     "job_card_location_row": ".artdeco-entity-lockup__caption .job-card-container__metadata-wrapper li span",
     "job_description": ".jobs-description__content",
     "next_page": 'button[aria-label="View next page"]',
+    # Detail pane — Save / Unsave job (filter mode).
+    "job_save_btn": (
+        'button[aria-label^="Save "][aria-label*="job"], '
+        'button[aria-label*="Save job"], '
+        "button.jobs-save-button, "
+        ".jobs-save-button, "
+        ".job-details-jobs-unified-top-card button[aria-label*='Save'], "
+        ".jobs-details-top-card__actions button[aria-label*='Save']"
+    ),
+    "job_unsave_btn": (
+        'button[aria-label^="Unsave "][aria-label*="job"], '
+        'button[aria-label*="Unsave job"], '
+        "button.jobs-save-button[aria-pressed='true']"
+    ),
 }
 
 
@@ -1202,6 +1216,79 @@ class JobSearcher:
         )
         return True
 
+    def save_current_job(self, driver, *, job_id: str | None = None) -> bool:
+        """
+        Click **Save** on the open job detail pane. Returns True when the job is saved or was already saved.
+
+        If ``job_id`` is provided, also tries the matching list-row save control as a fallback.
+        """
+        if self._driver_stopped(driver):
+            return False
+
+        def _visible_matches(css: str) -> list:
+            try:
+                return [el for el in driver.find_elements(By.CSS_SELECTOR, css) if el.is_displayed()]
+            except WebDriverException:
+                self._driver_stopped(driver)
+                return []
+
+        for css in (SEL["job_unsave_btn"],):
+            if _visible_matches(css):
+                log.info("LinkedIn job already saved (Unsave control visible).")
+                return True
+
+        save_selectors: list[str] = [SEL["job_save_btn"]]
+        jid = (job_id or "").strip()
+        if jid:
+            save_selectors.extend(
+                (
+                    f'li[data-occludable-job-id="{jid}"] button[aria-label^="Save "]',
+                    f'li[data-occludable-job-id="{jid}"] button[aria-label*="Save job"]',
+                )
+            )
+        save_selectors.extend(
+            (
+                'li.scaffold-layout__list-item--active button[aria-label^="Save "]',
+                'li[aria-current="true"] button[aria-label^="Save "]',
+            )
+        )
+
+        btn = None
+        for css in save_selectors:
+            matches = _visible_matches(css)
+            if matches:
+                btn = matches[0]
+                break
+
+        if btn is None:
+            log.warning(
+                "LinkedIn save: no Save button found (job_id=%s)",
+                jid or "n/a",
+            )
+            return False
+
+        try:
+            if self.highlight:
+                focus_element(driver, btn, pause=self.step_delay)
+            btn.click()
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].click();", btn)
+            except Exception:
+                log.debug("LinkedIn save: click failed (job_id=%s)", jid or "n/a", exc_info=True)
+                return False
+
+        time.sleep(0.45)
+        if _visible_matches(SEL["job_unsave_btn"]):
+            log.info("Saved LinkedIn job%s", f" [job_id={jid}]" if jid else "")
+            return True
+
+        log.warning(
+            "Clicked Save but Unsave control not detected afterward (job_id=%s)",
+            jid or "n/a",
+        )
+        return False
+
     def selected_job_company_link(self, driver) -> str:
         """
         Return the selected job's company LinkedIn URL from the detail pane, or empty string.
@@ -1278,7 +1365,7 @@ class JobSearcher:
     def parse_current_job_from_detail_pane(self, driver) -> dict | None:
         """
         Best-effort job dict from the **currently selected** listing (URL + right-hand detail pane).
-        Used in manual/helper mode where the user clicks jobs instead of the automated pipeline.
+        Used when parsing the job from the LinkedIn detail pane outside the automated list walk.
         """
         url = (driver.current_url or "").strip()
         job_id = ""
