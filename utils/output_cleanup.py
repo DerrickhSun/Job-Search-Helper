@@ -15,7 +15,7 @@ import os
 import time
 from pathlib import Path
 
-from .output_paths import COVERLETTERS_DIR, OUTPUT_DIR
+from .output_paths import COVERLETTERS_DIR, OUTPUT_DIR, cover_letter_dir_for_mode, cover_letter_output_dirs
 
 log = logging.getLogger(__name__)
 
@@ -185,12 +185,15 @@ def prune_local_cover_letters_by_count(
 def prune_s3_cover_letters(
     *,
     max_age_days: float | None = None,
+    cover_subdir: str = "coverletters",
+    cover_mode: str | None = None,
     dry_run: bool = False,
 ) -> int:
     """
-    Delete S3 objects under ``{prefix}output/coverletters/`` older than ``max_age_days``.
+    Delete S3 objects under ``{prefix}output/coverletters/{mode}/`` older than ``max_age_days``.
 
-    Requires ``S3_OUTPUT_BUCKET``. Returns count deleted (or would delete).
+    ``cover_mode`` is the subfolder name (``linkedin``, ``filter``, ``greenhouse``). When omitted,
+    uses legacy flat ``output/coverletters/`` prefix via ``cover_subdir`` only.
     """
     from .s3_outputs import s3_list_prefix_for_dir, s3_output_bucket, s3_output_sync_enabled
 
@@ -200,7 +203,10 @@ def prune_s3_cover_letters(
 
     bucket = s3_output_bucket()
     list_prefix = s3_list_prefix_for_dir(OUTPUT_DIR.resolve())
-    cover_prefix = f"{list_prefix}coverletters/"
+    if cover_mode:
+        cover_prefix = f"{list_prefix}{COVERLETTERS_DIR.name}/{cover_mode.strip('/')}/"
+    else:
+        cover_prefix = f"{list_prefix}{cover_subdir.strip('/')}/"
 
     try:
         from botocore.exceptions import BotoCoreError, ClientError
@@ -250,11 +256,13 @@ def prune_s3_cover_letters(
 def prune_s3_cover_letters_by_count(
     *,
     max_count: int | None = None,
+    cover_subdir: str = "coverletters",
+    cover_mode: str | None = None,
     dry_run: bool = False,
 ) -> int:
     """
-    When more than ``max_count`` cover-letter objects exist in S3, delete the oldest by
-    ``LastModified`` until at most ``max_count`` remain.
+    When more than ``max_count`` cover-letter objects exist in S3 under a mode folder, delete the
+    oldest by ``LastModified`` until at most ``max_count`` remain.
     """
     from .s3_outputs import s3_list_prefix_for_dir, s3_output_bucket, s3_output_sync_enabled
 
@@ -264,7 +272,10 @@ def prune_s3_cover_letters_by_count(
 
     bucket = s3_output_bucket()
     list_prefix = s3_list_prefix_for_dir(OUTPUT_DIR.resolve())
-    cover_prefix = f"{list_prefix}coverletters/"
+    if cover_mode:
+        cover_prefix = f"{list_prefix}{COVERLETTERS_DIR.name}/{cover_mode.strip('/')}/"
+    else:
+        cover_prefix = f"{list_prefix}{cover_subdir.strip('/')}/"
 
     try:
         from botocore.exceptions import BotoCoreError, ClientError
@@ -320,16 +331,34 @@ def prune_s3_cover_letters_by_count(
     return deleted
 
 
-def prune_cover_letters_for_sync(*, dry_run: bool = False) -> tuple[int, int]:
+def prune_cover_letters_for_sync(
+    *,
+    cover_subdirs: tuple[str, ...] | None = None,
+    cover_letter_modes: tuple[str, ...] | None = None,
+    dry_run: bool = False,
+) -> tuple[int, int]:
     """
-    Local + S3 prune when configured. Call before upload and after download.
+    Local + S3 prune when configured.
 
-    Applies age-based pruning first, then count-based pruning on what remains.
-
-    Returns ``(local_removed, s3_removed)`` (combined totals from both passes).
+    ``cover_letter_modes`` / ``cover_subdirs``: mode names under ``output/coverletters/``
+    (``linkedin``, ``filter``, ``greenhouse``). ``None`` prunes all three.
     """
-    local = prune_local_cover_letters(dry_run=dry_run)
-    local += prune_local_cover_letters_by_count(dry_run=dry_run)
-    remote = prune_s3_cover_letters(dry_run=dry_run)
-    remote += prune_s3_cover_letters_by_count(dry_run=dry_run)
+    modes = cover_letter_modes if cover_letter_modes is not None else cover_subdirs
+
+    if modes is None:
+        mode_list = tuple(d.name for d in cover_letter_output_dirs())
+    else:
+        mode_list = modes
+
+    local = 0
+    remote = 0
+    for mode in mode_list:
+        cover_dir = cover_letter_dir_for_mode(mode)
+        if cover_dir is None:
+            log.warning("Unknown cover letter mode for prune: %r", mode)
+            continue
+        local += prune_local_cover_letters(cover_dir=cover_dir, dry_run=dry_run)
+        local += prune_local_cover_letters_by_count(cover_dir=cover_dir, dry_run=dry_run)
+        remote += prune_s3_cover_letters(cover_mode=mode, dry_run=dry_run)
+        remote += prune_s3_cover_letters_by_count(cover_mode=mode, dry_run=dry_run)
     return local, remote

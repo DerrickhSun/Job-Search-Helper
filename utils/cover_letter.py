@@ -117,6 +117,8 @@ def _normalize_cover_letter_site(site: str) -> str:
     s = (site or "").strip().lower()
     if s in ("greenhouse", "gh") or "greenhouse" in s:
         return "greenhouse"
+    if s == "filter":
+        return "filter"
     return "linkedin"
 
 
@@ -139,7 +141,7 @@ def cover_letter_docx_stem(
 ) -> str:
     """
     Filesystem-safe filename **stem** (no ``.docx``) for a cover letter:
-    ``{site}_{company}_{title}_{job_id}`` (``site`` is ``linkedin`` or ``greenhouse``).
+    ``{site}_{company}_{title}_{job_id}`` (``site`` is ``linkedin``, ``filter``, or ``greenhouse``).
     """
     board = _normalize_cover_letter_site(site)
     co = _sanitize_cover_letter_filename_segment(company or "Company", 55)

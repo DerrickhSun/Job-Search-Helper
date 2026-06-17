@@ -6,7 +6,17 @@ Use S3 as a remote copy of `output/` (CSVs, archives, cover letters, **form fill
 
 ### Pruning old cover letters (faster sync)
 
-Large `output/coverletters/` folders slow S3 upload/download. By default, `main.py` and `archive_applications.py` delete local and S3 cover letter `.docx` files **older than 7 days** (by file modification time locally; S3 `LastModified` remotely) before each sync, then delete the **oldest** files if more than **100** remain.
+Large cover-letter folders slow S3 upload/download. By default, `main.py` and `archive_applications.py` prune **each mode subfolder** under `output/coverletters/`:
+
+- `output/coverletters/linkedin/` — LinkedIn Easy Apply (default mode)
+- `output/coverletters/filter/` — `--filter`
+- `output/coverletters/greenhouse/` — `--site greenhouse`
+
+For each subfolder, local and S3 `.docx` files **older than 7 days** are deleted (mtime locally; S3 `LastModified` remotely), then the **oldest** files are removed if more than **100** remain.
+
+`python main.py` syncs/prunes **only the subfolder for the active mode** (other mode subfolders are skipped on S3 download/upload). Utility scripts (`sync.py`, `archive_applications.py`, `process_extension.py`, `scripts/prune_old_cover_letters.py`) still prune/sync all three unless you change them.
+
+Legacy S3 keys under flat `output/coverletters/*.docx` are treated as **linkedin** mode on download.
 
 In `.env`:
 
@@ -80,6 +90,8 @@ When `S3_OUTPUT_BUCKET` is set in `.env` (with AWS credentials), every `python m
 
 1. **Downloads** from S3 into `output/` **before** reading archives/CSVs (right after `load_dotenv()`, before legacy path migration).
 2. **Uploads** the full `output/` tree **after** the run finishes (including `--export-csv`, `--filter`, and Greenhouse flows), even if the run errors or you press Ctrl+C.
+
+Filter mode syncs **consulting company memory** and **filter cover letters** (`coverletters/filter/`) only (not other mode subfolders). Greenhouse syncs consulting memory and **greenhouse cover letters**; Easy Apply syncs **linkedin cover letters**.
 
 If `S3_OUTPUT_BUCKET` is unset, sync is skipped (no error).
 

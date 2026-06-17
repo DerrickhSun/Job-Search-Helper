@@ -31,6 +31,7 @@ from utils.output_cleanup import (  # noqa: E402
     prune_s3_cover_letters,
     prune_s3_cover_letters_by_count,
 )
+from utils.output_paths import cover_letter_output_dirs  # noqa: E402
 
 
 def main() -> int:
@@ -57,11 +58,15 @@ def main() -> int:
     local = 0
     remote = 0
     if not args.s3_only:
-        local = prune_local_cover_letters(max_age_days=args.days, dry_run=args.dry_run)
-        local += prune_local_cover_letters_by_count(dry_run=args.dry_run)
+        for cover_dir in cover_letter_output_dirs():
+            local += prune_local_cover_letters(
+                max_age_days=args.days, cover_dir=cover_dir, dry_run=args.dry_run
+            )
+            local += prune_local_cover_letters_by_count(cover_dir=cover_dir, dry_run=args.dry_run)
     if not args.local_only:
-        remote = prune_s3_cover_letters(max_age_days=args.days, dry_run=args.dry_run)
-        remote += prune_s3_cover_letters_by_count(dry_run=args.dry_run)
+        for mode in (d.name for d in cover_letter_output_dirs()):
+            remote += prune_s3_cover_letters(max_age_days=args.days, cover_mode=mode, dry_run=args.dry_run)
+            remote += prune_s3_cover_letters_by_count(cover_mode=mode, dry_run=args.dry_run)
 
     print(f"local: {local}  s3: {remote}")
     return 0

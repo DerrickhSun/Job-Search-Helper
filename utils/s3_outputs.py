@@ -1,7 +1,9 @@
 """
 Sync the local ``output/`` tree with S3 (see docs/s3_outputs.md).
 
-Used by ``main.py`` at run start/end and by ``scripts/upload_outputs_to_s3.py``.
+Cover letters live under ``output/coverletters/{linkedin,filter,greenhouse}/``. Per-run
+``cover_letter_modes`` limits which subfolders are downloaded/uploaded/pruned; other
+``output/`` files always sync.
 """
 
 from __future__ import annotations
@@ -11,9 +13,11 @@ import mimetypes
 import os
 from pathlib import Path
 
-from .output_paths import OUTPUT_DIR
+from .output_paths import COVERLETTERS_DIR, OUTPUT_DIR, cover_letter_mode_names
 
 log = logging.getLogger(__name__)
+
+_COVER_MODES = cover_letter_mode_names()
 
 
 def s3_output_bucket() -> str:
@@ -48,6 +52,37 @@ def s3_key_for_file(local_dir: Path, path: Path) -> str:
     return f"{s3_output_prefix()}{local_dir.name}/{rel}"
 
 
+def _cover_letter_mode_from_rel(rel: str) -> str | None:
+    """
+    Mode for ``coverletters/{mode}/…`` keys, or ``linkedin`` for legacy flat ``coverletters/*.docx``.
+    """
+    parts = rel.replace("\\", "/").split("/")
+    if not parts or parts[0] != COVERLETTERS_DIR.name:
+        return None
+    if len(parts) >= 3 and parts[1] in _COVER_MODES:
+        return parts[1]
+    if len(parts) == 2 and parts[1].lower().endswith(".docx"):
+        return "linkedin"
+    return None
+
+
+def _skip_cover_letter_rel(rel: str, cover_letter_modes: tuple[str, ...] | None) -> bool:
+    if cover_letter_modes is None:
+        return False
+    mode = _cover_letter_mode_from_rel(rel)
+    if mode is None:
+        return False
+    return mode not in cover_letter_modes
+
+
+def _preserve_cover_letter_mtime(dest: Path) -> bool:
+    try:
+        rel = dest.relative_to(resolve_output_dir(OUTPUT_DIR))
+    except ValueError:
+        return False
+    return _cover_letter_mode_from_rel(rel.as_posix()) is not None
+
+
 def iter_local_files(root: Path) -> list[Path]:
     out: list[Path] = []
     if not root.is_dir():
@@ -66,12 +101,21 @@ def _s3_client():
     return boto3.session.Session().client("s3")
 
 
-def sync_download_output(local_dir: Path | str = OUTPUT_DIR) -> int:
+def sync_download_output(
+    local_dir: Path | str = OUTPUT_DIR,
+    *,
+    cover_letter_modes: tuple[str, ...] | None = None,
+    cover_letter_subdirs: tuple[str, ...] | None = None,
+) -> int:
     """
-    Download objects from S3 into *local_dir* (creates parents as needed).
+    Download objects from S3 into *local_dir*.
 
-    Returns the number of files written. Skips when ``S3_OUTPUT_BUCKET`` is unset.
+    When ``cover_letter_modes`` is set (e.g. ``("filter",)``), skip other
+    ``coverletters/{mode}/`` prefixes. ``None`` downloads every mode subfolder.
     """
+    if cover_letter_modes is None and cover_letter_subdirs is not None:
+        cover_letter_modes = cover_letter_subdirs
+
     bucket = s3_output_bucket()
     if not bucket:
         return 0
@@ -88,6 +132,7 @@ def sync_download_output(local_dir: Path | str = OUTPUT_DIR) -> int:
         return 0
 
     downloaded = 0
+    skipped_cover = 0
     try:
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket, Prefix=list_prefix):
@@ -100,11 +145,13 @@ def sync_download_output(local_dir: Path | str = OUTPUT_DIR) -> int:
                 rel = key[len(list_prefix) :]
                 if not rel:
                     continue
+                if _skip_cover_letter_rel(rel, cover_letter_modes):
+                    skipped_cover += 1
+                    continue
                 dest = root / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 s3.download_file(bucket, key, str(dest))
-                # Preserve S3 object age on cover letters so local prune by mtime stays meaningful.
-                if "coverletters" in dest.parts:
+                if _preserve_cover_letter_mtime(dest):
                     last_mod = obj.get("LastModified")
                     if last_mod is not None:
                         ts = last_mod.timestamp()
@@ -114,6 +161,12 @@ def sync_download_output(local_dir: Path | str = OUTPUT_DIR) -> int:
         log.error("S3 download failed (s3://%s/%s): %s", bucket, list_prefix, e)
         return downloaded
 
+    if cover_letter_modes and skipped_cover:
+        log.info(
+            "S3: skipped %d cover-letter object(s) outside active mode(s) %s",
+            skipped_cover,
+            cover_letter_modes,
+        )
     if downloaded:
         log.info(
             "S3: downloaded %d file(s) from s3://%s/%s -> %s",
@@ -127,12 +180,16 @@ def sync_download_output(local_dir: Path | str = OUTPUT_DIR) -> int:
     return downloaded
 
 
-def sync_upload_output(local_dir: Path | str = OUTPUT_DIR) -> int:
-    """
-    Upload all files under *local_dir* to S3.
+def sync_upload_output(
+    local_dir: Path | str = OUTPUT_DIR,
+    *,
+    cover_letter_modes: tuple[str, ...] | None = None,
+    cover_letter_subdirs: tuple[str, ...] | None = None,
+) -> int:
+    """Upload files under *local_dir* to S3 (same cover-letter mode filtering as download)."""
+    if cover_letter_modes is None and cover_letter_subdirs is not None:
+        cover_letter_modes = cover_letter_subdirs
 
-    Returns the number of files uploaded. Skips when ``S3_OUTPUT_BUCKET`` is unset.
-    """
     bucket = s3_output_bucket()
     if not bucket:
         return 0
@@ -156,8 +213,13 @@ def sync_upload_output(local_dir: Path | str = OUTPUT_DIR) -> int:
         return 0
 
     uploaded = 0
+    skipped_cover = 0
     try:
         for path in files:
+            rel = path.relative_to(root).as_posix()
+            if _skip_cover_letter_rel(rel, cover_letter_modes):
+                skipped_cover += 1
+                continue
             key = s3_key_for_file(root, path)
             ctype, _ = mimetypes.guess_type(path.name)
             extra = {"ContentType": ctype} if ctype else {}
@@ -170,6 +232,12 @@ def sync_upload_output(local_dir: Path | str = OUTPUT_DIR) -> int:
         log.error("S3 upload failed after %d file(s) (s3://%s/): %s", uploaded, bucket, e)
         return uploaded
 
+    if cover_letter_modes and skipped_cover:
+        log.info(
+            "S3: skipped uploading %d local cover-letter file(s) outside active mode(s) %s",
+            skipped_cover,
+            cover_letter_modes,
+        )
     log.info(
         "S3: uploaded %d file(s) from %s -> s3://%s/%s",
         uploaded,

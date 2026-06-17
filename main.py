@@ -40,7 +40,11 @@ from utils.consulting_filter import (
     is_consulting_listing_from_job_posting_text_only,
     is_consulting_listing_from_listing_company_line_only,
 )
-from utils.cover_letter import CoverLetterGenerator
+from utils.cover_letter import (
+    CoverLetterGenerator,
+    cover_letter_docx_path_unique,
+    write_cover_letter_docx,
+)
 from utils.dspy_lm import configure_dspy
 from utils.form_filler import (
     APPLY_ABORT_DAILY_LIMIT,
@@ -55,7 +59,11 @@ from utils.matcher import JobMatcher, print_job_fit_debug
 from utils.extension_rules import migrate_extension_auto_rules_to_exact
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
+    FILTER_COVERLETTERS_DIR,
+    GREENHOUSE_COVERLETTERS_DIR,
+    LINKEDIN_COVERLETTERS_DIR,
     migrate_legacy_consulting_companies_file,
+    migrate_legacy_cover_letter_layout,
     migrate_form_fill_rules,
     migrate_legacy_root_archive_files,
 )
@@ -207,7 +215,7 @@ def run(args):
         )
 
     matcher = JobMatcher()
-    cover_gen = None if filter_mode else CoverLetterGenerator()
+    cover_gen = CoverLetterGenerator()
     company_blacklist = load_company_blacklist(args.company_blacklist)
     if company_blacklist:
         log.info("Company blacklist active: %d entr%s", len(company_blacklist), "y" if len(company_blacklist) == 1 else "ies")
@@ -532,6 +540,21 @@ def run(args):
                 return
 
         if filter_mode:
+            _require_browser_session(driver)
+            log.info("  → Generating cover letter...")
+            cover_letter = cover_gen.generate(resume, job)
+            docx_path = cover_letter_docx_path_unique(
+                args.filter_cover_letter_dir,
+                site="filter",
+                company=str(job.get("company") or ""),
+                title=str(job.get("title") or ""),
+                job_id=jid,
+            )
+            try:
+                write_cover_letter_docx(cover_letter, docx_path)
+                log.info("  → Cover letter: %s", docx_path.resolve())
+            except Exception as e:
+                log.warning("  → Could not write cover letter docx: %s", e)
             log.info("  → Saving on LinkedIn (filter mode)...")
             success = searcher.save_current_job(driver, job_id=jid)
             if success:
@@ -625,12 +648,36 @@ def run(args):
         )
 
 
+def _cover_letter_modes_for_run(*, site: str, filter_mode: bool) -> tuple[str, ...]:
+    """S3/prune scope: one subfolder under ``output/coverletters/`` per mode."""
+    if site == "greenhouse":
+        return ("greenhouse",)
+    if filter_mode:
+        return ("filter",)
+    return ("linkedin",)
+
+
+def _early_cli_flags() -> argparse.Namespace:
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--site", choices=("linkedin", "greenhouse"), default="linkedin")
+    p.add_argument("--filter", action="store_true")
+    return p.parse_known_args()[0]
+
+
 def main():
     load_dotenv()
-    sync_download_output()
-    prune_cover_letters_for_sync()
+    early = _early_cli_flags()
+    cover_modes = _cover_letter_modes_for_run(site=early.site, filter_mode=early.filter)
+    if cover_modes:
+        log.info(
+            "S3 cover letters: active subfolder(s) coverletters/%s (other modes skipped)",
+            ", coverletters/".join(cover_modes),
+        )
+    sync_download_output(cover_letter_modes=cover_modes)
+    prune_cover_letters_for_sync(cover_letter_modes=cover_modes)
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
+    migrate_legacy_cover_letter_layout()
     migrate_form_fill_rules()
     migrate_extension_auto_rules_to_exact()
 
@@ -849,8 +896,9 @@ def main():
         "--filter",
         action="store_true",
         help="LinkedIn filter mode: same gates/fit/consulting checks as auto-apply, but **skip Easy Apply** "
-        "listings and click **Save** on suitable external-apply jobs (LinkedIn keeps the saved list; apply "
-        "later via browser extension). Uses --max-applies as a cap on successful saves (0 = no cap).",
+        "listings, generate a cover letter to ``output/coverletters/filter/``, click **Save** on LinkedIn, "
+        "and sync ``output/`` (consulting memory + filter cover letters) via S3 when configured. "
+        "Uses --max-applies as a cap on successful saves (0 = no cap).",
     )
     ap.add_argument(
         "--job-cards-wait",
@@ -934,11 +982,26 @@ def main():
     ap.add_argument(
         "--cover-letter-dir",
         type=Path,
-        default=Path("output/coverletters"),
+        default=LINKEDIN_COVERLETTERS_DIR,
         metavar="DIR",
-        help='Save generated cover letter .docx files here when the form has "Upload cover letter" '
-        "(default: output/coverletters). Names look like "
-        "`{linkedin|greenhouse}_{company}_{position}_{job_id}.docx` (unsafe characters removed).",
+        help="Easy Apply mode: save cover letter .docx files here "
+        f"(default: {LINKEDIN_COVERLETTERS_DIR.as_posix()}).",
+    )
+    ap.add_argument(
+        "--filter-cover-letter-dir",
+        type=Path,
+        default=FILTER_COVERLETTERS_DIR,
+        metavar="DIR",
+        help="Filter mode: save cover letter .docx files here "
+        f"(default: {FILTER_COVERLETTERS_DIR.as_posix()}).",
+    )
+    ap.add_argument(
+        "--greenhouse-cover-letter-dir",
+        type=Path,
+        default=GREENHOUSE_COVERLETTERS_DIR,
+        metavar="DIR",
+        help="Greenhouse helper: cover letter .docx files here "
+        f"(default: {GREENHOUSE_COVERLETTERS_DIR.as_posix()}).",
     )
     ap.add_argument(
         "--headshot",
@@ -1066,8 +1129,9 @@ def main():
 
         run(args)
     finally:
-        prune_cover_letters_for_sync()
-        sync_upload_output()
+        cover_modes = _cover_letter_modes_for_run(site=args.site, filter_mode=args.filter)
+        prune_cover_letters_for_sync(cover_letter_modes=cover_modes)
+        sync_upload_output(cover_letter_modes=cover_modes)
 
 
 if __name__ == "__main__":

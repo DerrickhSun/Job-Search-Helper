@@ -39,6 +39,7 @@ from .matcher import JobMatcher, print_job_fit_debug
 from .output_paths import (
     ASSISTED_APPLICATIONS_CSV as ASSISTED_GREENHOUSE_CSV,
     ASSISTED_APPLICATIONS_HISTORY_CSV as ASSISTED_GREENHOUSE_HISTORY_CSV,
+    GREENHOUSE_COVERLETTERS_DIR,
     GREENHOUSE_DISMISSED_CSV,
 )
 from .resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
@@ -2255,7 +2256,7 @@ def maybe_upload_greenhouse_cover_letter(
     if not (cover_text or "").strip():
         log.warning("Generated cover letter is empty — skipping Greenhouse upload.")
         return
-    docx_dir = Path(getattr(args, "cover_letter_dir", Path("output/coverletters")))
+    docx_dir = Path(getattr(args, "greenhouse_cover_letter_dir", GREENHOUSE_COVERLETTERS_DIR))
     out_file = cover_letter_docx_path_unique(
         docx_dir,
         site="greenhouse",

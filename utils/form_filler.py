@@ -32,6 +32,7 @@ from .chrome_driver import (
 )
 from .cover_letter import cover_letter_docx_path_unique, write_cover_letter_docx
 from .form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
+from .output_paths import LINKEDIN_COVERLETTERS_DIR
 
 log = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ class EasyApplyFiller:
         apply_click_gap_seconds: float = 1.0,
         apply_review_pause_after_fill_seconds: float = 3.0,
         apply_first_empty_field_pause_after_nav_seconds: float = 10.0,
-        cover_letter_docx_dir: Path | str = "output/coverletters",
+        cover_letter_docx_dir: Path | str = LINKEDIN_COVERLETTERS_DIR,
         form_fill_rules_path: Path | str | None = None,
         helper_scan_all_tabs: bool = False,
         headshot_image_path: Path | str | None = None,
