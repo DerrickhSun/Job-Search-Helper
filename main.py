@@ -377,6 +377,18 @@ def run(args):
                 log.info("  → Dismissed on LinkedIn from list card.")
             return True
 
+        if not filter_mode and args.easy_apply_only and not peek.get("easy_apply"):
+            log.info(
+                "Non-Easy Apply listing on card (Easy Apply filter may have dropped): %s at %s",
+                title or "(no title)",
+                company or "(no company)",
+            )
+            searcher.recover_easy_apply_filter(driver)
+            tracker.log(peek, status="skipped", score=0.0)
+            if searcher.dismiss_current_job(driver, reason="non-easy-apply-list-card", job_id=jid):
+                log.info("  → Dismissed on LinkedIn from list card.")
+            return True
+
         return False
 
     def process_listing(driver, job: dict) -> None:
@@ -406,12 +418,24 @@ def run(args):
                     log.info("  → Dismissed on LinkedIn.")
                 return
         elif not job.get("easy_apply"):
-            log.info(
-                "Skipping (no Easy Apply on card — external apply not implemented yet): %s at %s",
-                job["title"],
-                job["company"],
-            )
+            if args.easy_apply_only:
+                log.info(
+                    "Non-Easy Apply job opened (Easy Apply filter may have dropped): %s at %s",
+                    job["title"],
+                    job["company"],
+                )
+                searcher.recover_easy_apply_filter(driver)
+            else:
+                log.info(
+                    "Skipping (no Easy Apply on card — external apply not implemented yet): %s at %s",
+                    job["title"],
+                    job["company"],
+                )
             tracker.log(job, status="skipped", score=0.0)
+            if args.easy_apply_only and searcher.dismiss_current_job(
+                driver, reason="non-easy-apply", job_id=jid
+            ):
+                log.info("  → Dismissed on LinkedIn.")
             return
 
         if not matcher.gates_pass(resume, job):
@@ -646,6 +670,11 @@ def run(args):
             apply_stats["applied"],
             args.listings_log,
         )
+        if args.easy_apply_only and searcher.easy_apply_filter_recoveries:
+            log.info(
+                "Easy Apply filter was re-enabled via UI %d time(s) after non-Easy Apply listings appeared.",
+                searcher.easy_apply_filter_recoveries,
+            )
 
 
 def _cover_letter_modes_for_run(*, site: str, filter_mode: bool) -> tuple[str, ...]:

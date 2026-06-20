@@ -223,6 +223,28 @@ SEL = {
         'button[aria-label*="Unsave job"], '
         "button.jobs-save-button[aria-pressed='true']"
     ),
+    # Job search filter bar — Easy Apply and All filters (LinkedIn drops f_AL mid-session sometimes).
+    "all_filters_btn": (
+        'button[data-control-name="all_filters"], '
+        'button[aria-label*="Show all filters"], '
+        'button[aria-label*="All filters"], '
+        "button.search-reusables__all-filters-pill"
+    ),
+    "easy_apply_filter_pill": (
+        'button[aria-label="Easy Apply filter."], '
+        'button[aria-label*="Easy Apply filter"]'
+    ),
+    "easy_apply_filter_modal_toggle": ".search-reusables__advanced-filters-binary-toggle",
+    "easy_apply_filter_modal_label": "label[for='f_LF-f_AL']",
+    "easy_apply_filter_modal_input": "input#f_LF-f_AL",
+    "all_filters_apply_btn": (
+        'button[data-test-reusables-filters-modal-show-results-button], '
+        'button[data-test-reusables-filters-modal-show-results-button="true"], '
+        "button.search-reusables__secondary-filters-show-results-button, "
+        "button.reusable-search-filters-buttons.search-reusables__secondary-filters-show-results-button, "
+        'button[data-control-name="all_filters_apply"], '
+        'button[aria-label*="Apply current filters"]'
+    ),
 }
 
 
@@ -270,6 +292,8 @@ class JobSearcher:
         self.jobs_per_results_page = max(1, int(jobs_per_results_page))
         # Same as UI "Date posted → Past 24 hours" (seconds since post).
         self.posted_within_24h = bool(posted_within_24h)
+        # Times LinkedIn dropped the Easy Apply filter and we re-enabled it via the filter UI.
+        self.easy_apply_filter_recoveries = 0
 
     def _jobs_search_query(self, keywords: str, location: str, easy_apply_only: bool) -> str:
         params: dict[str, str] = {"keywords": keywords, "location": location}
@@ -411,6 +435,8 @@ class JobSearcher:
                     break
                 self._pause()
                 time.sleep(1.2)
+                if easy_apply_only:
+                    self.ensure_easy_apply_filter_on(driver)
 
                 while max_listings is None or processed < max_listings:
                     if driver_closed:
@@ -1000,6 +1026,341 @@ class JobSearcher:
             return "easy apply" in (row.text or "").lower()
         except Exception:
             return False
+
+    def _url_has_easy_apply_filter(self, driver) -> bool:
+        """True when the current jobs search URL includes LinkedIn's Easy Apply filter param."""
+        try:
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(driver.current_url).query)
+        except Exception:
+            return False
+        for val in q.get("f_LF", []):
+            if "f_AL" in (val or ""):
+                return True
+        for val in q.get("f_AL", []):
+            if (val or "").lower() in ("true", "1"):
+                return True
+        return False
+
+    def _find_visible_element(self, driver, css_selectors: tuple[str, ...] | list[str]):
+        for css in css_selectors:
+            try:
+                matches = driver.find_elements(By.CSS_SELECTOR, css)
+            except WebDriverException:
+                return None
+            for el in matches:
+                try:
+                    if el.is_displayed():
+                        return el
+                except Exception:
+                    continue
+        return None
+
+    def _click_interactive_element(self, driver, el) -> bool:
+        if el is None:
+            return False
+        try:
+            if self.highlight:
+                focus_element(driver, el, pause=self.step_delay)
+            el.click()
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].click();", el)
+            except Exception:
+                log.debug("Click failed on filter control", exc_info=True)
+                return False
+        self._pause()
+        return True
+
+    def _easy_apply_filter_pill(self, driver):
+        pill = self._find_visible_element(driver, (SEL["easy_apply_filter_pill"],))
+        if pill is not None:
+            return pill
+        try:
+            for el in driver.find_elements(
+                By.XPATH,
+                "//div[contains(@class,'search-reusables')]//button[contains(normalize-space(.),'Easy Apply')]",
+            ):
+                if el.is_displayed():
+                    return el
+        except Exception:
+            pass
+        return None
+
+    def easy_apply_filter_active(self, driver) -> bool:
+        """True when Easy Apply filter is on (URL param and/or filter pill ``aria-checked``)."""
+        if self._url_has_easy_apply_filter(driver):
+            return True
+        pill = self._easy_apply_filter_pill(driver)
+        if pill is None:
+            return False
+        checked = (pill.get_attribute("aria-checked") or "").strip().lower()
+        if checked == "true":
+            return True
+        pressed = (pill.get_attribute("aria-pressed") or "").strip().lower()
+        if pressed == "true":
+            return True
+        cls = (pill.get_attribute("class") or "").lower()
+        return "artdeco-pill--selected" in cls or "artdeco-pill--green" in cls
+
+    def _click_easy_apply_filter_pill(self, driver, *, only_if_off: bool = True) -> bool:
+        pill = self._easy_apply_filter_pill(driver)
+        if pill is None:
+            return False
+        if only_if_off:
+            checked = (pill.get_attribute("aria-checked") or "").strip().lower()
+            if checked == "true":
+                return True
+            cls = (pill.get_attribute("class") or "").lower()
+            if "artdeco-pill--selected" in cls:
+                return True
+        return self._click_interactive_element(driver, pill)
+
+    def _easy_apply_modal_toggle_container(self, driver):
+        """``search-reusables__advanced-filters-binary-toggle`` row for Easy Apply in All filters."""
+        try:
+            containers = driver.find_elements(
+                By.CSS_SELECTOR,
+                SEL["easy_apply_filter_modal_toggle"],
+            )
+        except Exception:
+            return None
+        for container in containers:
+            try:
+                blob = (container.text or "").lower()
+                inner = (container.get_attribute("innerHTML") or "").lower()
+            except Exception:
+                continue
+            if "easy apply" in blob or "easy apply" in inner:
+                return container
+        return None
+
+    def _easy_apply_modal_toggle_input(self, driver):
+        container = self._easy_apply_modal_toggle_container(driver)
+        if container is None:
+            return None
+        for css in (
+            'input[role="switch"][type="checkbox"]',
+            "input.artdeco-toggle__button",
+        ):
+            try:
+                return container.find_element(By.CSS_SELECTOR, css)
+            except Exception:
+                continue
+        return None
+
+    def _easy_apply_modal_toggle_label(self, driver):
+        inp = self._easy_apply_modal_toggle_input(driver)
+        if inp is None:
+            return None
+        toggle_id = (inp.get_attribute("id") or "").strip()
+        if toggle_id:
+            try:
+                return driver.find_element(By.CSS_SELECTOR, f'label[for="{toggle_id}"]')
+            except Exception:
+                pass
+        container = self._easy_apply_modal_toggle_container(driver)
+        if container is None:
+            return None
+        try:
+            return container.find_element(By.CSS_SELECTOR, "label.artdeco-toggle__label")
+        except Exception:
+            return None
+
+    def _easy_apply_modal_toggle_is_on(self, inp) -> bool:
+        if inp is None:
+            return False
+        checked = (inp.get_attribute("aria-checked") or "").strip().lower()
+        if checked == "true":
+            return True
+        try:
+            return bool(inp.is_selected())
+        except Exception:
+            return False
+
+    def _click_easy_apply_modal_toggle(self, driver) -> bool:
+        """
+        Flip the **Easy Apply** ``artdeco-toggle`` switch inside the All filters panel.
+
+        LinkedIn uses ``search-reusables__advanced-filters-binary-toggle`` with
+        ``input[role='switch']`` and ``label.artdeco-toggle__label`` (not ``f_LF-f_AL``).
+        """
+        inp = self._easy_apply_modal_toggle_input(driver)
+        if inp is None:
+            log.debug("Easy Apply recovery: artdeco toggle input not found in modal.")
+            return False
+        if self._easy_apply_modal_toggle_is_on(inp):
+            log.debug("Easy Apply recovery: artdeco toggle already on.")
+            return True
+
+        label = self._easy_apply_modal_toggle_label(driver)
+        toggle_div = None
+        container = self._easy_apply_modal_toggle_container(driver)
+        if container is not None:
+            try:
+                toggle_div = container.find_element(By.CSS_SELECTOR, ".artdeco-toggle")
+            except Exception:
+                pass
+        for target in (label, toggle_div, inp):
+            if target is None:
+                continue
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
+            except Exception:
+                pass
+            if not self._click_interactive_element(driver, target):
+                continue
+            time.sleep(0.4)
+            if self._easy_apply_modal_toggle_is_on(inp):
+                log.info("Easy Apply recovery: turned on artdeco toggle in All filters modal.")
+                return True
+
+        log.debug("Easy Apply recovery: clicked toggle but aria-checked did not change.")
+        return False
+
+    def _find_filters_modal_show_results_button(self, driver):
+        btn = self._find_visible_element(driver, (SEL["all_filters_apply_btn"],))
+        if btn is not None:
+            return btn
+        try:
+            for el in driver.find_elements(
+                By.XPATH,
+                "//button[contains(@class,'search-reusables__secondary-filters-show-results-button')]",
+            ):
+                try:
+                    if el.is_displayed():
+                        return el
+                except Exception:
+                    continue
+            for el in driver.find_elements(
+                By.XPATH,
+                "//button[.//span[contains(@class,'artdeco-button__text') and contains(.,'results')]]",
+            ):
+                try:
+                    if el.is_displayed():
+                        return el
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    def _click_filters_modal_show_results(self, driver) -> bool:
+        """Click **Show N results** at the bottom of the All filters panel."""
+        deadline = time.time() + 8.0
+        btn = None
+        while time.time() < deadline:
+            btn = self._find_filters_modal_show_results_button(driver)
+            if btn is not None:
+                break
+            time.sleep(0.25)
+        if btn is None:
+            log.warning("Easy Apply recovery: Show results button not found in filters modal.")
+            return False
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+        except Exception:
+            pass
+        time.sleep(0.25)
+        if not self._click_interactive_element(driver, btn):
+            return False
+        log.info("Easy Apply recovery: clicked Show results in filters modal.")
+        time.sleep(1.0)
+        return True
+
+    def _enable_easy_apply_via_all_filters_modal(self, driver) -> bool:
+        """
+        Open **All filters**, enable Easy Apply, and apply — LinkedIn's primary filter UI path.
+        """
+        all_filters = self._find_visible_element(driver, (SEL["all_filters_btn"],))
+        if all_filters is None:
+            log.debug("Easy Apply recovery: All filters button not found.")
+            return False
+        if not self._click_interactive_element(driver, all_filters):
+            return False
+        time.sleep(0.65)
+
+        deadline = time.time() + 6.0
+        while time.time() < deadline and self._easy_apply_modal_toggle_input(driver) is None:
+            time.sleep(0.25)
+
+        toggled = self._click_easy_apply_modal_toggle(driver)
+        if not toggled:
+            label = self._find_visible_element(driver, (SEL["easy_apply_filter_modal_label"],))
+            if label is not None:
+                toggled = self._click_interactive_element(driver, label)
+        if not toggled:
+            try:
+                for inp in driver.find_elements(By.CSS_SELECTOR, SEL["easy_apply_filter_modal_input"]):
+                    if not inp.is_displayed():
+                        continue
+                    if inp.is_selected():
+                        toggled = True
+                        break
+                    toggled = self._click_interactive_element(driver, inp)
+                    break
+            except Exception:
+                pass
+        if not toggled:
+            log.warning("Easy Apply recovery: Easy Apply toggle not found or could not be turned on.")
+            return False
+
+        inp = self._easy_apply_modal_toggle_input(driver)
+        if inp is not None and not self._easy_apply_modal_toggle_is_on(inp):
+            log.warning("Easy Apply recovery: toggle still off after click — skipping Show results.")
+            return False
+
+        return self._click_filters_modal_show_results(driver)
+
+    def _enable_easy_apply_filter_ui(self, driver) -> bool:
+        """Re-enable Easy Apply via All filters modal, then inline pill if needed."""
+        if self._driver_stopped(driver):
+            return False
+        if self.easy_apply_filter_active(driver):
+            return True
+
+        if self._enable_easy_apply_via_all_filters_modal(driver):
+            time.sleep(0.8)
+            if self.easy_apply_filter_active(driver):
+                return True
+
+        if self._click_easy_apply_filter_pill(driver, only_if_off=True):
+            time.sleep(0.8)
+
+        return self.easy_apply_filter_active(driver)
+
+    def ensure_easy_apply_filter_on(self, driver) -> bool:
+        """After navigation, confirm Easy Apply filter is still on (no recovery counter)."""
+        if self.easy_apply_filter_active(driver):
+            return True
+        log.info("Easy Apply filter not active after search navigation — enabling via filter UI…")
+        ok = self._enable_easy_apply_filter_ui(driver)
+        if ok:
+            log.info("Easy Apply filter is now active.")
+        else:
+            log.warning("Could not confirm Easy Apply filter is active after navigation.")
+        return ok
+
+    def recover_easy_apply_filter(self, driver) -> bool:
+        """
+        LinkedIn sometimes drops ``f_AL`` mid-session. Open filters and turn Easy Apply back on.
+
+        Increments :attr:`easy_apply_filter_recoveries` when recovery is attempted.
+        """
+        if self.easy_apply_filter_active(driver):
+            return True
+        self.easy_apply_filter_recoveries += 1
+        n = self.easy_apply_filter_recoveries
+        log.warning(
+            "LinkedIn Easy Apply filter appears off (non-Easy Apply listing seen) — recovery #%d…",
+            n,
+        )
+        ok = self._enable_easy_apply_filter_ui(driver)
+        if ok:
+            log.info("Easy Apply filter re-enabled via UI (recovery #%d).", n)
+            self._wait_job_list(driver)
+        else:
+            log.warning("Easy Apply filter recovery #%d did not confirm filter is active.", n)
+        return ok
 
     def _read_job_description_panel(self, driver) -> str:
         """
