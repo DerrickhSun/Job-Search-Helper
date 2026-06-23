@@ -22,7 +22,6 @@ if sys.platform == "win32":
         except Exception:
             pass
 
-from utils.apply_sheets import append_applied_job_row
 from utils.chrome_driver import (
     build_chrome,
     driver_session_alive,
@@ -614,12 +613,6 @@ def run(args):
         if success:
             apply_stats["applied"] += 1
             log.info("  ✓ Applied successfully!")
-            append_applied_job_row(
-                job,
-                credentials_path=args.google_sheets_credentials,
-                spreadsheet_id=args.google_spreadsheet_id,
-                applied_at_iso=applied_at,
-            )
         else:
             log.warning("  ✗ Application failed — check output/screenshots/")
 
@@ -1086,21 +1079,6 @@ def main():
         default=None,
         metavar="PATH",
         help="Path for consulting company memory JSON (default: output/consulting_companies.json; synced via S3).",
-    )
-    ap.add_argument(
-        "--google-sheets-credentials",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="Google service account JSON for logging successful applies to Sheets "
-        "(or set GOOGLE_SHEETS_CREDENTIALS). If unset, sheet logging is skipped.",
-    )
-    ap.add_argument(
-        "--google-spreadsheet-id",
-        type=str,
-        default=None,
-        metavar="ID",
-        help="Spreadsheet id (default: project sheet or GOOGLE_SHEETS_SPREADSHEET_ID env).",
     )
     ap.add_argument(
         "--export-csv",
