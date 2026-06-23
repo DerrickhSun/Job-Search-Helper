@@ -5,6 +5,7 @@ Default resume path is resume.pdf in the working directory; use --resume PATH to
 """
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -12,6 +13,36 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+_TIMING_DEFAULTS = {
+    "step_delay": 0.35,
+    "job_cards_wait": 10.0,
+    "login_form_wait": 5.0,
+    "next_page_wait": 3.0,
+    "job_desc_wait": 3.0,
+    "login_poll_max": 120.0,
+    "login_poll_max_no_checkpoint": 30.0,
+    "easy_apply_wait": 5.0,
+    "apply_click_gap": 1.0,
+    "apply_review_pause": 3.0,
+    "apply_first_empty_pause": 10.0,
+    "greenhouse_login_max_seconds": 600.0,
+    "greenhouse_jobs_ready_max_seconds": 90.0,
+    "greenhouse_scroll_max_rounds": 50,
+    "greenhouse_scroll_pause": 1.2,
+}
+
+_TIMING_FILE = Path("data/timing.json")
+
+
+def _load_timing() -> dict:
+    if _TIMING_FILE.is_file():
+        try:
+            overrides = json.loads(_TIMING_FILE.read_text(encoding="utf-8"))
+            return {**_TIMING_DEFAULTS, **{k: v for k, v in overrides.items() if k in _TIMING_DEFAULTS}}
+        except Exception as e:
+            logging.getLogger(__name__).warning("Could not read %s: %s — using built-in defaults", _TIMING_FILE, e)
+    return dict(_TIMING_DEFAULTS)
 
 # Windows consoles often use cp1252; resume/cover text may contain Unicode (e.g. bullets). UTF-8 avoids
 # UnicodeEncodeError when logging DEBUG lines from third-party libraries (e.g. OpenAI request bodies).
@@ -85,24 +116,23 @@ log = logging.getLogger(__name__)
 MAX_EASY_APPLY_PER_RUN = 30
 
 
-def _job_searcher_from_args(args, **kwargs):
-    """Shared Selenium timing knobs (all fixed sleeps / polling, no WebDriverWait)."""
+def _job_searcher_from_args(args, timing: dict, **kwargs):
     return JobSearcher(
         headless=args.headless,
-        step_delay=args.step_delay,
+        step_delay=timing["step_delay"],
         highlight=not args.no_highlight,
-        job_cards_wait_seconds=args.job_cards_wait,
-        login_form_wait_seconds=args.login_form_wait,
-        next_page_wait_seconds=args.next_page_wait,
-        job_description_wait_seconds=args.job_desc_wait,
-        login_complete_max_seconds=args.login_poll_max,
-        login_complete_max_seconds_no_checkpoint=args.login_poll_max_no_checkpoint,
+        job_cards_wait_seconds=timing["job_cards_wait"],
+        login_form_wait_seconds=timing["login_form_wait"],
+        next_page_wait_seconds=timing["next_page_wait"],
+        job_description_wait_seconds=timing["job_desc_wait"],
+        login_complete_max_seconds=timing["login_poll_max"],
+        login_complete_max_seconds_no_checkpoint=timing["login_poll_max_no_checkpoint"],
         posted_within_24h=args.posted_within_24h,
         **kwargs,
     )
 
 
-def run(args):
+def run(args, timing: dict):
     if args.headless:
         log.info("Chrome: headless (no window).")
     else:
@@ -151,6 +181,7 @@ def run(args):
             log.info("Using first name %r from resume for login detection", account_first)
         searcher = _job_searcher_from_args(
             args,
+            timing,
             pause_after_navigate=True,
             account_first_name=account_first,
         )
@@ -158,7 +189,7 @@ def run(args):
             keywords=args.keywords[0],
             location=args.location,
             max_jobs=max_listings_cap,
-            easy_apply_only=args.easy_apply_only,
+            easy_apply_only=True,
         )
         log.info("Debug session finished.")
         return
@@ -191,15 +222,8 @@ def run(args):
             "Filter mode: skip Easy Apply listings; save suitable external-apply jobs on LinkedIn "
             "(apply later via browser extension)."
         )
-        if args.easy_apply_only:
-            log.warning("Filter mode ignores --easy-apply-only (needs non-Easy Apply listings).")
-    elif args.easy_apply_only:
-        log.info("Job search filter: Easy Apply only (LinkedIn f_AL).")
     else:
-        log.info(
-            "Job search filter: all listings (no Easy Apply URL filter). "
-            "Cards without Easy Apply are skipped for apply until other flows exist."
-        )
+        log.info("Job search filter: Easy Apply only (LinkedIn f_AL).")
     if args.posted_within_24h:
         log.info("Job search filter: posted in the past 24 hours (LinkedIn f_TPR=r86400).")
     else:
@@ -223,18 +247,18 @@ def run(args):
     if not filter_mode:
         filler = EasyApplyFiller(
             headless=args.headless,
-            step_delay=args.step_delay,
+            step_delay=timing["step_delay"],
             highlight=not args.no_highlight,
-            easy_apply_wait_seconds=args.easy_apply_wait,
-            apply_click_gap_seconds=args.apply_click_gap,
-            apply_review_pause_after_fill_seconds=args.apply_review_pause,
-            apply_first_empty_field_pause_after_nav_seconds=args.apply_first_empty_pause,
+            easy_apply_wait_seconds=timing["easy_apply_wait"],
+            apply_click_gap_seconds=timing["apply_click_gap"],
+            apply_review_pause_after_fill_seconds=timing["apply_review_pause"],
+            apply_first_empty_field_pause_after_nav_seconds=timing["apply_first_empty_pause"],
             cover_letter_docx_dir=args.cover_letter_dir,
             form_fill_rules_path=args.form_fill_rules,
             headshot_image_path=args.headshot,
         )
 
-    searcher = _job_searcher_from_args(args, account_first_name=account_first)
+    searcher = _job_searcher_from_args(args, timing, account_first_name=account_first)
     consulting_memory_path = (
         Path(args.consulting_companies_memory_path)
         if args.consulting_companies_memory_path is not None
@@ -376,7 +400,7 @@ def run(args):
                 log.info("  → Dismissed on LinkedIn from list card.")
             return True
 
-        if not filter_mode and args.easy_apply_only and not peek.get("easy_apply"):
+        if not filter_mode and not peek.get("easy_apply"):
             log.info(
                 "Non-Easy Apply listing on card (Easy Apply filter may have dropped): %s at %s",
                 title or "(no title)",
@@ -417,23 +441,14 @@ def run(args):
                     log.info("  → Dismissed on LinkedIn.")
                 return
         elif not job.get("easy_apply"):
-            if args.easy_apply_only:
-                log.info(
-                    "Non-Easy Apply job opened (Easy Apply filter may have dropped): %s at %s",
-                    job["title"],
-                    job["company"],
-                )
-                searcher.recover_easy_apply_filter(driver)
-            else:
-                log.info(
-                    "Skipping (no Easy Apply on card — external apply not implemented yet): %s at %s",
-                    job["title"],
-                    job["company"],
-                )
+            log.info(
+                "Non-Easy Apply job opened (Easy Apply filter may have dropped): %s at %s",
+                job["title"],
+                job["company"],
+            )
+            searcher.recover_easy_apply_filter(driver)
             tracker.log(job, status="skipped", score=0.0)
-            if args.easy_apply_only and searcher.dismiss_current_job(
-                driver, reason="non-easy-apply", job_id=jid
-            ):
+            if searcher.dismiss_current_job(driver, reason="non-easy-apply", job_id=jid):
                 log.info("  → Dismissed on LinkedIn.")
             return
 
@@ -617,13 +632,12 @@ def run(args):
             log.warning("  ✗ Application failed — check output/screenshots/")
 
     processed = 0
-    search_easy_apply_only = False if filter_mode else args.easy_apply_only
     try:
         processed = searcher.run_search_apply_pipeline(
             keywords=list(args.keywords),
             location=args.location,
             max_listings=max_listings_cap,
-            easy_apply_only=search_easy_apply_only,
+            easy_apply_only=not filter_mode,
             listings_log_path=args.listings_log,
             process_listing=process_listing,
             max_applies=max_applies_cap,
@@ -642,12 +656,9 @@ def run(args):
                 pass
         try:
             tracker.export_csv("output/applications.csv")
-            tracker.export_csv("output/apply_opened.csv", statuses=("apply_opened",))
-            log.info(
-                "Exported output/applications.csv (applied) and output/apply_opened.csv (external apply tab)."
-            )
+            log.info("Exported output/applications.csv.")
         except Exception:
-            log.exception("Failed to export application CSVs from SQLite tracker.")
+            log.exception("Failed to export applications.csv from SQLite tracker.")
 
     if filter_mode:
         log.info(
@@ -663,7 +674,7 @@ def run(args):
             apply_stats["applied"],
             args.listings_log,
         )
-        if args.easy_apply_only and searcher.easy_apply_filter_recoveries:
+        if searcher.easy_apply_filter_recoveries:
             log.info(
                 "Easy Apply filter was re-enabled via UI %d time(s) after non-Easy Apply listings appeared.",
                 searcher.easy_apply_filter_recoveries,
@@ -688,6 +699,7 @@ def _early_cli_flags() -> argparse.Namespace:
 
 def main():
     load_dotenv()
+    timing = _load_timing()
     early = _early_cli_flags()
     cover_modes = _cover_letter_modes_for_run(site=early.site, filter_mode=early.filter)
     if cover_modes:
@@ -729,36 +741,6 @@ def main():
         default=DEFAULT_GREENHOUSE_COOKIE_PATH,
         metavar="PATH",
         help="Read/write Greenhouse session cookies (default: data/selenium_greenhouse_cookies.json).",
-    )
-    ap.add_argument(
-        "--greenhouse-login-max-seconds",
-        type=float,
-        default=600.0,
-        metavar="SEC",
-        help="Max time to wait for MyGreenhouse /dashboard after opening sign-in (default: 600).",
-    )
-    ap.add_argument(
-        "--greenhouse-jobs-ready-max-seconds",
-        type=float,
-        default=90.0,
-        metavar="SEC",
-        help="After opening MyGreenhouse /jobs, max time to wait for at least one **View job** link before "
-        "scrolling to load more (default: 90).",
-    )
-    ap.add_argument(
-        "--greenhouse-scroll-max-rounds",
-        type=int,
-        default=50,
-        metavar="N",
-        help="Max scroll-load iterations on MyGreenhouse /jobs (default: 50). Stops earlier when job count and "
-        "page height stop growing.",
-    )
-    ap.add_argument(
-        "--greenhouse-scroll-pause",
-        type=float,
-        default=1.2,
-        metavar="SEC",
-        help="Seconds to wait after each scroll on MyGreenhouse /jobs before checking page height (default: 1.2).",
     )
     ap.add_argument(
         "--greenhouse-gate-probe-max-listings",
@@ -844,13 +826,6 @@ def main():
         "MyGreenhouse ``location=`` query param; United States also adds US ``lat``/``lon``/``country_short_name``.",
     )
     ap.add_argument(
-        "--easy-apply-only",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Restrict the LinkedIn search to Easy Apply jobs (default: on). "
-        "Use --no-easy-apply-only to include all jobs; only Easy Apply is auto-applied for now.",
-    )
-    ap.add_argument(
         "--posted-within-24h",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -891,12 +866,7 @@ def main():
         "or HEADLESS set to 1/true/yes enables headless; otherwise the browser is visible. "
         "Use --no-headless to force a visible window even when env is set.",
     )
-    ap.add_argument(
-        "--step-delay",
-        type=float,
-        default=0.35,
-        help="Seconds to pause between major UI steps when the window is visible (default: 0.35)",
-    )
+
     ap.add_argument(
         "--no-highlight",
         action="store_true",
@@ -921,79 +891,6 @@ def main():
         "listings, generate a cover letter to ``output/coverletters/filter/``, click **Save** on LinkedIn, "
         "and sync ``output/`` (consulting memory + filter cover letters) via S3 when configured. "
         "Uses --max-applies as a cap on successful saves (0 = no cap).",
-    )
-    ap.add_argument(
-        "--job-cards-wait",
-        type=float,
-        default=10.0,
-        metavar="SEC",
-        help="Seconds to sleep before reading job cards on each results page (default: 10).",
-    )
-    ap.add_argument(
-        "--login-form-wait",
-        type=float,
-        default=5.0,
-        metavar="SEC",
-        help="Seconds to sleep after opening /login before filling the form (default: 5).",
-    )
-    ap.add_argument(
-        "--next-page-wait",
-        type=float,
-        default=3.0,
-        metavar="SEC",
-        help="Seconds to sleep before looking for the job search 'next page' button (default: 3).",
-    )
-    ap.add_argument(
-        "--job-desc-wait",
-        type=float,
-        default=3.0,
-        metavar="SEC",
-        help="Seconds to sleep after clicking a job card before reading the description (default: 3).",
-    )
-    ap.add_argument(
-        "--login-poll-max",
-        type=float,
-        default=120.0,
-        metavar="SEC",
-        help="Max seconds to poll (1s interval) for login after 2FA/checkpoint (default: 120).",
-    )
-    ap.add_argument(
-        "--login-poll-max-no-checkpoint",
-        type=float,
-        default=30.0,
-        metavar="SEC",
-        help="Max seconds to poll for login after password submit when no checkpoint (default: 30).",
-    )
-    ap.add_argument(
-        "--easy-apply-wait",
-        type=float,
-        default=5.0,
-        metavar="SEC",
-        help="Seconds to sleep before clicking Easy Apply (default: 5).",
-    )
-    ap.add_argument(
-        "--apply-click-gap",
-        type=float,
-        default=1.0,
-        metavar="SEC",
-        help="Seconds to wait after each Easy Apply button click (Apply / Next / Review / Submit / Done) "
-        "for debugging (default: 1). Set to 0 for faster runs.",
-    )
-    ap.add_argument(
-        "--apply-review-pause",
-        type=float,
-        default=3.0,
-        metavar="SEC",
-        help="Seconds to wait after the bot fills a field (text, textarea, dropdown, radio) so you can "
-        "review it (default: 3). Set to 0 to disable.",
-    )
-    ap.add_argument(
-        "--apply-first-empty-pause",
-        type=float,
-        default=10.0,
-        metavar="SEC",
-        help="After each Continue/Review click, pause this long on the first empty field on the new step "
-        "so you can fill it manually (default: 10). Set to 0 to disable.",
     )
     ap.add_argument(
         "--listings-log",
@@ -1083,10 +980,10 @@ def main():
     ap.add_argument(
         "--export-csv",
         action="store_true",
-        help="Write output/applications.csv and output/apply_opened.csv from data/applications.db and exit. "
-        "Applied rows already listed in output/archive/applications_archive.csv are omitted from applications.csv "
+        help="Write output/applications.csv from data/applications.db and exit. "
+        "Applied rows already listed in output/archive/applications_archive.csv are omitted "
         "so re-export after archiving does not duplicate rows on the next archive. "
-        "Use when a run was interrupted (Ctrl+C) or you want CSVs to match the DB without re-scraping.",
+        "Use when a run was interrupted (Ctrl+C) or you want the CSV to match the DB without re-scraping.",
     )
     args = ap.parse_args()
 
@@ -1121,8 +1018,7 @@ def main():
         if args.export_csv:
             tracker = ApplicationTracker("data/applications.db")
             tracker.export_csv("output/applications.csv")
-            tracker.export_csv("output/apply_opened.csv", statuses=("apply_opened",))
-            log.info("Re-exported output/applications.csv and output/apply_opened.csv from SQLite.")
+            log.info("Re-exported output/applications.csv from SQLite.")
             return
 
         if not args.debug_jobs_page and args.site == "linkedin":
@@ -1134,7 +1030,7 @@ def main():
                     "(needed when data/resume_profile.json is missing or with --force-resume-parse)."
                 )
 
-        run(args)
+        run(args, timing)
     finally:
         cover_modes = _cover_letter_modes_for_run(site=args.site, filter_mode=args.filter)
         prune_cover_letters_for_sync(cover_letter_modes=cover_modes)

@@ -1,0 +1,17 @@
+{
+    "step_delay": 0.35,
+    "job_cards_wait": 10.0,
+    "login_form_wait": 5.0,
+    "next_page_wait": 3.0,
+    "job_desc_wait": 3.0,
+    "login_poll_max": 120.0,
+    "login_poll_max_no_checkpoint": 30.0,
+    "easy_apply_wait": 5.0,
+    "apply_click_gap": 1.0,
+    "apply_review_pause": 3.0,
+    "apply_first_empty_pause": 10.0,
+    "greenhouse_login_max_seconds": 600.0,
+    "greenhouse_jobs_ready_max_seconds": 90.0,
+    "greenhouse_scroll_max_rounds": 50,
+    "greenhouse_scroll_pause": 1.2
+}

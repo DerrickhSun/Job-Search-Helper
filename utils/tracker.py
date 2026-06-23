@@ -9,7 +9,6 @@ Logs every job to SQLite and exports CSV in the same 6-column layout as Google S
 - ``output/archive/applications_archive.csv`` — optional archive (see root ``archive_applications.py``,
   which also archives assisted rows by default); LinkedIn
   ``already_applied`` also matches job ids found in column E of this file
-- ``apply_opened.csv`` — status ``apply_opened`` (legacy external-apply-tab captures)
 - ``consulting`` — skipped for staffing / consulting heuristics (see ``consulting_filter``)
 """
 
@@ -268,9 +267,6 @@ class ApplicationTracker:
             failed = conn.execute(
                 "SELECT COUNT(*) FROM applications WHERE status='failed'"
             ).fetchone()[0]
-            apply_opened = conn.execute(
-                "SELECT COUNT(*) FROM applications WHERE status='apply_opened'"
-            ).fetchone()[0]
             blacklisted = conn.execute(
                 "SELECT COUNT(*) FROM applications WHERE status='blacklisted'"
             ).fetchone()[0]
@@ -282,7 +278,6 @@ class ApplicationTracker:
             "applied": applied,
             "skipped": skipped,
             "failed": failed,
-            "apply_opened": apply_opened,
             "blacklisted": blacklisted,
             "consulting": consulting,
         }

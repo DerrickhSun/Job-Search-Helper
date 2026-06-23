@@ -2527,8 +2527,8 @@ def run_greenhouse_sign_in_flow(args) -> None:
             _wait_for_greenhouse_view_job_links(driver, max_seconds=ready_max)
             _scroll_greenhouse_jobs_to_load_more(
                 driver,
-                max_rounds=int(args.greenhouse_scroll_max_rounds),
-                pause_s=float(args.greenhouse_scroll_pause),
+                max_rounds=int(getattr(args, "greenhouse_scroll_max_rounds", 50)),
+                pause_s=float(getattr(args, "greenhouse_scroll_pause", 1.2)),
             )
             _reveal_greenhouse_job_cards_for_collection(driver)
             batch = collect_my_greenhouse_view_job_listings(
