@@ -876,7 +876,7 @@ def main():
 
     if args.headless is None:
         v = (os.environ.get("JOB_APPLIER_HEADLESS") or os.environ.get("HEADLESS") or "").strip().lower()
-        args.headless = v in ("1", "true", "yes")
+        args.headless = v in ("1", "true", "yes") or args.auto
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
