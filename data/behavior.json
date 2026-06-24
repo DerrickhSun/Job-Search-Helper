@@ -1,0 +1,9 @@
+{
+    "skip_consulting": true,
+    "consulting_companies_memory": true,
+    "greenhouse_manual_next_listing": true,
+    "greenhouse_prefetch": true,
+    "greenhouse_prompt_before_close": true,
+    "greenhouse_date_posted": null,
+    "greenhouse_gate_probe_max_listings": 0
+}

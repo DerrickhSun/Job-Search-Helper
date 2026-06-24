@@ -1,0 +1,13 @@
+{
+    "resume": "resume.pdf",
+    "resume_cache": "data/resume_profile.json",
+    "listings_log": "data/listings_log.jsonl",
+    "cover_letter_dir": "output/coverletters/linkedin",
+    "filter_cover_letter_dir": "output/coverletters/filter",
+    "greenhouse_cover_letter_dir": "output/coverletters/greenhouse",
+    "headshot": "data/selfInSuit.png",
+    "form_fill_rules": null,
+    "company_blacklist": "data/company_blacklist.json",
+    "consulting_companies_memory_path": "output/consulting_companies.json",
+    "greenhouse_cookies": "data/selenium_greenhouse_cookies.json"
+}

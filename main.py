@@ -34,15 +34,67 @@ _TIMING_DEFAULTS = {
 
 _TIMING_FILE = Path("data/timing.json")
 
+_PATHS_DEFAULTS = {
+    "resume": "resume.pdf",
+    "resume_cache": "data/resume_profile.json",
+    "listings_log": "data/listings_log.jsonl",
+    "cover_letter_dir": "output/coverletters/linkedin",
+    "filter_cover_letter_dir": "output/coverletters/filter",
+    "greenhouse_cover_letter_dir": "output/coverletters/greenhouse",
+    "headshot": "data/selfInSuit.png",
+    "form_fill_rules": None,
+    "company_blacklist": "data/company_blacklist.json",
+    "consulting_companies_memory_path": "output/consulting_companies.json",
+    "greenhouse_cookies": "data/selenium_greenhouse_cookies.json",
+}
+
+_PATHS_FILE = Path("data/paths.json")
+
+_BEHAVIOR_DEFAULTS = {
+    "skip_consulting": True,
+    "consulting_companies_memory": True,
+    "greenhouse_manual_next_listing": True,
+    "greenhouse_prefetch": True,
+    "greenhouse_prompt_before_close": True,
+    "greenhouse_date_posted": None,
+    "greenhouse_gate_probe_max_listings": 0,
+}
+
+_BEHAVIOR_FILE = Path("data/behavior.json")
+
+_SEARCH_DEFAULTS: dict = {
+    "keywords": ["software developer", "software engineer", "data scientist", "data analyst"],
+    "location": "United States",
+    "posted_within_24h": True,
+}
+
+_SEARCH_FILE = Path("data/search.json")
+
+
+def _load_config(path: Path, defaults: dict) -> dict:
+    if path.is_file():
+        try:
+            overrides = json.loads(path.read_text(encoding="utf-8"))
+            return {**defaults, **{k: v for k, v in overrides.items() if k in defaults}}
+        except Exception as e:
+            logging.getLogger(__name__).warning("Could not read %s: %s — using built-in defaults", path, e)
+    return dict(defaults)
+
 
 def _load_timing() -> dict:
-    if _TIMING_FILE.is_file():
-        try:
-            overrides = json.loads(_TIMING_FILE.read_text(encoding="utf-8"))
-            return {**_TIMING_DEFAULTS, **{k: v for k, v in overrides.items() if k in _TIMING_DEFAULTS}}
-        except Exception as e:
-            logging.getLogger(__name__).warning("Could not read %s: %s — using built-in defaults", _TIMING_FILE, e)
-    return dict(_TIMING_DEFAULTS)
+    return _load_config(_TIMING_FILE, _TIMING_DEFAULTS)
+
+
+def _load_paths() -> dict:
+    return _load_config(_PATHS_FILE, _PATHS_DEFAULTS)
+
+
+def _load_behavior() -> dict:
+    return _load_config(_BEHAVIOR_FILE, _BEHAVIOR_DEFAULTS)
+
+
+def _load_search() -> dict:
+    return _load_config(_SEARCH_FILE, _SEARCH_DEFAULTS)
 
 # Windows consoles often use cp1252; resume/cover text may contain Unicode (e.g. bullets). UTF-8 avoids
 # UnicodeEncodeError when logging DEBUG lines from third-party libraries (e.g. OpenAI request bodies).
@@ -62,7 +114,6 @@ from utils.chrome_driver import (
 )
 from utils.company_blacklist import is_company_blacklisted, load_company_blacklist
 from utils.consulting_company_memory import (
-    DEFAULT_CONSULTING_MEMORY_PATH,
     load_consulting_company_memory,
     linkedin_company_slug_from_url,
 )
@@ -79,26 +130,21 @@ from utils.dspy_lm import configure_dspy
 from utils.form_filler import (
     APPLY_ABORT_DAILY_LIMIT,
     APPLY_ABORT_JOB_TRUST_SAFETY,
-    DEFAULT_HEADSHOT_IMAGE,
     EasyApplyFiller,
 )
-from utils.greenhouse_session import DEFAULT_GREENHOUSE_COOKIE_PATH, run_greenhouse_sign_in_flow
-from utils.job_records import DEFAULT_LISTINGS_LOG
-from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher, StopApplyPipeline
+from utils.greenhouse_session import run_greenhouse_sign_in_flow
+from utils.job_searcher import JobSearcher, StopApplyPipeline
 from utils.matcher import JobMatcher, print_job_fit_debug
 from utils.extension_rules import migrate_extension_auto_rules_to_exact
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
-    FILTER_COVERLETTERS_DIR,
-    GREENHOUSE_COVERLETTERS_DIR,
-    LINKEDIN_COVERLETTERS_DIR,
     migrate_legacy_consulting_companies_file,
     migrate_legacy_cover_letter_layout,
     migrate_form_fill_rules,
     migrate_legacy_root_archive_files,
 )
 from utils.s3_outputs import sync_download_output, sync_upload_output
-from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
+from utils.resume_cache import load_or_build_resume
 from utils.resume_parser import ResumeParser, first_name_from_resume
 from utils.tracker import ApplicationTracker
 
@@ -116,7 +162,7 @@ log = logging.getLogger(__name__)
 MAX_EASY_APPLY_PER_RUN = 30
 
 
-def _job_searcher_from_args(args, timing: dict, **kwargs):
+def _job_searcher_from_args(args, timing: dict, search: dict, **kwargs):
     return JobSearcher(
         headless=args.headless,
         step_delay=timing["step_delay"],
@@ -127,12 +173,17 @@ def _job_searcher_from_args(args, timing: dict, **kwargs):
         job_description_wait_seconds=timing["job_desc_wait"],
         login_complete_max_seconds=timing["login_poll_max"],
         login_complete_max_seconds_no_checkpoint=timing["login_poll_max_no_checkpoint"],
-        posted_within_24h=args.posted_within_24h,
+        posted_within_24h=search["posted_within_24h"],
+        auto=getattr(args, "auto", False),
         **kwargs,
     )
 
 
-def run(args, timing: dict):
+def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
+    if getattr(args, "auto", False):
+        log.info("Auto mode: no manual-intervention pauses (login failures exit, unfilled fields close the job).")
+        timing = {**timing, "apply_review_pause": 0.0, "apply_first_empty_pause": 0.0}
+
     if args.headless:
         log.info("Chrome: headless (no window).")
     else:
@@ -166,6 +217,12 @@ def run(args, timing: dict):
                 "Greenhouse sign-in usually needs a visible browser — use --no-headless if you cannot complete login."
             )
         configure_dspy()
+        args.keywords = list(search["keywords"])
+        args.location = search["location"]
+        args.posted_within_24h = search["posted_within_24h"]
+        if getattr(args, "auto", False):
+            args.greenhouse_manual_next_listing = False
+            args.greenhouse_prompt_before_close = False
         run_greenhouse_sign_in_flow(args)
         return
 
@@ -175,19 +232,20 @@ def run(args, timing: dict):
             "Pass --resume to use your first name for login detection."
         )
         account_first = None
-        if Path(args.resume).exists():
-            resume_dbg = ResumeParser().parse(str(args.resume))
+        if Path(paths["resume"]).exists():
+            resume_dbg = ResumeParser().parse(str(paths["resume"]))
             account_first = first_name_from_resume(resume_dbg)
             log.info("Using first name %r from resume for login detection", account_first)
         searcher = _job_searcher_from_args(
             args,
             timing,
+            search,
             pause_after_navigate=True,
             account_first_name=account_first,
         )
         searcher.search(
-            keywords=args.keywords[0],
-            location=args.location,
+            keywords=search["keywords"][0],
+            location=search["location"],
             max_jobs=max_listings_cap,
             easy_apply_only=True,
         )
@@ -200,8 +258,8 @@ def run(args, timing: dict):
 
     # 1. Load resume profile (JSON cache or parse PDF/DOCX)
     resume = load_or_build_resume(
-        Path(args.resume),
-        Path(args.resume_cache),
+        Path(paths["resume"]),
+        Path(paths["resume_cache"]),
         force_reparse=args.force_resume_parse,
     )
     log.info(
@@ -214,8 +272,8 @@ def run(args, timing: dict):
     # 2. Search for jobs (Selenium + Chrome; visible by default)
     log.info(
         "Searching LinkedIn in %s for keyword(s): %s",
-        args.location,
-        "; ".join(repr(k) for k in args.keywords),
+        search["location"],
+        "; ".join(repr(k) for k in search["keywords"]),
     )
     if filter_mode:
         log.info(
@@ -224,7 +282,7 @@ def run(args, timing: dict):
         )
     else:
         log.info("Job search filter: Easy Apply only (LinkedIn f_AL).")
-    if args.posted_within_24h:
+    if search["posted_within_24h"]:
         log.info("Job search filter: posted in the past 24 hours (LinkedIn f_TPR=r86400).")
     else:
         log.info("Job search filter: any date posted (no f_TPR).")
@@ -239,7 +297,7 @@ def run(args, timing: dict):
 
     matcher = JobMatcher()
     cover_gen = CoverLetterGenerator()
-    company_blacklist = load_company_blacklist(args.company_blacklist)
+    company_blacklist = load_company_blacklist(paths["company_blacklist"])
     if company_blacklist:
         log.info("Company blacklist active: %d entr%s", len(company_blacklist), "y" if len(company_blacklist) == 1 else "ies")
 
@@ -253,23 +311,19 @@ def run(args, timing: dict):
             apply_click_gap_seconds=timing["apply_click_gap"],
             apply_review_pause_after_fill_seconds=timing["apply_review_pause"],
             apply_first_empty_field_pause_after_nav_seconds=timing["apply_first_empty_pause"],
-            cover_letter_docx_dir=args.cover_letter_dir,
-            form_fill_rules_path=args.form_fill_rules,
-            headshot_image_path=args.headshot,
+            cover_letter_docx_dir=paths["cover_letter_dir"],
+            form_fill_rules_path=paths["form_fill_rules"],
+            headshot_image_path=paths["headshot"],
         )
 
-    searcher = _job_searcher_from_args(args, timing, account_first_name=account_first)
-    consulting_memory_path = (
-        Path(args.consulting_companies_memory_path)
-        if args.consulting_companies_memory_path is not None
-        else DEFAULT_CONSULTING_MEMORY_PATH
-    )
+    searcher = _job_searcher_from_args(args, timing, search, account_first_name=account_first)
+    consulting_memory_path = Path(paths["consulting_companies_memory_path"])
     consulting_memory = None
-    if args.skip_consulting and args.consulting_companies_memory:
+    if behavior["skip_consulting"] and behavior["consulting_companies_memory"]:
         consulting_memory = load_consulting_company_memory(consulting_memory_path)
-    elif args.skip_consulting:
+    elif behavior["skip_consulting"]:
         log.info(
-            "Consulting company memory disabled (--no-consulting-companies-memory); "
+            "Consulting company memory disabled; "
             "LinkedIn company pages will be re-fetched when listing heuristics pass."
         )
 
@@ -364,7 +418,7 @@ def run(args, timing: dict):
                 log.info("  → Dismissed on LinkedIn from list card.")
             return True
 
-        if args.skip_consulting and consulting_memory is not None:
+        if behavior["skip_consulting"] and consulting_memory is not None:
             if consulting_memory.matches(slug=None, company_display=company):
                 log.info(
                     "Skipping from list card (remembered consulting company, no job click): %s at %s",
@@ -378,7 +432,7 @@ def run(args, timing: dict):
                     log.info("  → Dismissed on LinkedIn from list card.")
                 return True
 
-        if args.skip_consulting and is_consulting_listing_from_listing_company_line_only(peek):
+        if behavior["skip_consulting"] and is_consulting_listing_from_listing_company_line_only(peek):
             log.info(
                 "Skipping from list card (listing company / title consulting heuristics, no job click): %s at %s",
                 title,
@@ -482,7 +536,7 @@ def run(args, timing: dict):
         _require_browser_session(driver)
 
         # Company-based consulting checks come last so requirement/fit disqualifications short-circuit first.
-        if args.skip_consulting and is_consulting_listing_from_job_posting_text_only(job):
+        if behavior["skip_consulting"] and is_consulting_listing_from_job_posting_text_only(job):
             log.info(
                 "Skipping (consulting / staffing signals in job title or description): %s at %s",
                 job["title"],
@@ -492,7 +546,7 @@ def run(args, timing: dict):
             if searcher.dismiss_current_job(driver, reason="consulting-signals", job_id=str(job.get("id") or "")):
                 log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
             return
-        if args.skip_consulting and is_consulting_listing_from_listing_company_line_only(job):
+        if behavior["skip_consulting"] and is_consulting_listing_from_listing_company_line_only(job):
             log.info(
                 "Skipping (consulting / staffing on listing company or title line): %s at %s",
                 job["title"],
@@ -504,7 +558,7 @@ def run(args, timing: dict):
             return
 
         company_link_li = None
-        if args.skip_consulting and consulting_memory is not None:
+        if behavior["skip_consulting"] and consulting_memory is not None:
             if consulting_memory.matches(
                 slug=None,
                 company_display=str(job.get("company") or ""),
@@ -521,7 +575,7 @@ def run(args, timing: dict):
                     log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
                 return
 
-        if args.skip_consulting:
+        if behavior["skip_consulting"]:
             company_link_li = searcher.selected_job_company_link(driver)
             _require_browser_session(driver)
             if consulting_memory is not None and company_link_li:
@@ -542,7 +596,7 @@ def run(args, timing: dict):
                         log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
                     return
 
-        if args.skip_consulting and company_link_li:
+        if behavior["skip_consulting"] and company_link_li:
             m = re.search(r"(https://www\.linkedin\.com/company/[^/]+)", company_link_li, re.IGNORECASE)
             normalized_link = f"{m.group(1)}/about/" if m else company_link_li
             lookup_driver = ensure_company_lookup_driver()
@@ -582,7 +636,7 @@ def run(args, timing: dict):
             log.info("  → Generating cover letter...")
             cover_letter = cover_gen.generate(resume, job)
             docx_path = cover_letter_docx_path_unique(
-                args.filter_cover_letter_dir,
+                paths["filter_cover_letter_dir"],
                 site="filter",
                 company=str(job.get("company") or ""),
                 title=str(job.get("title") or ""),
@@ -634,16 +688,18 @@ def run(args, timing: dict):
     processed = 0
     try:
         processed = searcher.run_search_apply_pipeline(
-            keywords=list(args.keywords),
-            location=args.location,
+            keywords=list(search["keywords"]),
+            location=search["location"],
             max_listings=max_listings_cap,
             easy_apply_only=not filter_mode,
-            listings_log_path=args.listings_log,
+            listings_log_path=paths["listings_log"],
             process_listing=process_listing,
             max_applies=max_applies_cap,
             apply_counter=apply_stats,
             maybe_skip_from_list_card=maybe_skip_from_list_card_preview,
         )
+    except StopApplyPipeline as e:
+        log.error("Run stopped: %s", e)
     finally:
         if company_lookup_driver is not None:
             try:
@@ -665,14 +721,14 @@ def run(args, timing: dict):
             "Finished filter pipeline: %d listing(s) processed, %d saved on LinkedIn (see %s).",
             processed,
             apply_stats["applied"],
-            args.listings_log,
+            paths["listings_log"],
         )
     else:
         log.info(
             "Finished search pipeline: %d listing(s) processed, %d successful apply(ies) (see %s).",
             processed,
             apply_stats["applied"],
-            args.listings_log,
+            paths["listings_log"],
         )
         if searcher.easy_apply_filter_recoveries:
             log.info(
@@ -700,6 +756,9 @@ def _early_cli_flags() -> argparse.Namespace:
 def main():
     load_dotenv()
     timing = _load_timing()
+    paths = _load_paths()
+    behavior = _load_behavior()
+    search = _load_search()
     early = _early_cli_flags()
     cover_modes = _cover_letter_modes_for_run(site=early.site, filter_mode=early.filter)
     if cover_modes:
@@ -736,103 +795,9 @@ def main():
         "job only. Email is prefilled from --resume-cache when ``email`` is set there.",
     )
     ap.add_argument(
-        "--greenhouse-cookies",
-        type=Path,
-        default=DEFAULT_GREENHOUSE_COOKIE_PATH,
-        metavar="PATH",
-        help="Read/write Greenhouse session cookies (default: data/selenium_greenhouse_cookies.json).",
-    )
-    ap.add_argument(
-        "--greenhouse-gate-probe-max-listings",
-        type=int,
-        default=0,
-        metavar="N",
-        help="When probing **View job** listings for education/experience gates, visit at most N URLs in order "
-        "(0 = no cap, use the full collected list; default: 0).",
-    )
-    ap.add_argument(
-        "--greenhouse-manual-next-listing",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Greenhouse helper: after each listing that passes gates and gets autofill / cover / checkbox rules, "
-        "prompt in this terminal — **n** (+ Enter) if you submitted an application (append a row to "
-        "`output/assisted_applications.csv`, same columns as `applications.csv`; prior rows in "
-        "`output/archive/assisted_applications_history.csv` still count for skip dedupe), then scan for the next "
-        "gate-passing job; **s** to continue without recording; **d** to dismiss (same as **s** plus "
-        "`output/greenhouse_dismissed.csv` for 30-day list skip); Enter or **q** to stop (default: on). "
-        "Use --no-greenhouse-manual-next-listing to exit after the first passing job without prompts.",
-    )
-    ap.add_argument(
-        "--greenhouse-prefetch",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Greenhouse helper: run gate scanning in a **headless** second Chrome (no extra window) and "
-        "queue passing jobs so there is no wait between presented jobs in the logged-in window (navigate, "
-        "autofill, n/s/d/q prompt; 'Loading' about every 10s while the scanner is still looking). Only "
-        "applies when --greenhouse-manual-next-listing is on. Use --no-greenhouse-prefetch for single-driver "
-        "sequential scanning (default: on).",
-    )
-    ap.add_argument(
-        "--greenhouse-prompt-before-close",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="After the Greenhouse flow, wait for Enter in this terminal before closing Chrome (default: on). "
-        "Use --no-greenhouse-prompt-before-close for unattended runs.",
-    )
-    ap.add_argument(
-        "--greenhouse-date-posted",
-        type=str,
-        default=None,
-        metavar="VALUE",
-        help="MyGreenhouse jobs URL ``date_posted`` filter (e.g. past_ten_days). If unset: past_ten_days when "
-        "--posted-within-24h is on (default), otherwise the date filter is omitted from the URL.",
-    )
-    ap.add_argument(
-        "--resume",
-        type=Path,
-        default=DEFAULT_RESUME_FILE,
-        metavar="PATH",
-        help=f"Resume PDF or DOCX (default: {DEFAULT_RESUME_FILE}). "
-        "If data/resume_profile.json exists, that cache is used unless --force-resume-parse.",
-    )
-    ap.add_argument(
-        "--resume-cache",
-        type=Path,
-        default=DEFAULT_RESUME_CACHE_PATH,
-        metavar="PATH",
-        help=f"Read/write structured resume JSON (default: {DEFAULT_RESUME_CACHE_PATH}). "
-        "If the file exists, the resume file is not parsed unless --force-resume-parse.",
-    )
-    ap.add_argument(
         "--force-resume-parse",
         action="store_true",
         help="Always parse --resume from disk and overwrite --resume-cache.",
-    )
-    ap.add_argument(
-        "--keywords",
-        nargs="*",
-        default=None,
-        metavar="TERM",
-        help="LinkedIn job search queries (space-separated). When one query runs out of result pages, the "
-        "next is used in the same browser session until --max-jobs is reached or all queries are exhausted. "
-        f"Omit this flag to use the default list: {', '.join(DEFAULT_JOB_SEARCH_KEYWORDS)}. "
-        "With --site greenhouse, each term is its own MyGreenhouse ``query=`` (searched one-by-one; results are merged); "
-        "``--location`` and date filters apply to every search.",
-    )
-    ap.add_argument(
-        "--location",
-        default="United States",
-        help='LinkedIn job search location (default: "United States"). With --site greenhouse, becomes the '
-        "MyGreenhouse ``location=`` query param; United States also adds US ``lat``/``lon``/``country_short_name``.",
-    )
-    ap.add_argument(
-        "--posted-within-24h",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Restrict the LinkedIn search to jobs posted in the past 24 hours (default: on; URL f_TPR=r86400, "
-        'same as the "Past 24 hours" date filter). Use --no-posted-within-24h for any posting date. '
-        "With --site greenhouse, when --greenhouse-date-posted is unset, on adds ``date_posted=past_ten_days`` "
-        "to the jobs URL; off omits ``date_posted``.",
     )
     ap.add_argument(
         "--max-applies",
@@ -868,6 +833,13 @@ def main():
     )
 
     ap.add_argument(
+        "--auto",
+        action="store_true",
+        help="Unattended mode: skip all manual-intervention pauses. On login checkpoint/2FA → print an error "
+        "and exit instead of waiting. On form fields with no fill rule → close the job immediately "
+        "(no pause for manual fill). Greenhouse: disables the per-job prompt and the close-browser prompt.",
+    )
+    ap.add_argument(
         "--no-highlight",
         action="store_true",
         help="Disable the red outline that shows which element is being clicked",
@@ -893,91 +865,6 @@ def main():
         "Uses --max-applies as a cap on successful saves (0 = no cap).",
     )
     ap.add_argument(
-        "--listings-log",
-        type=Path,
-        default=DEFAULT_LISTINGS_LOG,
-        help="Append one JSON line per parsed listing (default: data/listings_log.jsonl).",
-    )
-    ap.add_argument(
-        "--cover-letter-dir",
-        type=Path,
-        default=LINKEDIN_COVERLETTERS_DIR,
-        metavar="DIR",
-        help="Easy Apply mode: save cover letter .docx files here "
-        f"(default: {LINKEDIN_COVERLETTERS_DIR.as_posix()}).",
-    )
-    ap.add_argument(
-        "--filter-cover-letter-dir",
-        type=Path,
-        default=FILTER_COVERLETTERS_DIR,
-        metavar="DIR",
-        help="Filter mode: save cover letter .docx files here "
-        f"(default: {FILTER_COVERLETTERS_DIR.as_posix()}).",
-    )
-    ap.add_argument(
-        "--greenhouse-cover-letter-dir",
-        type=Path,
-        default=GREENHOUSE_COVERLETTERS_DIR,
-        metavar="DIR",
-        help="Greenhouse helper: cover letter .docx files here "
-        f"(default: {GREENHOUSE_COVERLETTERS_DIR.as_posix()}).",
-    )
-    ap.add_argument(
-        "--headshot",
-        type=Path,
-        default=DEFAULT_HEADSHOT_IMAGE,
-        metavar="PATH",
-        help="PNG/JPEG used when Easy Apply asks for a photo or headshot (default: data/selfInSuit.png).",
-    )
-    ap.add_argument(
-        "--form-fill-rules",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="JSON rules for LinkedIn Easy Apply and Greenhouse (``--site greenhouse``): screening, text "
-        "fields, textareas, selects, and ``checkbox_groups`` for Greenhouse fieldsets. Accepts a directory "
-        "of JSON files merged in filename order (default: output/form_fill_rules/, synced via S3) "
-        "or a single JSON file. "
-        "Greenhouse uses ``apply_source=greenhouse`` for ``choose_label_from_apply_source`` (e.g. how you "
-        "heard); LinkedIn uses ``linkedin``.",
-    )
-    ap.add_argument(
-        "--company-blacklist",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="JSON file of company strings to skip (default: data/company_blacklist.json). "
-        "LinkedIn: no list-card click / apply; Greenhouse: omitted from job-list collection and helper. "
-        "Matching ignores case and punctuation; see that file for the format.",
-    )
-    ap.add_argument(
-        "--skip-consulting",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Skip jobs when the company name includes consulting or staffing (whole word), talent (whole word), "
-        "the substring ``IT`` (capital I + T only, case-sensitive — matches body-shop style names, not the word "
-        "'it' in lowercase), or the description suggests "
-        "a consultancy/staffing employer (consultant, consulting firm/company, consultancy, client company, "
-        "etc.; bare 'consulting' in the description is ignored to avoid industry-experience false positives). "
-        "Default: on. Use --no-skip-consulting to disable.",
-    )
-    ap.add_argument(
-        "--consulting-companies-memory",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Remember LinkedIn company-page consulting flags across runs (slugs + normalized names in a JSON "
-        "file) so those employers are skipped without opening /company/.../about again. Also defers starting the "
-        "second Chrome window until a company page is actually needed. Default: on. "
-        "Use --no-consulting-companies-memory to always re-fetch company pages when heuristics pass.",
-    )
-    ap.add_argument(
-        "--consulting-companies-memory-path",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="Path for consulting company memory JSON (default: output/consulting_companies.json; synced via S3).",
-    )
-    ap.add_argument(
         "--export-csv",
         action="store_true",
         help="Write output/applications.csv from data/applications.db and exit. "
@@ -990,10 +877,6 @@ def main():
     if args.headless is None:
         v = (os.environ.get("JOB_APPLIER_HEADLESS") or os.environ.get("HEADLESS") or "").strip().lower()
         args.headless = v in ("1", "true", "yes")
-
-    # nargs="*" with default=None yields None when the flag is omitted — normalize to default queries.
-    if not args.keywords:
-        args.keywords = list(DEFAULT_JOB_SEARCH_KEYWORDS)
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -1022,15 +905,15 @@ def main():
             return
 
         if not args.debug_jobs_page and args.site == "linkedin":
-            cache_p = Path(args.resume_cache)
+            cache_p = Path(paths["resume_cache"])
             need_resume_file = args.force_resume_parse or not cache_p.is_file()
-            if need_resume_file and not Path(args.resume).exists():
+            if need_resume_file and not Path(paths["resume"]).exists():
                 raise FileNotFoundError(
-                    f"Resume not found: {args.resume} — add this file or pass --resume PATH "
+                    f"Resume not found: {paths['resume']} — place your resume there or update data/paths.json "
                     "(needed when data/resume_profile.json is missing or with --force-resume-parse)."
                 )
 
-        run(args, timing)
+        run(args, timing, paths, behavior, search)
     finally:
         cover_modes = _cover_letter_modes_for_run(site=args.site, filter_mode=args.filter)
         prune_cover_letters_for_sync(cover_letter_modes=cover_modes)

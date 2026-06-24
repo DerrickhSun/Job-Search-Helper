@@ -269,6 +269,7 @@ class JobSearcher:
         job_list_tail_pass_rounds: int = 12,
         jobs_per_results_page: int = 25,
         posted_within_24h: bool = True,
+        auto: bool = False,
     ):
         self.headless = headless
         self.session_file = Path(session_file)
@@ -292,6 +293,7 @@ class JobSearcher:
         self.jobs_per_results_page = max(1, int(jobs_per_results_page))
         # Same as UI "Date posted → Past 24 hours" (seconds since post).
         self.posted_within_24h = bool(posted_within_24h)
+        self.auto = bool(auto)
         # Times LinkedIn dropped the Easy Apply filter and we re-enabled it via the filter UI.
         self.easy_apply_filter_recoveries = 0
 
@@ -1955,6 +1957,8 @@ class JobSearcher:
             log.info("LinkedIn shows Welcome Back / saved profile — trying one-click login.")
             if self._try_click_saved_account_login(driver):
                 if "checkpoint" in driver.current_url or "captcha" in driver.current_url.lower():
+                    if self.auto:
+                        raise StopApplyPipeline("2FA/CAPTCHA checkpoint after saved-account click — exiting (auto mode)")
                     log.warning(
                         "2FA/CAPTCHA after saved-account click — complete it manually in Chrome "
                         f"(polling up to {self.login_complete_max_seconds:.0f}s)"
@@ -2006,6 +2010,8 @@ class JobSearcher:
         time.sleep(2.5)
 
         if "checkpoint" in driver.current_url or "captcha" in driver.current_url.lower():
+            if self.auto:
+                raise StopApplyPipeline("2FA/CAPTCHA checkpoint detected — exiting (auto mode)")
             log.warning(
                 "2FA/CAPTCHA detected — complete it manually in Chrome "
                 f"(polling up to {self.login_complete_max_seconds:.0f}s)"
@@ -2022,6 +2028,10 @@ class JobSearcher:
             if self._session_looks_logged_in(driver):
                 return
             time.sleep(1.0)
+        if self.auto:
+            raise StopApplyPipeline(
+                f"Login did not complete within {max_seconds:.0f}s — exiting (auto mode)"
+            )
         raise RuntimeError(
             f"Login did not complete within {max_seconds:.0f}s (first name / feed URL not detected)"
         )
