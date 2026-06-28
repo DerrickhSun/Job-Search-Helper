@@ -10,6 +10,7 @@ mtime from S3 ``LastModified`` so age- and count-based pruning stay meaningful a
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -21,6 +22,20 @@ log = logging.getLogger(__name__)
 
 DEFAULT_COVER_LETTER_MAX_AGE_DAYS = 7.0
 DEFAULT_COVER_LETTER_MAX_COUNT = 100
+
+_COVER_LETTER_LIMITS_FILE = Path("data/cover_letter_limits.json")
+
+
+def _load_cover_letter_limits() -> dict[str, int]:
+    """Load per-mode count limits from data/cover_letter_limits.json."""
+    if not _COVER_LETTER_LIMITS_FILE.is_file():
+        return {}
+    try:
+        raw = json.loads(_COVER_LETTER_LIMITS_FILE.read_text(encoding="utf-8"))
+        return {k: int(v) for k, v in raw.items() if isinstance(v, (int, float))}
+    except Exception as e:
+        log.warning("Could not read %s: %s — using global default", _COVER_LETTER_LIMITS_FILE, e)
+        return {}
 
 
 def cover_letter_max_age_days() -> float | None:
@@ -39,12 +54,21 @@ def cover_letter_max_age_days() -> float | None:
     return days
 
 
-def cover_letter_max_count() -> int | None:
+def cover_letter_max_count(mode: str | None = None) -> int | None:
     """
-    Max number of ``.docx`` cover letters to retain from env ``COVER_LETTER_MAX_COUNT`` (default 100).
+    Max number of ``.docx`` cover letters to retain for the given mode.
 
+    Reads per-mode limits from ``data/cover_letter_limits.json`` (keys: ``linkedin``,
+    ``filter``, ``greenhouse``). Falls back to env ``COVER_LETTER_MAX_COUNT`` (default 100).
     Returns ``None`` when count-based pruning is disabled (0 or negative).
     """
+    if mode:
+        limits = _load_cover_letter_limits()
+        if mode in limits:
+            n = limits[mode]
+            if n <= 0:
+                return None
+            return n
     raw = (os.environ.get("COVER_LETTER_MAX_COUNT") or "100").strip()
     try:
         n = int(float(raw))
@@ -132,13 +156,17 @@ def prune_local_cover_letters_by_count(
     *,
     max_count: int | None = None,
     cover_dir: Path | str = COVERLETTERS_DIR,
+    mode: str | None = None,
     dry_run: bool = False,
 ) -> int:
     """
     When more than ``max_count`` ``.docx`` files exist under ``output/coverletters/``, delete the
     oldest by local modification time until at most ``max_count`` remain.
+
+    ``mode`` (e.g. ``linkedin``, ``filter``, ``greenhouse``) selects the per-mode limit from
+    ``data/cover_letter_limits.json``; falls back to the global default when omitted.
     """
-    limit = max_count if max_count is not None else cover_letter_max_count()
+    limit = max_count if max_count is not None else cover_letter_max_count(mode)
     if limit is None:
         return 0
 
@@ -266,7 +294,7 @@ def prune_s3_cover_letters_by_count(
     """
     from .s3_outputs import s3_list_prefix_for_dir, s3_output_bucket, s3_output_sync_enabled
 
-    limit = max_count if max_count is not None else cover_letter_max_count()
+    limit = max_count if max_count is not None else cover_letter_max_count(cover_mode)
     if limit is None or not s3_output_sync_enabled():
         return 0
 
@@ -358,7 +386,7 @@ def prune_cover_letters_for_sync(
             log.warning("Unknown cover letter mode for prune: %r", mode)
             continue
         local += prune_local_cover_letters(cover_dir=cover_dir, dry_run=dry_run)
-        local += prune_local_cover_letters_by_count(cover_dir=cover_dir, dry_run=dry_run)
+        local += prune_local_cover_letters_by_count(cover_dir=cover_dir, mode=mode, dry_run=dry_run)
         remote += prune_s3_cover_letters(cover_mode=mode, dry_run=dry_run)
         remote += prune_s3_cover_letters_by_count(cover_mode=mode, dry_run=dry_run)
     return local, remote

@@ -13,11 +13,25 @@ import mimetypes
 import os
 from pathlib import Path
 
-from .output_paths import COVERLETTERS_DIR, OUTPUT_DIR, cover_letter_mode_names
+from .output_paths import (
+    APPLICATIONS_ARCHIVE_CSV,
+    APPLICATIONS_CSV,
+    ASSISTED_APPLICATIONS_CSV,
+    ASSISTED_APPLICATIONS_HISTORY_CSV,
+    COVERLETTERS_DIR,
+    OUTPUT_DIR,
+    cover_letter_mode_names,
+)
 
 log = logging.getLogger(__name__)
 
 _COVER_MODES = cover_letter_mode_names()
+
+# (memory_csv, archive_csv) pairs — memory is cleaned against its archive after each sync.
+_MEMORY_ARCHIVE_PAIRS: tuple[tuple[Path, Path], ...] = (
+    (APPLICATIONS_CSV, APPLICATIONS_ARCHIVE_CSV),
+    (ASSISTED_APPLICATIONS_CSV, ASSISTED_APPLICATIONS_HISTORY_CSV),
+)
 
 
 def s3_output_bucket() -> str:
@@ -101,6 +115,70 @@ def _s3_client():
     return boto3.session.Session().client("s3")
 
 
+def _merge_s3_csv(s3, bucket: str, key: str, local_path: Path) -> bool:
+    """
+    Download a sheet-layout CSV from S3 and union-merge it with the local copy.
+
+    Local rows are passed first so local data wins on URL collisions. Returns True if
+    the S3 key existed (False means no S3 object — local file is left untouched).
+    """
+    import csv
+    import io
+
+    from botocore.exceptions import ClientError
+
+    from .apply_sheets import _is_applications_sheet_header_row
+    from .sheet_csv import SHEET_HEADER, read_sheet_csv, sort_sheet_rows_by_date, union_sheet_rows, write_sheet_csv
+
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        text = resp["Body"].read().decode("utf-8")
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            return False
+        raise
+
+    s3_header: list[str] | None = None
+    s3_rows: list[list[str]] = []
+    for row in csv.reader(io.StringIO(text)):
+        if not row or not any((c or "").strip() for c in row):
+            continue
+        if _is_applications_sheet_header_row(row):
+            s3_header = row
+        else:
+            s3_rows.append(row)
+
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_header, local_rows = read_sheet_csv(local_path)
+    merged = union_sheet_rows(local_rows, s3_rows)
+    if len(merged) > len(local_rows):
+        merged = sort_sheet_rows_by_date(merged)
+    write_sheet_csv(local_path, local_header or s3_header or list(SHEET_HEADER), merged)
+    return True
+
+
+def _clean_memory_against_archive(memory_csv: Path, archive_csv: Path) -> int:
+    """
+    Remove rows from memory_csv whose URL key already appears in archive_csv.
+
+    Returns the number of rows removed. Archive is the authoritative long-term record;
+    memory should never contain duplicates of archived jobs.
+    """
+    from .sheet_csv import read_sheet_csv, sheet_row_key, write_sheet_csv
+
+    _, archive_rows = read_sheet_csv(archive_csv)
+    archive_keys = {k for r in archive_rows if (k := sheet_row_key(r))}
+    if not archive_keys:
+        return 0
+
+    header, rows = read_sheet_csv(memory_csv)
+    kept = [r for r in rows if sheet_row_key(r) not in archive_keys]
+    removed = len(rows) - len(kept)
+    if removed:
+        write_sheet_csv(memory_csv, header, kept)
+    return removed
+
+
 def sync_download_output(
     local_dir: Path | str = OUTPUT_DIR,
     *,
@@ -131,6 +209,13 @@ def sync_download_output(
         log.warning("S3 download skipped: install boto3 (pip install boto3)")
         return 0
 
+    # Resolve CSV paths for merge-not-overwrite detection.
+    merge_csv_paths = frozenset(
+        p.resolve()
+        for pair in _MEMORY_ARCHIVE_PAIRS
+        for p in pair
+    )
+
     downloaded = 0
     skipped_cover = 0
     try:
@@ -142,7 +227,7 @@ def sync_download_output(
                     continue
                 if not key.startswith(list_prefix):
                     continue
-                rel = key[len(list_prefix) :]
+                rel = key[len(list_prefix):]
                 if not rel:
                     continue
                 if _skip_cover_letter_rel(rel, cover_letter_modes):
@@ -150,16 +235,30 @@ def sync_download_output(
                     continue
                 dest = root / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                s3.download_file(bucket, key, str(dest))
-                if _preserve_cover_letter_mtime(dest):
-                    last_mod = obj.get("LastModified")
-                    if last_mod is not None:
-                        ts = last_mod.timestamp()
-                        os.utime(dest, (ts, ts))
+                if dest.resolve() in merge_csv_paths:
+                    # Merge instead of overwrite: union local + S3 records.
+                    _merge_s3_csv(s3, bucket, key, dest)
+                else:
+                    s3.download_file(bucket, key, str(dest))
+                    if _preserve_cover_letter_mtime(dest):
+                        last_mod = obj.get("LastModified")
+                        if last_mod is not None:
+                            ts = last_mod.timestamp()
+                            os.utime(dest, (ts, ts))
                 downloaded += 1
     except (ClientError, BotoCoreError, OSError) as e:
         log.error("S3 download failed (s3://%s/%s): %s", bucket, list_prefix, e)
         return downloaded
+
+    # Strip memory records that are already in the (now-merged) archive.
+    for mem_csv, arch_csv in _MEMORY_ARCHIVE_PAIRS:
+        removed = _clean_memory_against_archive(mem_csv, arch_csv)
+        if removed:
+            log.info(
+                "Removed %d record(s) from %s already present in archive",
+                removed,
+                mem_csv.name,
+            )
 
     if cover_letter_modes and skipped_cover:
         log.info(
@@ -169,7 +268,7 @@ def sync_download_output(
         )
     if downloaded:
         log.info(
-            "S3: downloaded %d file(s) from s3://%s/%s -> %s",
+            "S3: downloaded/merged %d file(s) from s3://%s/%s -> %s",
             downloaded,
             bucket,
             list_prefix,

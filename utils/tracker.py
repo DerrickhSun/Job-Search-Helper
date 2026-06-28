@@ -28,7 +28,7 @@ from .apply_sheets import (
     normalize_greenhouse_job_url,
 )
 from .output_paths import APPLICATIONS_ARCHIVE_CSV, APPLICATIONS_CSV
-from .sheet_csv import read_sheet_csv, union_sheet_rows, write_sheet_csv
+from .sheet_csv import read_sheet_csv, sort_sheet_rows_by_date, union_sheet_rows, write_sheet_csv
 
 log = logging.getLogger(__name__)
 
@@ -230,6 +230,14 @@ class ApplicationTracker:
         # machine's local DB does not contain applies recorded elsewhere. Without this, regenerating from
         # the local DB would clobber cross-machine history.
         existing_header, existing_rows = read_sheet_csv(out)
+        # Strip any existing CSV rows that are already in the archive — memory should never
+        # hold duplicates of archived records regardless of how the CSV arrived.
+        if archived_keys:
+            existing_rows = [
+                r for r in existing_rows
+                if not (k := _sheet_export_url_dedupe_key(r[4] if len(r) > 4 else ""))
+                or k not in archived_keys
+            ]
         db_rows = [
             applied_sheet_row(
                 {"company": company or "", "url": url or "", "title": title or ""},
@@ -237,7 +245,7 @@ class ApplicationTracker:
             )
             for company, url, title, applied_at in written
         ]
-        merged = union_sheet_rows(existing_rows, db_rows)
+        merged = sort_sheet_rows_by_date(union_sheet_rows(existing_rows, db_rows))
         write_sheet_csv(out, existing_header, merged)
 
         log.info(

@@ -36,7 +36,7 @@ from utils.output_paths import (
 )
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.s3_outputs import sync_download_output, sync_upload_output
-from utils.sheet_csv import read_sheet_csv, union_sheet_rows, write_sheet_csv
+from utils.sheet_csv import read_sheet_csv, sort_sheet_rows_by_date, union_sheet_rows, write_sheet_csv
 
 
 def _archive_one(*, active_csv: Path, history_csv: Path) -> int:
@@ -49,6 +49,8 @@ def _archive_one(*, active_csv: Path, history_csv: Path) -> int:
 
     merged = union_sheet_rows(history_rows, active_rows)
     added = len(merged) - len(history_rows)
+    if added:
+        merged = sort_sheet_rows_by_date(merged)
 
     write_sheet_csv(history_csv, history_header or active_header, merged)
     write_sheet_csv(active_csv, active_header, [])

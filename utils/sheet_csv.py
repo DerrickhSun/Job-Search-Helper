@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from .apply_sheets import _is_applications_sheet_header_row, sheet_export_url_dedupe_key
@@ -79,6 +80,18 @@ def union_sheet_rows(*row_lists: list[list[str]]) -> list[list[str]]:
 def sheet_row_keys(rows: list[list[str]]) -> set[str]:
     """Set of non-empty URL dedupe keys for the given rows."""
     return {k for row in rows if (k := sheet_row_key(row))}
+
+
+def sort_sheet_rows_by_date(rows: list[list[str]]) -> list[list[str]]:
+    """Return rows sorted ascending by date (column 3, M/D/YYYY). Unparseable dates sort last."""
+    def _key(row: list[str]) -> tuple:
+        raw = (row[3] if len(row) > 3 else "").strip()
+        try:
+            d = datetime.strptime(raw, "%m/%d/%Y")
+            return (0, d.year, d.month, d.day)
+        except ValueError:
+            return (1, 0, 0, 0)
+    return sorted(rows, key=_key)
 
 
 def write_sheet_csv(path: Path | str, header: list[str] | tuple[str, ...], rows: list[list[str]]) -> None:
