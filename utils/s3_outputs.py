@@ -238,6 +238,9 @@ def sync_download_output(
                 if dest.resolve() in merge_csv_paths:
                     # Merge instead of overwrite: union local + S3 records.
                     _merge_s3_csv(s3, bucket, key, dest)
+                elif _preserve_cover_letter_mtime(dest) and dest.is_file():
+                    # Never overwrite an existing local cover letter.
+                    continue
                 else:
                     s3.download_file(bucket, key, str(dest))
                     if _preserve_cover_letter_mtime(dest):
