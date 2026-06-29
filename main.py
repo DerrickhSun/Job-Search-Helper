@@ -124,6 +124,7 @@ from utils.consulting_filter import (
 from utils.cover_letter import (
     CoverLetterGenerator,
     cover_letter_docx_path_unique,
+    delete_cover_letter_for_job,
     write_cover_letter_docx,
 )
 from utils.dspy_lm import configure_dspy
@@ -682,6 +683,13 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
         if success:
             apply_stats["applied"] += 1
             log.info("  ✓ Applied successfully!")
+            delete_cover_letter_for_job(
+                paths["cover_letter_dir"],
+                site="linkedin",
+                company=str(job.get("company") or ""),
+                title=str(job.get("title") or ""),
+                job_id=jid,
+            )
         else:
             log.warning("  ✗ Application failed — check output/screenshots/")
 

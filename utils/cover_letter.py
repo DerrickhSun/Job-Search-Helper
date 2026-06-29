@@ -156,6 +156,35 @@ def cover_letter_docx_stem(
     return stem
 
 
+def delete_cover_letter_for_job(
+    output_dir: Path | str,
+    *,
+    site: str,
+    company: str,
+    title: str,
+    job_id: str,
+) -> int:
+    """
+    Delete all .docx files in output_dir whose name starts with the cover letter stem for this job.
+
+    Handles the __2/__3 uniqueness suffixes from cover_letter_docx_path_unique. Returns the count deleted.
+    """
+    output_dir = Path(output_dir)
+    if not output_dir.is_dir():
+        return 0
+    stem = cover_letter_docx_stem(site=site, company=company, title=title, job_id=str(job_id))
+    removed = 0
+    for p in output_dir.glob(f"{stem}*.docx"):
+        if p.is_file():
+            try:
+                p.unlink()
+                log.debug("Deleted submitted cover letter: %s", p)
+                removed += 1
+            except OSError as e:
+                log.warning("Could not delete cover letter %s: %s", p, e)
+    return removed
+
+
 def cover_letter_docx_path_unique(
     output_dir: Path | str,
     *,

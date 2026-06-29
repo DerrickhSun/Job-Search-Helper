@@ -31,7 +31,7 @@ from .chrome_driver import (
     log_driver_session_closed,
     save_cookies,
 )
-from .cover_letter import CoverLetterGenerator, cover_letter_docx_path_unique, write_cover_letter_docx
+from .cover_letter import CoverLetterGenerator, cover_letter_docx_path_unique, delete_cover_letter_for_job, write_cover_letter_docx
 from .dspy_lm import configure_dspy
 from .form_fill_rules import DEFAULT_RULES_PATH, FormFillRulesEngine
 from .job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS
@@ -1646,6 +1646,13 @@ def _run_greenhouse_application_helper_concurrent(
                 break
             if action == "next_applied":
                 _append_assisted_greenhouse_application(pub)
+                delete_cover_letter_for_job(
+                    Path(getattr(args, "greenhouse_cover_letter_dir", GREENHOUSE_COVERLETTERS_DIR)),
+                    site="greenhouse",
+                    company=str(pub.get("company") or ""),
+                    title=str(pub.get("title") or ""),
+                    job_id=str(pub.get("id") or "job"),
+                )
             elif action == "next_dismiss":
                 _append_greenhouse_dismissed((pub.get("url") or url).strip(), source="terminal_d")
     finally:
@@ -1855,6 +1862,13 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
             break
         if action == "next_applied":
             _append_assisted_greenhouse_application(pub)
+            delete_cover_letter_for_job(
+                Path(getattr(args, "greenhouse_cover_letter_dir", GREENHOUSE_COVERLETTERS_DIR)),
+                site="greenhouse",
+                company=str(pub.get("company") or ""),
+                title=str(pub.get("title") or ""),
+                job_id=str(pub.get("id") or "job"),
+            )
         elif action == "next_dismiss":
             _append_greenhouse_dismissed(
                 (pub.get("url") or current_entry.get("url") or "").strip(),
