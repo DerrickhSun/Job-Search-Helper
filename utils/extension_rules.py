@@ -146,7 +146,7 @@ def parse_saved_questions_text(text: str) -> tuple[list[ExtensionQuestion], list
                 url = line.split(":", 1)[1].strip()
             elif company_title is None:
                 company_title = line
-        if question and answer is not None and answer != "":
+        if question and answer is not None:
             entries.append(
                 ExtensionQuestion(
                     question=question,
@@ -508,7 +508,10 @@ def print_questions_summary(path: Path, result: QuestionProcessResult, *, dry_ru
     print("=== Extension questions import ===")
     print(f"Path: {path.resolve()}")
     if result.invalid_blocks:
-        print(f"Skipped {len(result.invalid_blocks)} unparseable block(s).")
+        print(f"Skipped {len(result.invalid_blocks)} unparseable block(s):")
+        for blk in result.invalid_blocks:
+            preview = blk.strip().replace("\n", " | ")[:200]
+            print(f"  • {preview}")
     print(f"Already matched by existing rules (same answer): {result.matched}")
     print(f"New rules added to {AUTO_RULES_FILENAME}: {result.added}")
     if dry_run:

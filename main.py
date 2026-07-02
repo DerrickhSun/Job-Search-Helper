@@ -632,6 +632,30 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                     log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
                 return
 
+        # Fetch the job's dedicated page to capture "Requirements added by the job poster".
+        # The two-pane search view omits this section, so the scraped description never contains it.
+        lookup_driver = ensure_company_lookup_driver()
+        if lookup_driver is not None and driver_session_alive(lookup_driver):
+            added_reqs = searcher.fetch_dedicated_page_requirements(lookup_driver, jid)
+            if added_reqs and added_reqs not in (job.get("description") or ""):
+                log.debug("Dedicated page: appending requirements section to job description.")
+                job = {**job, "description": (job.get("description") or "") + "\n\n" + added_reqs}
+                if not matcher.gates_pass(resume, job):
+                    log.info(
+                        "Skipping (dedicated page requirements not met): %s at %s",
+                        job["title"],
+                        job.get("company"),
+                    )
+                    print_job_fit_debug(
+                        job.get("company"), job.get("title"), None, note="gates_failed_dedicated_page"
+                    )
+                    tracker.log(job, status="skipped", score=0.0)
+                    if searcher.dismiss_current_job(
+                        driver, reason="gates-failed", job_id=str(job.get("id") or "")
+                    ):
+                        log.info("  → Dismissed on LinkedIn to avoid revisiting this listing.")
+                    return
+
         if filter_mode:
             _require_browser_session(driver)
             log.info("  → Generating cover letter...")

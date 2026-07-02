@@ -1688,6 +1688,69 @@ class JobSearcher:
                     return href
         return ""
 
+    def fetch_dedicated_page_requirements(self, lookup_driver, job_id: str) -> str:
+        """
+        Navigate to the job's dedicated page and return the "Requirements added by the job poster"
+        section text (empty string if the section is absent or the page fails to load).
+
+        LinkedIn omits this section from the two-pane search-results view, so the main driver's
+        scraped description never contains it. This method polls directly for the marker element
+        via XPath rather than relying on .jobs-description__content, which does not contain the
+        requirements <p> elements (they are siblings in the parent container).
+        """
+        _MARKER = "Requirements added by the job poster"
+        url = f"https://www.linkedin.com/jobs/view/{job_id}/"
+        try:
+            lookup_driver.get(url)
+        except Exception as e:
+            log.debug("fetch_dedicated_page_requirements: navigation failed for %s: %s", url, e)
+            return ""
+
+        # Poll until the marker element appears, scrolling to the bottom each round to
+        # trigger any lazy-loaded content below the fold.
+        deadline = time.time() + 10.0
+        found = False
+        while time.time() < deadline:
+            try:
+                lookup_driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            except Exception:
+                pass
+            try:
+                els = lookup_driver.find_elements(
+                    By.XPATH, f"//*[contains(text(), '{_MARKER}')]"
+                )
+                if any(e.is_displayed() for e in els):
+                    found = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+        if not found:
+            log.debug(
+                "fetch_dedicated_page_requirements: %r not found on %s after timeout", _MARKER, url
+            )
+            return ""
+
+        # Collect the marker element text + all following siblings (the bullet-point <p> elements).
+        parts: list[str] = [_MARKER]
+        try:
+            siblings = lookup_driver.find_elements(
+                By.XPATH, f"//*[contains(text(), '{_MARKER}')]/following-sibling::*"
+            )
+            for sib in siblings:
+                t = (sib.text or "").strip()
+                if t:
+                    parts.append(t)
+        except Exception as e:
+            log.debug("fetch_dedicated_page_requirements: sibling read error: %s", e)
+
+        result = "\n".join(parts).strip()
+        log.debug(
+            "fetch_dedicated_page_requirements: captured %d chars for job %s", len(result), job_id
+        )
+        return result
+
     def company_page_looks_consulting(self, company_driver, company_url: str) -> bool:
         """
         True when company page industry contains consulting/recruiting signals.
