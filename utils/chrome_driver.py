@@ -128,10 +128,18 @@ def log_driver_session_closed() -> None:
     log.info(DRIVER_SESSION_CLOSED_MSG)
 
 
+def scroll_into_view(driver: webdriver.Chrome, element) -> None:
+    """Scroll element to the centre of the viewport (safe in headless and headful)."""
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+    except Exception as e:
+        log.debug("scroll_into_view: %s", e)
+
+
 def focus_element(driver: webdriver.Chrome, element, pause: float = 0.35) -> None:
     """Scroll into view and briefly outline the element (visible window debugging)."""
     try:
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+        scroll_into_view(driver, element)
         time.sleep(0.12)
         driver.execute_script("arguments[0].style.outline = '3px solid crimson';", element)
         time.sleep(pause)

@@ -922,10 +922,15 @@ def main():
                 )
 
         run(args, timing, paths, behavior, search)
+    except KeyboardInterrupt:
+        log.info("Stopped.")
     finally:
-        cover_modes = _cover_letter_modes_for_run(site=args.site, filter_mode=args.filter)
-        prune_cover_letters_for_sync(cover_letter_modes=cover_modes)
-        sync_upload_output(cover_letter_modes=cover_modes)
+        try:
+            cover_modes = _cover_letter_modes_for_run(site=args.site, filter_mode=args.filter)
+            prune_cover_letters_for_sync(cover_letter_modes=cover_modes)
+            sync_upload_output(cover_letter_modes=cover_modes)
+        except KeyboardInterrupt:
+            log.info("Shutdown: skipping S3 sync.")
 
 
 if __name__ == "__main__":

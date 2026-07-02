@@ -678,6 +678,14 @@ class JobSearcher:
             if not driver_closed:
                 save_cookies(driver, self.session_file)
             return processed
+        except KeyboardInterrupt:
+            log.info("Run interrupted — saving progress and shutting down.")
+            if not driver_closed:
+                try:
+                    save_cookies(driver, self.session_file)
+                except Exception:
+                    pass
+            raise StopApplyPipeline("interrupted by user")
         except WebDriverException:
             log_driver_session_closed()
             return processed

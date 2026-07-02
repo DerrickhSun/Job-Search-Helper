@@ -27,6 +27,7 @@ from .chrome_driver import (
     driver_session_alive,
     focus_element,
     interruptible_sleep,
+    scroll_into_view,
     load_cookies,
     log_driver_session_closed,
 )
@@ -655,6 +656,7 @@ class EasyApplyFiller:
     def _replace_text_control_value(self, driver: Any, el, text: str) -> None:
         """Select-all and replace — ``clear()`` alone often leaves LinkedIn’s draft cover letter."""
         self._activate_text_control_before_fill(driver, el)
+        scroll_into_view(driver, el)
         if self.highlight:
             focus_element(driver, el, pause=0.12)
         time.sleep(0.05)
@@ -680,6 +682,30 @@ class EasyApplyFiller:
         """Pause after we type or change a field so you can review (see ``apply_review_pause_after_fill_seconds``)."""
         if self.apply_review_pause_after_fill_seconds > 0:
             time.sleep(self.apply_review_pause_after_fill_seconds)
+
+    def _wait_for_typeahead_dropdown(self, driver, timeout: float = 2.0) -> bool:
+        """
+        Wait up to timeout seconds for a typeahead suggestion dropdown to appear.
+
+        Needed for autocomplete fields (e.g. Location) where pressing Enter before suggestions
+        load produces a validation error. Returns True if a dropdown was detected.
+        """
+        _TYPEAHEAD_SELECTORS = (
+            "[role='listbox']",
+            ".basic-typeahead__triggered-content",
+            "ul.fb-typeahead-list",
+        )
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for sel in _TYPEAHEAD_SELECTORS:
+                try:
+                    for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                        if el.is_displayed():
+                            return True
+                except Exception:
+                    pass
+            time.sleep(0.1)
+        return False
 
     def _maybe_pause_for_user_on_first_empty_field(self, label: str = "") -> None:
         """
@@ -765,6 +791,7 @@ class EasyApplyFiller:
                 for btn in modal.find_elements(By.CSS_SELECTOR, sel):
                     if not btn.is_displayed() or not btn.is_enabled():
                         continue
+                    scroll_into_view(driver, btn)
                     if self.highlight:
                         focus_element(driver, btn, pause=self.step_delay)
                     try:
@@ -893,9 +920,13 @@ class EasyApplyFiller:
                 raise RuntimeError(
                     "Apply button not found: expected #jobs-apply-button-id or Easy Apply fallback"
                 )
+            scroll_into_view(driver, apply_btn)
             if self.highlight:
                 focus_element(driver, apply_btn, pause=self.step_delay)
-            apply_btn.click()
+            try:
+                apply_btn.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", apply_btn)
             self._after_ui_click()
             time.sleep(0.35)
 
@@ -906,8 +937,11 @@ class EasyApplyFiller:
                 return False
 
             return self._fill_form(driver, resume, cover_letter, job)
-        except WebDriverException:
-            log_driver_session_closed()
+        except WebDriverException as e:
+            if not driver_session_alive(driver):
+                log_driver_session_closed()
+            else:
+                log.warning("WebDriver error during Easy Apply (browser still alive) — skipping job: %s", e)
             return False
         except Exception as e:
             log.error("Application failed for %s at %s: %s", job["title"], job["company"], e)
@@ -1099,6 +1133,7 @@ class EasyApplyFiller:
         extra = self._visible_post_apply_control(driver)
         if extra:
             try:
+                scroll_into_view(driver, extra)
                 if self.highlight:
                     focus_element(driver, extra, pause=0.2)
                 extra.click()
@@ -1112,6 +1147,7 @@ class EasyApplyFiller:
             for btn in driver.find_elements(By.CSS_SELECTOR, sel):
                 try:
                     if btn.is_displayed() and btn.is_enabled():
+                        scroll_into_view(driver, btn)
                         if self.highlight:
                             focus_element(driver, btn, pause=0.2)
                         btn.click()
@@ -1485,8 +1521,32 @@ class EasyApplyFiller:
             errors = driver.find_elements(By.CSS_SELECTOR, SEL["error_msg"])
             if errors:
                 error_text = errors[0].text
-                log.warning("Validation error at step %d: %s", step, error_text)
-                driver.save_screenshot(str(self.screenshot_dir / f"validation_{job['id']}_step{step}.png"))
+                # Try to find the label of the failing field for easier debugging.
+                field_label = ""
+                try:
+                    container = errors[0].find_element(
+                        By.XPATH,
+                        "ancestor::*[self::div or self::fieldset][.//label][1]",
+                    )
+                    lbl = container.find_element(By.CSS_SELECTOR, "label")
+                    field_label = (lbl.text or "").strip().splitlines()[0][:120]
+                except Exception:
+                    pass
+                if field_label:
+                    log.warning(
+                        "Validation error at step %d (field: %r): %s",
+                        step, field_label, error_text,
+                    )
+                else:
+                    log.warning("Validation error at step %d: %s", step, error_text)
+                shot_path = self.screenshot_dir / f"validation_{job['id']}_step{step}.png"
+                try:
+                    scroll_into_view(driver, errors[0])
+                    time.sleep(0.15)
+                    driver.save_screenshot(str(shot_path))
+                    log.info("Validation screenshot saved: %s", shot_path)
+                except Exception as e:
+                    log.warning("Could not save validation screenshot %s: %s", shot_path, e)
                 self._abandon_apply_and_dismiss(driver, job, f"validation error: {error_text}")
                 return False
 
@@ -2025,6 +2085,7 @@ class EasyApplyFiller:
                             )
                         if self._rules.text_input_press_enter_after_fill(label):
                             try:
+                                self._wait_for_typeahead_dropdown(driver)
                                 input_el.send_keys(Keys.RETURN)
                                 self._after_field_fill()
                                 time.sleep(0.35)
