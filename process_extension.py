@@ -31,6 +31,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from utils.apply_sheets import applied_sheet_row
+from utils.cover_letter import delete_cover_letter_for_job
 from utils.extension_rules import (
     SAVED_JOBS_QUESTIONS_FILENAME,
     migrate_extension_auto_rules_to_exact,
@@ -42,6 +43,7 @@ from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
     ASSISTED_APPLICATIONS_CSV,
     ASSISTED_APPLICATIONS_HISTORY_CSV,
+    FILTER_COVERLETTERS_DIR,
     migrate_form_fill_rules,
     migrate_legacy_root_archive_files,
 )
@@ -57,6 +59,7 @@ from utils.sheet_csv import (
 SAVED_JOBS_FILENAME = "saved_jobs.txt"
 
 _LINE_URL_RE = re.compile(r"(https?://\S+)\s*$")
+_LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)", re.IGNORECASE)
 _EXTENSION_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -145,6 +148,47 @@ def parse_saved_jobs_file(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     except UnicodeDecodeError:
         text = path.read_text(encoding="utf-8", errors="replace")
     return parse_saved_jobs_text(text)
+
+
+def delete_cover_letters_for_applied_jobs(
+    jobs: list[dict[str, Any]], *, dry_run: bool = False
+) -> int:
+    """
+    Delete filter-mode cover letters for jobs that appear in the extension export.
+
+    The job ID is extracted from the LinkedIn URL in each job dict.  The cover
+    letter stem includes the ID, so matches are unambiguous even when two jobs
+    share the same company and title.  Returns the total number of files deleted.
+    """
+    total = 0
+    for job in jobs:
+        url = job.get("url") or ""
+        m = _LINKEDIN_JOB_ID_RE.search(url)
+        if not m:
+            continue
+        job_id = m.group(1)
+        if dry_run:
+            from utils.cover_letter import cover_letter_docx_stem
+            stem = cover_letter_docx_stem(
+                site="filter",
+                company=str(job.get("company") or ""),
+                title=str(job.get("title") or ""),
+                job_id=job_id,
+            )
+            matches = list(FILTER_COVERLETTERS_DIR.glob(f"{stem}*.docx")) if FILTER_COVERLETTERS_DIR.is_dir() else []
+            if matches:
+                for p in matches:
+                    print(f"  [dry-run] would delete cover letter: {p.name}")
+                total += len(matches)
+        else:
+            total += delete_cover_letter_for_job(
+                FILTER_COVERLETTERS_DIR,
+                site="filter",
+                company=str(job.get("company") or ""),
+                title=str(job.get("title") or ""),
+                job_id=job_id,
+            )
+    return total
 
 
 def import_saved_jobs_to_assisted(
@@ -321,6 +365,11 @@ def main() -> int:
                 skipped_jobs=skipped_jobs,
                 dry_run=args.dry_run,
             )
+            deleted_cls = delete_cover_letters_for_applied_jobs(parsed, dry_run=args.dry_run)
+            if deleted_cls:
+                print(f"Deleted {deleted_cls} cover letter(s) for applied jobs.")
+            else:
+                print("No matching cover letters found to delete.")
     elif not args.skip_jobs:
         print(f"=== {SAVED_JOBS_FILENAME} ===")
         print(f"Not found: {saved_jobs_path.resolve()}")

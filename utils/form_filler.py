@@ -1867,6 +1867,21 @@ class EasyApplyFiller:
         except Exception:
             return False
 
+    def _save_text_cover_letter(self, cover_letter: str, job: dict) -> None:
+        """Write cover letter to disk when it was submitted as typed text rather than a file upload."""
+        try:
+            docx_path = cover_letter_docx_path_unique(
+                self.cover_letter_docx_dir,
+                site="linkedin",
+                company=str(job.get("company") or ""),
+                title=str(job.get("title") or ""),
+                job_id=str(job.get("id") or "job"),
+            )
+            write_cover_letter_docx(cover_letter, docx_path)
+            log.info("Saved text-field cover letter as DOCX: %s", docx_path)
+        except Exception as e:
+            log.warning("Could not save text-field cover letter: %s", e)
+
     def _file_input_is_cover_letter_upload(self, driver: Any, el) -> bool:
         """True when this ``input[type=file]`` is for a cover letter (not résumé/CV)."""
         label = (self._get_label(driver, el) or "").lower()
@@ -2024,6 +2039,7 @@ class EasyApplyFiller:
                     self._after_field_fill()
                     filled_cover_letter_as_text = True
                     log.info("Filled cover letter into text field (replaced any prior / LinkedIn draft text).")
+                    self._save_text_cover_letter(cover_letter, job)
                     continue
 
                 current = (input_el.get_attribute("value") or "").strip()
@@ -2158,6 +2174,7 @@ class EasyApplyFiller:
                         log.info(
                             "Filled cover letter into textarea (replaced any prior / LinkedIn draft text)."
                         )
+                        self._save_text_cover_letter(text, job)
                     else:
                         self._activate_text_control_before_fill(driver, ta)
                         if self.highlight:
