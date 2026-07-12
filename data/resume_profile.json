@@ -67,6 +67,11 @@
   ],
   "projects": [
     {
+      "title": "Quickboard Firefox Extension",
+      "dates": "June 2026",
+      "description": "Personal project that creates a toolbar along the top of the browser that allows easy saving of text to a clipboard."
+    },
+    {
       "title": "Webnovel Downloader and Translator",
       "dates": "2025 - 2026",
       "description": "Personal project that downloads online content and calls OpenAI API to translate it.\nUtilizes Selenium to display a menu and automatically navigate the internet."
