@@ -29,6 +29,7 @@ from .chrome_driver import (
     driver_session_alive,
     focus_element,
     log_driver_session_closed,
+    quit_chrome,
     save_cookies,
 )
 from .cover_letter import CoverLetterGenerator, cover_letter_docx_path_unique, delete_cover_letter_for_job, write_cover_letter_docx
@@ -1567,10 +1568,7 @@ def _run_greenhouse_application_helper_concurrent(
         except Exception as e:
             log.warning("Greenhouse prefetch: scanner thread error: %s", e)
         finally:
-            try:
-                scanner.quit()
-            except Exception:
-                pass
+            quit_chrome(scanner)
             work_q.put(None)  # sentinel: scanning complete
 
     producer = threading.Thread(target=_producer, name="greenhouse-scanner", daemon=True)
@@ -2606,14 +2604,17 @@ def run_greenhouse_sign_in_flow(args) -> None:
             log.info("Greenhouse session saved (%s).", path.resolve())
     finally:
         if driver is not None:
-            if prompt_before_close and driver_session_alive(driver):
-                log.info(
-                    "Leaving the browser open — inspect the page, then press Enter in this terminal to quit Chrome."
-                )
-                _pause_until_user_closes_browser()
-                _save_greenhouse_session_cookies(driver, path, "after manual review, before quit")
-                log.info("Greenhouse session saved (%s).", path.resolve())
             try:
-                driver.quit()
-            except Exception:
-                pass
+                if prompt_before_close and driver_session_alive(driver):
+                    log.info(
+                        "Leaving the browser open — inspect the page, then press Enter in this terminal to quit Chrome."
+                    )
+                    try:
+                        _pause_until_user_closes_browser()
+                    except KeyboardInterrupt:
+                        log.info("Interrupted while waiting for Enter — closing Chrome.")
+                    else:
+                        _save_greenhouse_session_cookies(driver, path, "after manual review, before quit")
+                        log.info("Greenhouse session saved (%s).", path.resolve())
+            finally:
+                quit_chrome(driver)

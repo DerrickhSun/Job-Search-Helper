@@ -25,7 +25,7 @@ try:
 except ImportError:
     load_dotenv = None  # type: ignore[misc, assignment]
 
-from utils.chrome_driver import build_chrome, load_cookies, save_cookies  # noqa: E402
+from utils.chrome_driver import build_chrome, load_cookies, quit_chrome, save_cookies  # noqa: E402
 from utils.job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS, JobSearcher  # noqa: E402
 
 logging.basicConfig(
@@ -110,7 +110,7 @@ def main() -> int:
         save_cookies(driver, searcher.session_file)
         return 0 if ok and after_active else 1
     finally:
-        driver.quit()
+        quit_chrome(driver)
 
 
 if __name__ == "__main__":

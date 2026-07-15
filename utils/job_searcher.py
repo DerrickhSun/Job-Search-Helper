@@ -34,6 +34,7 @@ from .chrome_driver import (
     interruptible_sleep,
     load_cookies,
     log_driver_session_closed,
+    quit_chrome,
     save_cookies,
 )
 from .job_records import append_listing_record
@@ -347,7 +348,7 @@ class JobSearcher:
             save_cookies(driver, self.session_file)
             return []
         finally:
-            driver.quit()
+            quit_chrome(driver)
 
     def run_search_apply_pipeline(
         self,
@@ -690,10 +691,7 @@ class JobSearcher:
             log_driver_session_closed()
             return processed
         finally:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+            quit_chrome(driver)
 
     def _driver_stopped(self, driver) -> bool:
         """True when the browser session is gone — list scroll / pagination should stop."""

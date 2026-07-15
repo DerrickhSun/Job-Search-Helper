@@ -36,7 +36,7 @@ try:
 except ImportError:
     load_dotenv = None  # type: ignore[misc, assignment]
 
-from utils.chrome_driver import build_chrome, load_cookies, save_cookies
+from utils.chrome_driver import build_chrome, load_cookies, quit_chrome, save_cookies
 from utils.job_searcher import JobSearcher
 
 logging.basicConfig(
@@ -189,8 +189,8 @@ def main() -> int:
         return 0 if failed == 0 else 1
 
     finally:
-        main_driver.quit()
-        lookup_driver.quit()
+        quit_chrome(main_driver)
+        quit_chrome(lookup_driver)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -74,6 +75,39 @@ def build_chrome(headless: bool = False) -> webdriver.Chrome:
         except Exception:
             driver.set_window_size(1400, 900)
     return driver
+
+
+def quit_chrome(driver: webdriver.Chrome | None) -> None:
+    """
+    Quit ``driver`` and guarantee the chromedriver + chrome process tree is gone.
+
+    ``driver.quit()`` sends a DELETE /session command so chromedriver closes Chrome cleanly, then
+    stops the chromedriver process. If that command hangs or times out (slow/unresponsive page),
+    Selenium falls back to killing chromedriver via Windows ``TerminateProcess``, which does not
+    cascade to its child chrome.exe — the browser is silently orphaned. Capture chromedriver's PID
+    up front and force-kill its process tree as a backstop so this can't leave Chrome running.
+    """
+    if driver is None:
+        return
+    pid = None
+    try:
+        pid = driver.service.process.pid
+    except Exception:
+        pass
+    try:
+        driver.quit()
+    except Exception:
+        log.debug("quit_chrome: driver.quit() raised", exc_info=True)
+    if pid and os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except Exception:
+            log.debug("quit_chrome: taskkill backstop failed", exc_info=True)
 
 
 def _probe_driver_session_alive(driver: webdriver.Chrome) -> bool:

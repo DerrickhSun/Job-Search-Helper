@@ -30,6 +30,7 @@ from .chrome_driver import (
     scroll_into_view,
     load_cookies,
     log_driver_session_closed,
+    quit_chrome,
 )
 from .cover_letter import cover_letter_docx_path_unique, write_cover_letter_docx
 from .form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
@@ -954,7 +955,7 @@ class EasyApplyFiller:
             return False
         finally:
             if own_driver and driver:
-                driver.quit()
+                quit_chrome(driver)
 
     def _find_apply_button(self, driver: Any):
         """

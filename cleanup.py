@@ -30,6 +30,7 @@ from utils.chrome_driver import (
     focus_element,
     interruptible_sleep,
     load_cookies,
+    quit_chrome,
     save_cookies,
     scroll_into_view,
 )
@@ -208,10 +209,7 @@ def run(
         save_cookies(driver, DEFAULT_COOKIE_PATH)
         return count
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        quit_chrome(driver)
 
 
 def main() -> int:

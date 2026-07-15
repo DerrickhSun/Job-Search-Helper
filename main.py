@@ -110,6 +110,7 @@ from utils.chrome_driver import (
     driver_session_alive,
     load_cookies,
     log_driver_session_closed,
+    quit_chrome,
     save_cookies,
 )
 from utils.company_blacklist import is_company_blacklisted, load_company_blacklist
@@ -348,10 +349,7 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             searcher._login(company_lookup_driver)
         except Exception:
             log.exception("Company lookup driver: LinkedIn login failed; closing second Chrome.")
-            try:
-                company_lookup_driver.quit()
-            except Exception:
-                pass
+            quit_chrome(company_lookup_driver)
             company_lookup_driver = None
             raise
         return company_lookup_driver
@@ -606,10 +604,7 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                     "Company lookup Chrome session ended — skipping company-page consulting check."
                 )
                 nonlocal company_lookup_driver
-                try:
-                    company_lookup_driver.quit()
-                except Exception:
-                    pass
+                quit_chrome(company_lookup_driver)
                 company_lookup_driver = None
             elif lookup_driver is not None and searcher.company_page_looks_consulting(
                 lookup_driver, normalized_link
@@ -738,10 +733,7 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                 save_cookies(company_lookup_driver, searcher.session_file)
             except Exception:
                 log.debug("Company lookup driver: cookie save failed", exc_info=True)
-            try:
-                company_lookup_driver.quit()
-            except Exception:
-                pass
+            quit_chrome(company_lookup_driver)
         try:
             tracker.export_csv("output/applications.csv")
             log.info("Exported output/applications.csv.")
