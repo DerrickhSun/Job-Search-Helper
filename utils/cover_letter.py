@@ -185,6 +185,27 @@ def delete_cover_letter_for_job(
     return removed
 
 
+def unique_docx_path(output_dir: Path | str, stem: str) -> Path:
+    """
+    ``output_dir / {stem}.docx``; if that path exists, use ``{stem}__2.docx``, ``{stem}__3.docx``, …
+
+    Split out of :func:`cover_letter_docx_path_unique` so callers with their own stem-building
+    logic (e.g. the extension server, which doesn't use the multi-site ``{site}_...`` naming
+    scheme) can still reuse the collision-avoidance behavior.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{stem}.docx"
+    if not path.exists():
+        return path
+    n = 2
+    while True:
+        cand = output_dir / f"{stem}__{n}.docx"
+        if not cand.exists():
+            return cand
+        n += 1
+
+
 def cover_letter_docx_path_unique(
     output_dir: Path | str,
     *,
@@ -197,18 +218,8 @@ def cover_letter_docx_path_unique(
     ``output_dir / {stem}.docx`` using :func:`cover_letter_docx_stem`; if that path exists, use
     ``{stem}__2.docx``, ``{stem}__3.docx``, …
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     stem = cover_letter_docx_stem(site=site, company=company, title=title, job_id=str(job_id))
-    path = output_dir / f"{stem}.docx"
-    if not path.exists():
-        return path
-    n = 2
-    while True:
-        cand = output_dir / f"{stem}__{n}.docx"
-        if not cand.exists():
-            return cand
-        n += 1
+    return unique_docx_path(output_dir, stem)
 
 
 COVER_INSTRUCTION = """Write a concise, professional cover letter for this job application.

@@ -1,11 +1,12 @@
 """
-Local HTTP API that lets the browser extension request a tailored cover letter on demand,
-instead of only relying on cover letters pre-generated during a ``main.py --filter`` run.
+Local HTTP API that lets the browser extension request a tailored cover letter, or answers for
+a page's form fields, on demand — instead of only relying on cover letters pre-generated during
+a ``main.py --filter`` run, or the Selenium auto-apply flow.
 
 Run from repo root::
 
-    python cover_letter_server.py
-    python cover_letter_server.py --port 8743 --resume resume.pdf
+    python extension_server.py
+    python extension_server.py --port 8743 --resume resume.pdf
 
 Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
 
@@ -16,6 +17,22 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
         body: {"title": str, "company": str, "description": str,
                 "url": str?, "job_id": str?, "save_docx": bool? (default true)}
         -> {"cover_letter": str, "docx_path": str | null}
+
+    POST /answer-fields
+        body: {"fields": [{"label": str, "type": "text"|"textarea"|"select"|"radio"|"checkbox_group"}]}
+        -> {"answers": [{"value": str | null, "flag": null | "discard"}]}  (index-aligned with fields)
+
+        Answers come from the same ``FormFillRulesEngine`` (resume/rule lookups) the Selenium
+        auto-apply flow uses — there's no LLM fallback, so an unmatched label just comes back as
+        ``{"value": null}``. The caller (extension) is responsible for matching a non-null string
+        answer against the right DOM option/radio/checkbox; this endpoint only returns label ->
+        answer, the same division of labor ``form_filler.py`` already has internally. A
+        ``"radio"`` field is resolved via ``screening_yes_no`` (mirrors how the Selenium flow
+        answers Yes/No radios) and returns ``"Yes"``/``"No"``. If the rules engine's internal
+        disqualifying-question sentinel comes back, the answer is reported as
+        ``{"value": null, "flag": "discard"}`` instead of leaking that sentinel string as if it
+        were literal fill text — the caller should surface this as "needs manual review", not
+        fill anything.
 
     When ``save_docx`` is true (default), the .docx is written straight to the user's Downloads
     folder (override with ``--downloads-dir``) so it's already sitting where a file-upload dialog
@@ -52,6 +69,7 @@ import os
 import re
 import secrets
 import sys
+import unicodedata
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -60,11 +78,14 @@ from typing import Any
 from dotenv import load_dotenv
 
 from utils.cover_letter import (
+    _MAX_COVER_LETTER_FILENAME_STEM_CHARS,
+    _sanitize_cover_letter_filename_segment,
     CoverLetterGenerator,
-    cover_letter_docx_path_unique,
+    unique_docx_path,
     write_cover_letter_docx,
 )
 from utils.dspy_lm import configure_dspy
+from utils.form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
 from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 
 log = logging.getLogger(__name__)
@@ -86,7 +107,7 @@ def _load_or_create_token() -> str:
     with env_path.open("a", encoding="utf-8") as f:
         f.write(f"\n{_TOKEN_ENV_VAR}={token}\n")
     print(
-        f"Generated a new cover letter server token and saved it to {env_path.resolve()}.\n"
+        f"Generated a new extension server token and saved it to {env_path.resolve()}.\n"
         f"Configure the browser extension with this token:\n\n    {token}\n"
     )
     return token
@@ -107,10 +128,64 @@ def _job_id_for(*, company: str, title: str, url: str, explicit: str) -> str:
     return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:10]
 
 
+def _normalize_whitespace_for_match(text: str) -> str:
+    # NFKC folds non-breaking spaces (U+00A0, common in LinkedIn's rendered DOM
+    # text) and similar compatibility characters down to plain ASCII space, so
+    # a company name scraped from the DOM still matches one embedded in a
+    # title pulled from document.title even if their whitespace differs.
+    text = unicodedata.normalize("NFKC", text or "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _drop_redundant_company_mentions(company: str, title: str) -> str:
+    """Some postings (e.g. "General Interest Application" listings) title themselves with the
+    company name already leading and/or trailing the title — filenaming that verbatim repeats
+    the company name after it's already been used as the company segment. Strips a leading
+    and/or trailing company-name mention (looping, in case both are present); keeps the original
+    title if nothing meaningful would remain."""
+    norm_company = _normalize_whitespace_for_match(company).casefold()
+    if not norm_company:
+        return title
+
+    working = _normalize_whitespace_for_match(title)
+    changed = True
+    while changed:
+        changed = False
+        lower = working.casefold()
+        if lower.startswith(norm_company):
+            working = working[len(norm_company):].lstrip(" \t-–—:").strip()
+            changed = True
+        lower = working.casefold()
+        if lower.endswith(norm_company):
+            working = working[: len(working) - len(norm_company)].rstrip(" \t-–—:").strip()
+            changed = True
+
+    return working or title
+
+
+def _extension_cover_letter_stem(*, company: str, title: str, job_id: str) -> str:
+    """Filename stem for extension-generated cover letters: ``{company}_{title}_{job_id}``.
+
+    Unlike ``cover_letter_docx_stem`` (used by the Selenium auto-apply flow and ``main.py
+    --filter``), this has no ``{site}_`` prefix — these already live in the user's Downloads
+    folder rather than a site-organized output directory, so the label isn't useful there.
+    """
+    deduped_title = _drop_redundant_company_mentions(company, title)
+    co = _sanitize_cover_letter_filename_segment(company or "Company", 55)
+    ti = _sanitize_cover_letter_filename_segment(deduped_title or "Position", 75)
+    raw_id = str(job_id or "job").strip()
+    jid = re.sub(r"[^\w\-.]+", "_", raw_id).strip("_")
+    jid = (jid or "job")[:48]
+    stem = "_".join((co, ti, jid))
+    stem = re.sub(r"_+", "_", stem)
+    return stem[:_MAX_COVER_LETTER_FILENAME_STEM_CHARS].rstrip("._-")
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     resume: dict[str, Any]
     cover_gen: CoverLetterGenerator
+    rules_engine: FormFillRulesEngine
     token: str
     downloads_dir: Path
 
@@ -157,7 +232,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"status": "ok"})
 
     def do_POST(self) -> None:
-        if self.path != "/cover-letter":
+        if self.path not in ("/cover-letter", "/answer-fields"):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._authorized():
@@ -178,6 +253,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "body must be a JSON object"})
             return
 
+        if self.path == "/cover-letter":
+            self._handle_cover_letter(data)
+        else:
+            self._handle_answer_fields(data)
+
+    def _handle_cover_letter(self, data: dict[str, Any]) -> None:
         title = str(data.get("title") or "").strip()
         company = str(data.get("company") or "").strip()
         description = str(data.get("description") or "").strip()
@@ -196,18 +277,61 @@ class _Handler(BaseHTTPRequestHandler):
                 url=str(data.get("url") or ""),
                 explicit=str(data.get("job_id") or "").strip(),
             )
-            path = cover_letter_docx_path_unique(
-                self.downloads_dir, site="filter", company=company, title=title, job_id=job_id
-            )
+            stem = _extension_cover_letter_stem(company=company, title=title, job_id=job_id)
+            path = unique_docx_path(self.downloads_dir, stem)
             write_cover_letter_docx(cover_letter, path)
             docx_path = str(path.resolve())
 
         self._send_json(HTTPStatus.OK, {"cover_letter": cover_letter, "docx_path": docx_path})
 
+    def _answer_one_field(self, label: str, field_type: str) -> dict[str, Any]:
+        """Dispatch to the FormFillRulesEngine method matching this field type.
+
+        Matching a non-null answer back to the right DOM option/radio/checkbox
+        is the caller's job (same division of labor form_filler.py already
+        has) — the engine only ever deals in label strings.
+        """
+        if field_type == "text":
+            value = self.rules_engine.answer_text_field(label, self.resume)
+        elif field_type == "textarea":
+            # No cover-letter text: this endpoint has no job/company context
+            # on an arbitrary page, so cover_letter_* result-type rules just
+            # yield nothing here rather than erroring.
+            value = self.rules_engine.answer_textarea(label, "")
+        elif field_type == "select":
+            value = self.rules_engine.answer_select(label)
+        elif field_type == "radio":
+            value = self.rules_engine.screening_yes_no(label)
+        elif field_type == "checkbox_group":
+            value = self.rules_engine.checkbox_group_choice(label)
+        else:
+            value = None
+
+        if value == DISCARD_APPLY:
+            return {"value": None, "flag": "discard"}
+        return {"value": value, "flag": None}
+
+    def _handle_answer_fields(self, data: dict[str, Any]) -> None:
+        fields = data.get("fields")
+        if not isinstance(fields, list):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "fields must be a list"})
+            return
+
+        answers: list[dict[str, Any]] = []
+        for field in fields:
+            label = str((field or {}).get("label") or "").strip() if isinstance(field, dict) else ""
+            field_type = str((field or {}).get("type") or "").strip() if isinstance(field, dict) else ""
+            if not label:
+                answers.append({"value": None, "flag": None})
+                continue
+            answers.append(self._answer_one_field(label, field_type))
+
+        self._send_json(HTTPStatus.OK, {"answers": answers})
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Local API server exposing the cover letter generator to the browser extension."
+        description="Local API server exposing the cover letter generator and form-fill answers to the browser extension."
     )
     parser.add_argument(
         "--host",
@@ -252,11 +376,15 @@ def main() -> int:
 
     _Handler.resume = resume
     _Handler.cover_gen = CoverLetterGenerator()
+    # apply_source=None: /answer-fields isn't LinkedIn/Greenhouse-specific,
+    # it's meant to run on any page, so the two site-specific rule types
+    # (literal_from_apply_source / choose_label_from_apply_source) are unused.
+    _Handler.rules_engine = FormFillRulesEngine(apply_source=None)
     _Handler.token = token
     _Handler.downloads_dir = downloads_dir
 
     server = ThreadingHTTPServer((args.host, args.port), _Handler)
-    log.info("Cover letter server listening on http://%s:%d (Ctrl+C to stop)", args.host, args.port)
+    log.info("Extension server listening on http://%s:%d (Ctrl+C to stop)", args.host, args.port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
