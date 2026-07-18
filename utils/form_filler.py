@@ -62,6 +62,11 @@ SEL = {
     "select": "select",
     "radio": "input[type='radio']",
     "linkedin_radio_fieldset": 'fieldset[data-test-form-builder-radio-button-form-component="true"]',
+    "checkbox": "input[type='checkbox']",
+    "linkedin_checkbox_fieldset": (
+        'fieldset[data-test-form-builder-checkbox-form-component="true"], '
+        'fieldset[data-test-checkbox-form-component="true"]'
+    ),
     "error_msg": ".artdeco-inline-feedback--error",
 }
 
@@ -1783,6 +1788,227 @@ class EasyApplyFiller:
                 log.debug("Skipping LinkedIn radio fieldset: %s", e)
         return True, processed_names
 
+    def _click_checkbox_target(self, driver: Any, el: Any) -> None:
+        if self.highlight:
+            focus_element(driver, el, pause=0.2)
+        try:
+            el.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", el)
+
+    def _legend_for_linkedin_checkbox_fieldset(self, fieldset: Any) -> str:
+        """Question text for a LinkedIn checkbox fieldset (single toggle or multi-option group)."""
+        for sel in (
+            "[data-test-form-builder-checkbox-form-component__title]",
+            "[data-test-checkbox-form-component__title]",
+            "legend .fb-dash-form-element__label",
+            "legend",
+        ):
+            try:
+                els = fieldset.find_elements(By.CSS_SELECTOR, sel)
+                if els:
+                    t = (els[0].text or "").strip()
+                    if t:
+                        return t
+            except Exception:
+                continue
+        return ""
+
+    @staticmethod
+    def _linkedin_checkbox_fieldset_is_required(fieldset: Any) -> bool:
+        try:
+            for el in fieldset.find_elements(
+                By.CSS_SELECTOR,
+                "legend, legend .fb-dash-form-element__label, "
+                "[data-test-form-builder-checkbox-form-component__required], "
+                "[data-test-checkbox-form-component__required]",
+            ):
+                cls = (el.get_attribute("class") or "").lower()
+                if "is-required" in cls or "required" in cls:
+                    return True
+        except Exception:
+            pass
+        for inp in fieldset.find_elements(By.CSS_SELECTOR, "input[type='checkbox']"):
+            try:
+                if (inp.get_attribute("aria-required") or "").lower() == "true":
+                    return True
+                if inp.get_attribute("required") is not None:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    @staticmethod
+    def _checkbox_option_label(container: Any, cb: Any) -> str:
+        """Visible label text for one checkbox option (LinkedIn's selectable-option wrapper, or <label for>)."""
+        try:
+            lab_list = cb.find_elements(
+                By.XPATH,
+                "./ancestor::*[self::div or self::li][1]//label[@data-test-text-selectable-option__label]",
+            )
+            if lab_list:
+                t = (lab_list[0].text or "").strip()
+                if t:
+                    return t
+        except Exception:
+            pass
+        try:
+            cid = cb.get_attribute("id") or ""
+            if cid:
+                for lab in container.find_elements(By.CSS_SELECTOR, f'label[for="{cid}"]'):
+                    t = (lab.text or "").strip()
+                    if t:
+                        return t
+        except Exception:
+            pass
+        return (cb.get_attribute("value") or "").strip()
+
+    def _click_checkbox_option_by_label(self, driver: Any, container: Any, choose_label: str) -> bool:
+        """Check the checkbox option in ``container`` whose visible label matches ``choose_label``."""
+        target = (choose_label or "").strip()
+        if not target:
+            return False
+        for cb in container.find_elements(By.CSS_SELECTOR, "input[type='checkbox']"):
+            try:
+                label_text = self._checkbox_option_label(container, cb)
+                if not label_text or not self._choice_labels_equivalent(target, label_text):
+                    continue
+                if not cb.is_selected():
+                    click_el = cb
+                    cid = cb.get_attribute("id") or ""
+                    if cid:
+                        labs = container.find_elements(By.CSS_SELECTOR, f'label[for="{cid}"]')
+                        if labs:
+                            click_el = labs[0]
+                    self._click_checkbox_target(driver, click_el)
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _fill_linkedin_checkbox_fieldsets(
+        self,
+        driver: Any,
+        job: dict,
+        root: Any,
+        *,
+        assist: bool,
+    ) -> tuple[bool, set[str]]:
+        """
+        LinkedIn Easy Apply checkbox questions.
+
+        A fieldset with exactly **one** checkbox is a yes/no toggle for the question in its legend —
+        uses ``screening_yes_no`` rules (check it for "Yes", leave/uncheck for "No"), same rules already
+        written for radio Yes/No questions (e.g. sponsorship). A fieldset with **multiple** checkboxes is
+        a multi-option group (e.g. "How did you hear about us") — uses ``checkbox_groups`` rules, the same
+        category already used for Greenhouse ``fieldset.checkbox``.
+
+        Matches known LinkedIn form-builder attributes first, then falls back to any ``fieldset``
+        containing checkbox inputs (attribute names are not confirmed against a live example — this
+        fallback keeps the feature working even if the specific attribute guess above is wrong).
+
+        Returns ``(ok, processed input names)`` — mirrors ``_fill_linkedin_form_builder_radio_fieldsets``.
+        """
+        processed_names: set[str] = set()
+        seen_ids: set[str] = set()
+        fieldsets = []
+        candidates = list(root.find_elements(By.CSS_SELECTOR, SEL["linkedin_checkbox_fieldset"]))
+        candidates += [
+            fs
+            for fs in root.find_elements(By.CSS_SELECTOR, "fieldset")
+            if fs.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+        ]
+        for fs in candidates:
+            key = fs.id
+            if key in seen_ids:
+                continue
+            seen_ids.add(key)
+            fieldsets.append(fs)
+
+        for fs in fieldsets:
+            try:
+                checkboxes = fs.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+                if not checkboxes:
+                    continue
+                for inp in checkboxes:
+                    n = (inp.get_attribute("name") or "").strip()
+                    if n:
+                        processed_names.add(n)
+
+                label = self._legend_for_linkedin_checkbox_fieldset(fs)
+                self._maybe_pause_for_user_on_first_empty_field(label)
+                checkboxes = fs.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+                if not checkboxes:
+                    continue
+                required = self._linkedin_checkbox_fieldset_is_required(fs)
+
+                if len(checkboxes) == 1:
+                    cb = checkboxes[0]
+                    ans = self._rules.screening_yes_no(label)
+                    if self._handle_screening_discard(driver, job, ans, assist=assist):
+                        return False, processed_names
+                    if ans is None:
+                        if required and not assist:
+                            log.warning(
+                                "No rule for required LinkedIn checkbox question (job %s) label=%r — abandoning",
+                                job.get("id"),
+                                label,
+                            )
+                            return False, processed_names
+                        if required and assist:
+                            log.debug(
+                                "Assist: leaving required LinkedIn checkbox unanswered (no rule) label=%r",
+                                label,
+                            )
+                        continue
+                    want_checked = ans.strip().lower() == "yes"
+                    if cb.is_selected() != want_checked:
+                        self._click_checkbox_target(driver, cb)
+                    self._after_field_fill()
+                    log.info(
+                        "Set checkbox %s for LinkedIn checkbox question: %s",
+                        "checked" if want_checked else "unchecked",
+                        (label or "")[:120],
+                    )
+                else:
+                    if any(cb.is_selected() for cb in checkboxes):
+                        continue
+                    choice = self._rules.checkbox_group_choice(label)
+                    if self._handle_screening_discard(driver, job, choice, assist=assist):
+                        return False, processed_names
+                    if choice is None:
+                        if required and not assist:
+                            log.warning(
+                                "No rule for required LinkedIn checkbox group (job %s) label=%r — abandoning",
+                                job.get("id"),
+                                label,
+                            )
+                            return False, processed_names
+                        if required and assist:
+                            log.debug(
+                                "Assist: leaving required LinkedIn checkbox group unanswered (no rule) label=%r",
+                                label,
+                            )
+                        continue
+                    if self._click_checkbox_option_by_label(driver, fs, choice):
+                        self._after_field_fill()
+                        log.info(
+                            "Selected %r for LinkedIn checkbox group: %s",
+                            choice,
+                            (label or "")[:120],
+                        )
+                    elif required and not assist:
+                        log.warning(
+                            "Could not select %r for required LinkedIn checkbox group (job %s) label=%r — abandoning",
+                            choice,
+                            job.get("id"),
+                            label,
+                        )
+                        return False, processed_names
+            except Exception as e:
+                log.debug("Skipping LinkedIn checkbox fieldset: %s", e)
+        return True, processed_names
+
     def _label_for_radio_group(self, driver: Any, first_radio) -> str:
         """Best-effort question text for a radio group (fieldset legend or form-element wrapper)."""
         try:
@@ -2224,6 +2450,12 @@ class EasyApplyFiller:
             driver, job, root, assist=assist
         )
         if not linkedin_radio_ok:
+            return False
+
+        linkedin_checkbox_ok, _linkedin_checkbox_names = self._fill_linkedin_checkbox_fieldsets(
+            driver, job, root, assist=assist
+        )
+        if not linkedin_checkbox_ok:
             return False
 
         radio_groups: dict[str, list] = defaultdict(list)

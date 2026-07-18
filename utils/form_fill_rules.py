@@ -405,12 +405,13 @@ class FormFillRulesEngine:
         return None
 
     def has_checkbox_groups(self) -> bool:
-        """True when the JSON defines at least one ``checkbox_groups`` entry (Greenhouse fieldsets)."""
+        """True when the JSON defines at least one ``checkbox_groups`` entry (Greenhouse and LinkedIn fieldsets)."""
         return bool(self._data.get("checkbox_groups"))
 
     def checkbox_group_choice(self, fieldset_legend_text: str) -> str | None:
         """
-        Greenhouse ``fieldset.checkbox``: first matching ``checkbox_groups`` rule wins.
+        Greenhouse ``fieldset.checkbox`` or a LinkedIn checkbox fieldset with multiple options:
+        first matching ``checkbox_groups`` rule wins.
 
         ``match`` is evaluated on the fieldset ``legend`` text (normalized like other rules).
         Returns ``choose_label`` / ``option_label``, or a label from ``choose_label_from_apply_source``

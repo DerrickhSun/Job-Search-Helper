@@ -3,7 +3,10 @@ Job Matcher
 Two-stage evaluation:
 
 1) **Hard gates** (``gates_pass``) — all must pass or the job is skipped without a fit score:
-   - Education: candidate's highest degree at or above the job's minimum (ordinal scale).
+   - Education level: candidate's highest degree at or above the job's minimum (ordinal scale).
+   - Education field (lenient): only fails when the posting clearly requires a specific field/major
+     unrelated to the candidate's degree field(s), with no "or related field" / "or equivalent" escape
+     hatch. Unstated field, generic "related field" wording, or any plausible overlap all pass.
    - Experience: candidate's estimated years >= the job's minimum when the posting states one.
      If the posting asks for **senior-level** experience, or the **job title** contains **Senior**, **Lead**,
      **Manager**, or **Director** as a role level, but gives **no numeric** years floor, the gate assumes
@@ -99,7 +102,20 @@ title or description. If numeric minima are stated anywhere, use the **largest**
 add 5 on top when explicit year floors already exist.
 
 Do not infer stricter requirements than written. If numbers are ambiguous or clearly only
-nice-to-have, use -1."""
+nice-to-have, use -1.
+
+field_requirement_met — a boolean judging whether the candidate's field(s) of study (given below) satisfy
+any degree-major requirement stated in the posting. Be LENIENT — this should be True in almost all cases:
+- True if the posting states no required field of study (degree level only, or no degree at all).
+- True if the posting uses an open-ended qualifier — "related field", "or equivalent", "or similar
+  discipline", "or comparable experience", etc. — regardless of the candidate's field.
+- True if the candidate's field(s) plausibly relate to any field listed (err toward relating fields —
+  e.g. Applied Math relates to Computer Science, Statistics, Data Science, Engineering; Computer Science
+  relates to Software Engineering, Computer Engineering, Information Systems, Data Science).
+- False ONLY if the posting requires one or more specific fields with no "related field" style escape
+  hatch, AND the candidate's field(s) have no plausible relation to any of them (e.g. posting requires
+  "Bachelor's degree in Accounting" or "Nursing" and the candidate's field is Computer Science).
+When genuinely unsure, choose True."""
 
 FIT_INSTRUCTION = """You rate how strong a fit the candidate is for this job on a scale from 0.0 to 1.0.
 
@@ -118,8 +134,9 @@ class JobRequirementsModule(dspy.Module):
     def __init__(self):
         super().__init__()
         self.extract = dspy.ChainOfThought(
-            "instruction, job_title, job_company, job_description "
-            "-> minimum_education: str, minimum_years_experience: float, rationale: str"
+            "instruction, job_title, job_company, job_description, candidate_fields_of_study "
+            "-> minimum_education: str, minimum_years_experience: float, field_requirement_met: bool, "
+            "rationale: str"
         )
 
     def forward(
@@ -127,12 +144,14 @@ class JobRequirementsModule(dspy.Module):
         job_title: str,
         job_company: str,
         job_description: str,
+        candidate_fields_of_study: str,
     ):
         return self.extract(
             instruction=REQUIREMENTS_INSTRUCTION,
             job_title=job_title,
             job_company=job_company,
             job_description=job_description,
+            candidate_fields_of_study=candidate_fields_of_study,
         )
 
 
@@ -167,8 +186,10 @@ class JobMatcher:
 
     def gates_pass(self, resume: dict, job: dict) -> bool:
         """
-        True when education, experience, and clearance heuristics from the posting are satisfied (or unstated).
-        On LLM failure, uses regex heuristics on the description and title (same as historical fallback).
+        True when education level, education field, experience, and clearance heuristics from the
+        posting are satisfied (or unstated). On LLM failure, uses regex heuristics on the description
+        and title (same as historical fallback); the field gate is skipped (always passes) in that case
+        since it has no LLM judgment to draw on.
         """
         try:
             return self._gates_pass_llm(resume, job)
@@ -208,10 +229,12 @@ class JobMatcher:
     def _gates_pass_llm(self, resume: dict, job: dict) -> bool:
         desc_full = job.get("description") or ""
         desc = desc_full[:8000]
+        cand_fields = _candidate_fields_of_study(resume)
         result = self._req_module(
             job_title=job.get("title", ""),
             job_company=job.get("company", ""),
             job_description=desc,
+            candidate_fields_of_study=cand_fields,
         )
 
         req_edu_llm = _normalize_education_token(getattr(result, "minimum_education", None))
@@ -239,19 +262,22 @@ class JobMatcher:
         cand_years = _estimate_years_experience(resume)
 
         ok_edu = _education_gate(cand_edu, req_edu)
+        ok_field = _parse_bool_lenient(getattr(result, "field_requirement_met", None))
         ok_exp = _experience_gate(cand_years, req_years)
         ok_clear = _clearance_eligibility_gate_passes(job)
         ok_loc = _location_restriction_gate_passes(job)
 
         r = _as_str_list(getattr(result, "rationale", None))
         log.debug(
-            "Gates: candidate edu_rank=%s years≈%.1f | required edu=%s years=%s | "
-            "edu_ok=%s exp_ok=%s clear_ok=%s loc_ok=%s | %s",
+            "Gates: candidate edu_rank=%s fields=%r years≈%.1f | required edu=%s years=%s | "
+            "edu_ok=%s field_ok=%s exp_ok=%s clear_ok=%s loc_ok=%s | %s",
             cand_edu,
+            cand_fields,
             cand_years,
             req_edu,
             req_years,
             ok_edu,
+            ok_field,
             ok_exp,
             ok_clear,
             ok_loc,
@@ -265,11 +291,11 @@ class JobMatcher:
             if req_years is not None and req_years >= 0
             else "unspecified"
         )
-        if ok_edu and ok_exp and ok_clear and ok_loc:
+        if ok_edu and ok_field and ok_exp and ok_clear and ok_loc:
             log.info(
                 "Gates passed [llm+regex] %s%r at %r | eff min yrs=%s min edu=%s | "
                 "candidate yrs≈%.1f (date-span/roles heuristic; see _estimate_years_experience) "
-                "edu=%s (rank %d) | clearance_gate=ok | location_gate=ok",
+                "edu=%s (rank %d) fields=%r | field_gate=ok | clearance_gate=ok | location_gate=ok",
                 jlabel,
                 job.get("title", ""),
                 job.get("company", ""),
@@ -278,15 +304,17 @@ class JobMatcher:
                 cand_years,
                 EDU_ORDER[cand_edu],
                 cand_edu,
+                cand_fields,
             )
             return True
         log.info(
-            "Gates failed [llm+regex] %s%r at %r | edu_ok=%s exp_ok=%s clear_ok=%s loc_ok=%s | "
-            "need min edu %s min yrs %s | have edu %s (rank %s) yrs≈%.1f",
+            "Gates failed [llm+regex] %s%r at %r | edu_ok=%s field_ok=%s exp_ok=%s clear_ok=%s loc_ok=%s | "
+            "need min edu %s min yrs %s | have edu %s (rank %s) fields=%r yrs≈%.1f",
             jlabel,
             job.get("title", ""),
             job.get("company", ""),
             ok_edu,
+            ok_field,
             ok_exp,
             ok_clear,
             ok_loc,
@@ -294,11 +322,13 @@ class JobMatcher:
             need_y,
             EDU_ORDER[cand_edu],
             cand_edu,
+            cand_fields,
             cand_years,
         )
         return False
 
     def _gates_pass_regex(self, resume: dict, job: dict) -> bool:
+        """No LLM available here, so the field-of-study gate cannot be judged — education level only."""
         desc = job.get("description") or ""
         title = str(job.get("title") or "")
         req_edu, req_years = _extract_job_requirements_regex(desc, title)
@@ -492,6 +522,34 @@ def _highest_education_rank(resume: dict) -> int:
         deg = e.get("degree") if isinstance(e, dict) else ""
         best = max(best, _degree_string_to_rank(str(deg)))
     return best
+
+
+def _candidate_fields_of_study(resume: dict) -> str:
+    """
+    Semicolon-joined raw degree strings from the resume's education entries, for the LLM field gate.
+
+    Passed as-is (e.g. "M.S. in Computer Science") rather than regex-stripped to just the field — the
+    LLM reads the field out of the full phrase fine, and degree phrasing is too inconsistent ("Bachelor
+    of Science in X", "B.S. X", "X (B.A.)") for a regex to reliably isolate just the major.
+    """
+    degrees = [
+        str(e.get("degree") or "").strip()
+        for e in (resume.get("education") or [])
+        if isinstance(e, dict) and str(e.get("degree") or "").strip()
+    ]
+    return "; ".join(degrees) if degrees else "unspecified"
+
+
+def _parse_bool_lenient(raw: Any) -> bool:
+    """True unless ``raw`` is clearly false-y — missing/unparseable values default True (lenient gate)."""
+    if raw is None:
+        return True
+    if isinstance(raw, bool):
+        return raw
+    s = str(raw).strip().lower()
+    if s in ("false", "no", "0", "n"):
+        return False
+    return True
 
 
 def _parse_years_requirement(raw: Any) -> float | None:
