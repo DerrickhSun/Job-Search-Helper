@@ -1722,6 +1722,71 @@ class EasyApplyFiller:
                 continue
         return False
 
+    def _resolve_and_click_choice(
+        self,
+        driver: Any,
+        job: dict,
+        label: str,
+        candidates: list[str],
+        click_fn,
+        *,
+        required: bool,
+        assist: bool,
+        kind: str,
+    ) -> tuple[bool, str | None]:
+        """
+        Try ``candidates`` (priority order — see :meth:`FormFillRulesEngine.screening_yes_no_candidates`)
+        against ``click_fn(candidate) -> bool`` in order, stopping at the first that succeeds (the field
+        actually offers that option). ``DISCARD_APPLY`` anywhere in the list short-circuits to discarding
+        the apply immediately (it is not a clickable option).
+
+        Returns ``(ok, matched_candidate)``. ``ok`` is ``False`` only when the caller must abandon this
+        apply (``return False`` up the stack) — either a discard rule fired, or every candidate was tried
+        and none matched an available option on a required field. ``matched_candidate`` is ``None`` when
+        nothing was selected (no rule, or a non-required field left as-is).
+        """
+        if DISCARD_APPLY in candidates:
+            if self._handle_screening_discard(driver, job, DISCARD_APPLY, assist=assist):
+                return False, None
+            candidates = [c for c in candidates if c != DISCARD_APPLY]
+        if not candidates:
+            if required and not assist:
+                log.warning(
+                    "No rule for required %s (job %s) label=%r — abandoning",
+                    kind,
+                    job.get("id"),
+                    label,
+                )
+                return False, None
+            if required and assist:
+                log.debug("Assist: leaving required %s unanswered (no rule) label=%r", kind, label)
+            return True, None
+        for i, cand in enumerate(candidates):
+            if click_fn(cand):
+                self._after_field_fill()
+                if i == 0:
+                    log.info("Selected %r for %s: %s", cand, kind, (label or "")[:120])
+                else:
+                    log.info(
+                        "Selected fallback %r (priority %d/%d) for %s: %s",
+                        cand,
+                        i + 1,
+                        len(candidates),
+                        kind,
+                        (label or "")[:120],
+                    )
+                return True, cand
+        if required and not assist:
+            log.warning(
+                "Could not select any of %r for required %s (job %s) label=%r — abandoning",
+                candidates,
+                kind,
+                job.get("id"),
+                label,
+            )
+            return False, None
+        return True, None
+
     def _fill_linkedin_form_builder_radio_fieldsets(
         self,
         driver: Any,
@@ -1751,38 +1816,18 @@ class EasyApplyFiller:
                     continue
 
                 required = self._linkedin_radio_fieldset_is_required(fs)
-                ans = self._rules.screening_yes_no(label)
-                if self._handle_screening_discard(driver, job, ans, assist=assist):
-                    return False, processed_names
-                if ans is None:
-                    if required and not assist:
-                        log.warning(
-                            "No rule for required LinkedIn radio question (job %s) label=%r — abandoning",
-                            job.get("id"),
-                            label,
-                        )
-                        return False, processed_names
-                    if required and assist:
-                        log.debug(
-                            "Assist: leaving required LinkedIn radio unanswered (no rule) label=%r",
-                            label,
-                        )
-                    continue
-
-                if self._click_choice_in_radio_container(driver, fs, ans):
-                    self._after_field_fill()
-                    log.info(
-                        "Selected %r for LinkedIn radio question: %s",
-                        ans,
-                        (label or "")[:120],
-                    )
-                elif required and not assist:
-                    log.warning(
-                        "Could not select %r for required LinkedIn radio (job %s) label=%r — abandoning",
-                        ans,
-                        job.get("id"),
-                        label,
-                    )
+                candidates = self._rules.screening_yes_no_candidates(label)
+                ok, _matched = self._resolve_and_click_choice(
+                    driver,
+                    job,
+                    label,
+                    candidates,
+                    lambda cand: self._click_choice_in_radio_container(driver, fs, cand),
+                    required=required,
+                    assist=assist,
+                    kind="LinkedIn radio question",
+                )
+                if not ok:
                     return False, processed_names
             except Exception as e:
                 log.debug("Skipping LinkedIn radio fieldset: %s", e)
@@ -1973,37 +2018,18 @@ class EasyApplyFiller:
                 else:
                     if any(cb.is_selected() for cb in checkboxes):
                         continue
-                    choice = self._rules.checkbox_group_choice(label)
-                    if self._handle_screening_discard(driver, job, choice, assist=assist):
-                        return False, processed_names
-                    if choice is None:
-                        if required and not assist:
-                            log.warning(
-                                "No rule for required LinkedIn checkbox group (job %s) label=%r — abandoning",
-                                job.get("id"),
-                                label,
-                            )
-                            return False, processed_names
-                        if required and assist:
-                            log.debug(
-                                "Assist: leaving required LinkedIn checkbox group unanswered (no rule) label=%r",
-                                label,
-                            )
-                        continue
-                    if self._click_checkbox_option_by_label(driver, fs, choice):
-                        self._after_field_fill()
-                        log.info(
-                            "Selected %r for LinkedIn checkbox group: %s",
-                            choice,
-                            (label or "")[:120],
-                        )
-                    elif required and not assist:
-                        log.warning(
-                            "Could not select %r for required LinkedIn checkbox group (job %s) label=%r — abandoning",
-                            choice,
-                            job.get("id"),
-                            label,
-                        )
+                    candidates = self._rules.checkbox_group_choice_candidates(label)
+                    ok, _matched = self._resolve_and_click_choice(
+                        driver,
+                        job,
+                        label,
+                        candidates,
+                        lambda cand: self._click_checkbox_option_by_label(driver, fs, cand),
+                        required=required,
+                        assist=assist,
+                        kind="LinkedIn checkbox group",
+                    )
+                    if not ok:
                         return False, processed_names
             except Exception as e:
                 log.debug("Skipping LinkedIn checkbox fieldset: %s", e)
@@ -2423,26 +2449,20 @@ class EasyApplyFiller:
                 if not self._element_is_required(sel_el):
                     continue
                 opt_els = sel_el.find_elements(By.TAG_NAME, "option")
-                preferred = self._answer_select_value(label, opt_els)
-                if self._handle_screening_discard(driver, job, preferred, assist=assist):
-                    return False
+                candidates = self._rules.answer_select_candidates(label)
                 dd = Select(sel_el)
-                if preferred:
-                    self._apply_select_choice(dd, opt_els, preferred)
-                    self._after_field_fill()
-                else:
-                    if assist:
-                        log.debug(
-                            "Assist: skipping required dropdown (no rule) label=%r",
-                            label,
-                        )
-                    else:
-                        log.warning(
-                            "No selection rule for required dropdown (job %s) label=%r — abandoning",
-                            job.get("id"),
-                            label,
-                        )
-                        return False
+                ok, _matched = self._resolve_and_click_choice(
+                    driver,
+                    job,
+                    label,
+                    candidates,
+                    lambda cand: self._apply_select_choice(dd, opt_els, cand),
+                    required=True,
+                    assist=assist,
+                    kind="dropdown",
+                )
+                if not ok:
+                    return False
             except Exception as e:
                 log.debug("Skipping select: %s", e)
 
@@ -2476,10 +2496,12 @@ class EasyApplyFiller:
                 self._maybe_pause_for_user_on_first_empty_field(label)
                 if any(r.is_selected() for r in radios):
                     continue
-                ans = self._rules.screening_yes_no(label)
-                if self._handle_screening_discard(driver, job, ans, assist=assist):
-                    return False
-                if ans is None:
+                ans_candidates = self._rules.screening_yes_no_candidates(label)
+                if DISCARD_APPLY in ans_candidates:
+                    if self._handle_screening_discard(driver, job, DISCARD_APPLY, assist=assist):
+                        return False
+                    ans_candidates = [c for c in ans_candidates if c != DISCARD_APPLY]
+                if not ans_candidates:
                     # Legacy: prefer Yes when value hints yes (unknown questions) — not in assist mode
                     if not assist and any(
                         (r.get_attribute("value") or "").lower() in ("yes", "true", "1")
@@ -2494,30 +2516,44 @@ class EasyApplyFiller:
                                 self._after_field_fill()
                                 break
                     continue
-                if ans.strip().lower() in ("yes", "no"):
-                    want_yes = ans.strip().lower() == "yes"
-                    if self._click_yes_no_in_radio_group(driver, radios, want_yes):
-                        self._after_field_fill()
-                else:
-                    try:
-                        fs = radios[0].find_element(By.XPATH, "./ancestor::fieldset[1]")
-                    except Exception:
-                        fs = None
-                    clicked = False
-                    if fs is not None:
-                        clicked = self._click_choice_in_radio_container(driver, fs, ans)
-                    if not clicked:
-                        for r in radios:
-                            val = (r.get_attribute("value") or "").strip()
-                            if val and self._choice_labels_equivalent(ans, val):
-                                if self.highlight:
-                                    focus_element(driver, r, pause=0.2)
-                                r.click()
-                                self._after_field_fill()
-                                clicked = True
-                                break
-                    if clicked:
-                        self._after_field_fill()
+
+                clicked_ans = None
+                for ans in ans_candidates:
+                    if ans.strip().lower() in ("yes", "no"):
+                        want_yes = ans.strip().lower() == "yes"
+                        if self._click_yes_no_in_radio_group(driver, radios, want_yes):
+                            clicked_ans = ans
+                            break
+                    else:
+                        try:
+                            fs = radios[0].find_element(By.XPATH, "./ancestor::fieldset[1]")
+                        except Exception:
+                            fs = None
+                        clicked = False
+                        if fs is not None:
+                            clicked = self._click_choice_in_radio_container(driver, fs, ans)
+                        if not clicked:
+                            for r in radios:
+                                val = (r.get_attribute("value") or "").strip()
+                                if val and self._choice_labels_equivalent(ans, val):
+                                    if self.highlight:
+                                        focus_element(driver, r, pause=0.2)
+                                    r.click()
+                                    clicked = True
+                                    break
+                        if clicked:
+                            clicked_ans = ans
+                            break
+                if clicked_ans is not None:
+                    self._after_field_fill()
+                    if clicked_ans != ans_candidates[0]:
+                        log.info(
+                            "Radio group %r: selected fallback answer %r (priority %d/%d).",
+                            (label or "")[:100],
+                            clicked_ans,
+                            ans_candidates.index(clicked_ans) + 1,
+                            len(ans_candidates),
+                        )
             except Exception as e:
                 log.debug("Skipping radio group %s: %s", name, e)
 
@@ -2586,27 +2622,23 @@ class EasyApplyFiller:
             return True
         return False
 
-    def _answer_select_value(self, label: str, _opt_els) -> str | None:
-        """
-        Return the ``value=`` (or matching visible text) we should choose, or ``None`` if there is
-        no rule — the caller will abandon the application (Dismiss) instead of guessing (e.g. "Yes").
-        Rules: ``data/form_fill_rules.json`` (``selects`` + ``screening_yes_no``).
-        """
-        return self._rules.answer_select(label)
-
-    def _apply_select_choice(self, dd: Select, opt_els, preferred_value: str) -> None:
-        """Set dropdown to ``preferred_value`` (matches ``value=`` or visible text)."""
+    def _apply_select_choice(self, dd: Select, opt_els, preferred_value: str) -> bool:
+        """Set dropdown to ``preferred_value`` (matches ``value=`` or visible text). Returns True on success."""
         pv = preferred_value.strip()
         for o in opt_els:
             v = (o.get_attribute("value") or "").strip()
             t = (o.text or "").strip()
             if v.lower() == pv.lower():
                 dd.select_by_value(v)
-                return
+                return True
             if t.lower() == pv.lower():
                 dd.select_by_visible_text(t)
-                return
-        dd.select_by_value(pv)
+                return True
+        try:
+            dd.select_by_value(pv)
+            return True
+        except Exception:
+            return False
 
     def _answer_text_field(self, label: str, resume: dict) -> str | None:
         """

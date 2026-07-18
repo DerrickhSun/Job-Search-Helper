@@ -20,19 +20,25 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
 
     POST /answer-fields
         body: {"fields": [{"label": str, "type": "text"|"textarea"|"select"|"radio"|"checkbox_group"}]}
-        -> {"answers": [{"value": str | null, "flag": null | "discard"}]}  (index-aligned with fields)
+        -> {"answers": [{"value": str | null, "values": [str], "flag": null | "discard"}]}
+           (index-aligned with fields)
 
         Answers come from the same ``FormFillRulesEngine`` (resume/rule lookups) the Selenium
         auto-apply flow uses — there's no LLM fallback, so an unmatched label just comes back as
-        ``{"value": null}``. The caller (extension) is responsible for matching a non-null string
-        answer against the right DOM option/radio/checkbox; this endpoint only returns label ->
-        answer, the same division of labor ``form_filler.py`` already has internally. A
+        ``{"value": null, "values": []}``. ``values`` is the full priority-ordered candidate list
+        (a rule's ``answer``/``choose_label`` may list several acceptable answers, e.g.
+        ``["No", "Not applicable"]``); ``value`` is just ``values[0]`` for callers that only want
+        one. The caller (extension) is responsible for matching a candidate against the right DOM
+        option/radio/checkbox — try ``values`` in order and stop at the first that matches an
+        actual option, leaving the field untouched if none do; this endpoint only returns label ->
+        candidates, the same division of labor ``form_filler.py`` already has internally. A
         ``"radio"`` field is resolved via ``screening_yes_no`` (mirrors how the Selenium flow
-        answers Yes/No radios) and returns ``"Yes"``/``"No"``. If the rules engine's internal
-        disqualifying-question sentinel comes back, the answer is reported as
-        ``{"value": null, "flag": "discard"}`` instead of leaking that sentinel string as if it
-        were literal fill text — the caller should surface this as "needs manual review", not
-        fill anything.
+        answers Yes/No radios). ``"text"``/``"textarea"`` fields only ever have one candidate —
+        free text has no "does the field offer this option" check, so there's nothing to fall
+        back from. If the rules engine's internal disqualifying-question sentinel comes back
+        (as any candidate), the answer is reported as ``{"value": null, "values": [], "flag":
+        "discard"}`` instead of leaking that sentinel string as if it were literal fill text —
+        the caller should surface this as "needs manual review", not fill anything.
 
     When ``save_docx`` is true (default), the .docx is written straight to the user's Downloads
     folder (override with ``--downloads-dir``) so it's already sitting where a file-upload dialog
@@ -287,29 +293,34 @@ class _Handler(BaseHTTPRequestHandler):
     def _answer_one_field(self, label: str, field_type: str) -> dict[str, Any]:
         """Dispatch to the FormFillRulesEngine method matching this field type.
 
-        Matching a non-null answer back to the right DOM option/radio/checkbox
-        is the caller's job (same division of labor form_filler.py already
-        has) — the engine only ever deals in label strings.
+        Matching a candidate answer back to the right DOM option/radio/checkbox is the caller's
+        job (same division of labor form_filler.py already has) — the engine only ever deals in
+        label strings. ``"select"``/``"radio"``/``"checkbox_group"`` return the full priority-
+        ordered candidate list (a rule may offer several acceptable answers); ``"text"``/
+        ``"textarea"`` return at most one — free text has no "does the field offer this option"
+        check for a fallback to be meaningful against.
         """
         if field_type == "text":
-            value = self.rules_engine.answer_text_field(label, self.resume)
+            v = self.rules_engine.answer_text_field(label, self.resume)
+            values = [v] if v is not None else []
         elif field_type == "textarea":
             # No cover-letter text: this endpoint has no job/company context
             # on an arbitrary page, so cover_letter_* result-type rules just
             # yield nothing here rather than erroring.
-            value = self.rules_engine.answer_textarea(label, "")
+            v = self.rules_engine.answer_textarea(label, "")
+            values = [v] if v is not None else []
         elif field_type == "select":
-            value = self.rules_engine.answer_select(label)
+            values = self.rules_engine.answer_select_candidates(label)
         elif field_type == "radio":
-            value = self.rules_engine.screening_yes_no(label)
+            values = self.rules_engine.screening_yes_no_candidates(label)
         elif field_type == "checkbox_group":
-            value = self.rules_engine.checkbox_group_choice(label)
+            values = self.rules_engine.checkbox_group_choice_candidates(label)
         else:
-            value = None
+            values = []
 
-        if value == DISCARD_APPLY:
-            return {"value": None, "flag": "discard"}
-        return {"value": value, "flag": None}
+        if DISCARD_APPLY in values:
+            return {"value": None, "values": [], "flag": "discard"}
+        return {"value": values[0] if values else None, "values": values, "flag": None}
 
     def _handle_answer_fields(self, data: dict[str, Any]) -> None:
         fields = data.get("fields")

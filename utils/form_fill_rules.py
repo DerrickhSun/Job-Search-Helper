@@ -3,12 +3,20 @@ Form fill rules loaded from ``output/form_fill_rules/`` (S3-synced with ``output
 ``defaults/form_fill_rules/`` on first run. Legacy paths ``data/form_fill_rules/`` and
 ``data/form_fill_rules.json`` are still supported for ``--form-fill-rules`` overrides.
 
-Used for LinkedIn Easy Apply (text inputs, textareas, selects, screening yes/no) and for Greenhouse
-application pages (``checkbox_groups``: fieldset legend → option label to select). Pass ``apply_source``
-(``\"linkedin\"`` vs ``\"greenhouse\"``) when constructing the engine so ``choose_label_from_apply_source``
-can pick the right **How did you hear** option. ``text_inputs`` may use ``literal_fallbacks`` (``values[]``)
-or ``literal_from_apply_source`` (same ``when`` map as checkbox_groups). Edit the JSON to change behavior
-without changing Python code.
+Used for LinkedIn Easy Apply (text inputs, textareas, selects, screening yes/no, checkbox questions) and
+for Greenhouse application pages (``checkbox_groups``: fieldset legend → option label to select). Pass
+``apply_source`` (``\"linkedin\"`` vs ``\"greenhouse\"``) when constructing the engine so
+``choose_label_from_apply_source`` can pick the right **How did you hear** option. ``text_inputs`` and
+``selects`` may use ``literal_fallbacks`` (``values[]``) or ``literal_from_apply_source`` (same ``when``
+map as checkbox_groups). Edit the JSON to change behavior without changing Python code.
+
+Priority-ordered answers: ``screening_yes_no``'s ``answer`` and ``checkbox_groups``'s
+``choose_label``/``option_label`` accept either a single string or a list of strings. A list is a
+priority order — the field-filler tries the first value, and if the field doesn't offer that option
+(e.g. a radio group with no "No" choice), tries the next, and so on, stopping at the first that matches
+an actual option. A plain string is still a valid one-item list (fully backward compatible). See
+:meth:`FormFillRulesEngine.screening_yes_no_candidates` and
+:meth:`FormFillRulesEngine.checkbox_group_choice_candidates`.
 
 Directory mode: every ``*.json`` file in the directory is loaded in **case-insensitive filename order**
 and merged. List-valued keys (``screening_yes_no``, ``text_inputs``, ``textareas``, ``selects``,
@@ -185,17 +193,43 @@ class FormFillRulesEngine:
             return DISCARD_APPLY
         return s
 
-    def screening_yes_no(self, label: str) -> str | None:
+    @classmethod
+    def _coerce_answer_list(cls, raw: Any) -> list[str]:
         """
-        Returns ``\"Yes\"``, ``\"No\"``, or ``None`` if no screening rule produces an answer.
+        Normalize an ``answer`` (or ``choose_label``) value into an ordered, deduplicated list of
+        candidates. Accepts a single string (backward compatible) or a list of strings — the list is
+        a **priority order**: the caller tries the first; if the field doesn't offer that option, it
+        tries the next, and so on.
+        """
+        if raw is None:
+            return []
+        raw_list = raw if isinstance(raw, list) else [raw]
+        out: list[str] = []
+        seen: set[str] = set()
+        for v in raw_list:
+            s = cls._coerce_screening_answer(v)
+            if s is None or s == "":
+                continue
+            key = s.strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+        return out
 
-        A screening rule may use a fixed ``answer`` or, for label-dependent answers, ``answer_by_region``
-        (see :meth:`_resolve_region_answer`). A region rule that matches is **authoritative**: it stops the
-        scan and may intentionally return ``None`` (leave the field empty for the user to fill).
+    def screening_yes_no_candidates(self, label: str) -> list[str]:
+        """
+        Ordered candidate answers (priority order) from the first matching ``screening_yes_no`` rule.
+        Empty list means no rule matched (or a matched region rule deliberately leaves the field empty).
+
+        A screening rule may use a fixed ``answer`` (string or list — see :meth:`_coerce_answer_list`) or,
+        for label-dependent answers, ``answer_by_region`` (see :meth:`_resolve_region_answer`). A region
+        rule that matches is **authoritative**: it stops the scan and may intentionally return no
+        candidates (leave the field empty for the user to fill).
         """
         n = self.normalize_label(label)
         if not n:
-            return None
+            return []
         for rule in self._data.get("screening_yes_no", []):
             if not self._matches(n, rule.get("match", {})):
                 continue
@@ -203,12 +237,17 @@ class FormFillRulesEngine:
             if region_cfg:
                 ans, decided = self._resolve_region_answer(n, region_cfg)
                 if decided:
-                    return ans
+                    return [ans] if ans is not None else []
                 continue
-            ans = rule.get("answer")
-            if ans is not None:
-                return self._coerce_screening_answer(ans)
-        return None
+            cands = self._coerce_answer_list(rule.get("answer"))
+            if cands:
+                return cands
+        return []
+
+    def screening_yes_no(self, label: str) -> str | None:
+        """Highest-priority candidate answer — see :meth:`screening_yes_no_candidates` for the full list."""
+        c = self.screening_yes_no_candidates(label)
+        return c[0] if c else None
 
     @staticmethod
     def _region_condition_matches(region_lower: str, cond: dict[str, Any]) -> bool:
@@ -388,39 +427,54 @@ class FormFillRulesEngine:
                 return self._apply_textarea_result(rule.get("result", {}), cover_letter)
         return None
 
-    def answer_select(self, label: str) -> str | None:
-        s = self.screening_yes_no(label)
-        if s is not None:
+    def answer_select_candidates(self, label: str) -> list[str]:
+        """
+        Ordered candidate values (priority order) for a ``select``: try the first; if the dropdown
+        doesn't offer that option, try the next. ``screening_yes_no`` candidates take priority (a
+        Yes/No question rendered as a dropdown), then the first matching ``selects`` rule — ``literal``
+        (single value) or ``literal_fallbacks`` (``values: [...]``, same convention as ``text_inputs``).
+        """
+        s = self.screening_yes_no_candidates(label)
+        if s:
             return s
         n = self.normalize_label(label)
         if not n:
-            return None
+            return []
         for rule in self._data.get("selects", []):
             if self._matches(n, rule.get("match", {})):
                 r = rule.get("result", {})
-                if (r.get("type") or "").strip() == "literal":
-                    return self._apply_literal(r)
+                t = (r.get("type") or "").strip()
+                if t == "literal":
+                    v = self._apply_literal(r)
+                    return [v] if v else []
+                if t == "literal_fallbacks":
+                    return [str(v).strip() for v in (r.get("values") or []) if str(v).strip()]
                 log.warning("Unknown selects result: %s", r)
-                return None
-        return None
+                return []
+        return []
+
+    def answer_select(self, label: str) -> str | None:
+        c = self.answer_select_candidates(label)
+        return c[0] if c else None
 
     def has_checkbox_groups(self) -> bool:
         """True when the JSON defines at least one ``checkbox_groups`` entry (Greenhouse and LinkedIn fieldsets)."""
         return bool(self._data.get("checkbox_groups"))
 
-    def checkbox_group_choice(self, fieldset_legend_text: str) -> str | None:
+    def checkbox_group_choice_candidates(self, fieldset_legend_text: str) -> list[str]:
         """
-        Greenhouse ``fieldset.checkbox`` or a LinkedIn checkbox fieldset with multiple options:
-        first matching ``checkbox_groups`` rule wins.
+        Ordered candidate option labels (priority order) from the first matching ``checkbox_groups``
+        rule — Greenhouse ``fieldset.checkbox`` or a LinkedIn checkbox fieldset with multiple options.
 
         ``match`` is evaluated on the fieldset ``legend`` text (normalized like other rules).
-        Returns ``choose_label`` / ``option_label``, or a label from ``choose_label_from_apply_source``
-        (keys ``greenhouse`` | ``linkedin``, plus optional ``default``) when the engine was constructed
-        with ``apply_source=…`` (``linkedin`` is the default when unset).
+        ``choose_label`` / ``option_label`` may be a string or a list (priority order — see
+        :meth:`_coerce_answer_list`), or a label from ``choose_label_from_apply_source`` (keys
+        ``greenhouse`` | ``linkedin``, plus optional ``default``) when the engine was constructed with
+        ``apply_source=…`` (``linkedin`` is the default when unset).
         """
         n = self.normalize_label(fieldset_legend_text)
         if not n:
-            return None
+            return []
         for rule in self._data.get("checkbox_groups", []):
             if label_matches(n, rule.get("match", {})):
                 src_map = rule.get("choose_label_from_apply_source")
@@ -429,11 +483,16 @@ class FormFillRulesEngine:
                     if src not in ("greenhouse", "linkedin"):
                         src = "linkedin"
                     raw = src_map.get(src)
-                    if raw is None or not str(raw).strip():
+                    if raw is None or (isinstance(raw, str) and not raw.strip()):
                         raw = src_map.get("default") or src_map.get("linkedin")
-                    ch = str(raw or "").strip()
-                    return ch or None
-                raw = rule.get("choose_label") or rule.get("option_label") or ""
-                ch = str(raw).strip()
-                return ch or None
-        return None
+                    return self._coerce_answer_list(raw)
+                raw = rule.get("choose_label") or rule.get("option_label")
+                cands = self._coerce_answer_list(raw)
+                if cands:
+                    return cands
+        return []
+
+    def checkbox_group_choice(self, fieldset_legend_text: str) -> str | None:
+        """Highest-priority option label — see :meth:`checkbox_group_choice_candidates` for the full list."""
+        c = self.checkbox_group_choice_candidates(fieldset_legend_text)
+        return c[0] if c else None

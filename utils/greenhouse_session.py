@@ -2377,11 +2377,19 @@ def maybe_apply_greenhouse_checkbox_rules(driver: Any, args: Any) -> bool:
     for fs in fieldsets:
         try:
             legend = _greenhouse_fieldset_legend_text(fs)
-            want = engine.checkbox_group_choice(legend)
-            if not want:
-                continue
-            if _click_checkbox_in_fieldset_by_label(driver, fs, want):
-                any_applied = True
+            candidates = engine.checkbox_group_choice_candidates(legend)
+            for i, want in enumerate(candidates):
+                if _click_checkbox_in_fieldset_by_label(driver, fs, want):
+                    any_applied = True
+                    if i > 0:
+                        log.info(
+                            "Checkbox group: selected fallback option %r (priority %d/%d) for legend %r.",
+                            want,
+                            i + 1,
+                            len(candidates),
+                            legend,
+                        )
+                    break
         except Exception as e:
             log.debug("Greenhouse checkbox fieldset: %s", e)
             continue

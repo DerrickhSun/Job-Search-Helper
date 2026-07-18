@@ -218,15 +218,93 @@ def resolve_rule_answer(
     engine: FormFillRulesEngine,
     resume: dict[str, Any],
 ) -> str | None:
+    candidates = resolve_rule_answer_candidates(ref, question, engine=engine, resume=resume)
+    return candidates[0] if candidates else None
+
+
+def resolve_rule_answer_candidates(
+    ref: RuleRef,
+    question: str,
+    *,
+    engine: FormFillRulesEngine,
+    resume: dict[str, Any],
+) -> list[str]:
+    """Full priority-ordered candidate list for the matched rule (used by conflict combining)."""
     if ref.category == "screening_yes_no":
-        return engine.screening_yes_no(question)
+        return engine.screening_yes_no_candidates(question)
     if ref.category == "text_inputs":
-        candidates = engine.text_input_fill_candidates(question, resume)
-        return candidates[0] if candidates else None
+        return engine.text_input_fill_candidates(question, resume)
     if ref.category == "textareas":
-        return engine.answer_textarea(question, cover_letter="")
+        # Free text — no well-defined "try next" fallback, so at most one candidate.
+        v = engine.answer_textarea(question, cover_letter="")
+        return [v] if v else []
     if ref.category == "selects":
-        return engine.answer_select(question)
+        return engine.answer_select_candidates(question)
+    return []
+
+
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for it in items:
+        s = (it or "").strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def combined_rule_for_conflict(
+    conflict: QuestionConflict,
+    *,
+    engine: FormFillRulesEngine,
+    resume: dict[str, Any],
+    prioritize_existing: bool,
+) -> tuple[str, dict[str, Any]] | None:
+    """
+    Build a new rule combining the existing rule's candidate answer(s) with the extension's answer, in
+    priority order. Returns ``None`` when this rule category has no well-defined combined form (free-text
+    ``textareas``) or the extension answer is empty.
+    """
+    category = conflict.rule_ref.category
+    if category == "textareas":
+        return None
+    question = conflict.question.question
+    extension_answer = (conflict.question.answer or "").strip()
+    if not extension_answer:
+        return None
+    existing = resolve_rule_answer_candidates(conflict.rule_ref, question, engine=engine, resume=resume)
+    if prioritize_existing:
+        combined = _dedupe_preserve_order(existing + [extension_answer])
+    else:
+        combined = _dedupe_preserve_order([extension_answer] + existing)
+    if not combined:
+        return None
+
+    match = question_to_match(question)
+    slug = _slug_from_question(question)
+    priority_note = "existing priority" if prioritize_existing else "extension priority"
+    comment = f"Auto-added from browser extension (combined with prior rule, {priority_note})"
+    rule_id = f"extension_auto_{slug}"
+
+    if category == "screening_yes_no":
+        return category, {
+            "id": rule_id,
+            "comment": comment,
+            "match": match,
+            "answer": combined,
+        }
+    if category in ("text_inputs", "selects"):
+        return category, {
+            "id": rule_id,
+            "comment": comment,
+            "match": match,
+            "result": {"type": "literal_fallbacks", "values": combined},
+        }
     return None
 
 
@@ -373,6 +451,7 @@ class QuestionProcessResult:
     conflicts: list[QuestionConflict] | None = None
     resolved_replaced: int = 0
     resolved_kept: int = 0
+    resolved_combined: int = 0
     invalid_blocks: list[str] | None = None
 
 
@@ -428,14 +507,18 @@ def resolve_conflicts_interactively(
     *,
     rules_dir: Path | None = None,
     dry_run: bool = False,
-) -> tuple[int, int]:
-    """Prompt the user for each conflict. Returns ``(replaced_count, kept_count)``."""
+) -> tuple[int, int, int]:
+    """Prompt the user for each conflict. Returns ``(replaced_count, kept_count, combined_count)``."""
     replaced = 0
     kept = 0
+    combined_total = 0
     index = RuleIndex(rules_dir)
+    engine = FormFillRulesEngine(rules_path=rules_dir or FORM_FILL_RULES_DIR, apply_source="linkedin")
+    resume = _load_resume_for_rule_resolution()
 
     for conflict in conflicts:
         q = conflict.question
+        can_combine = conflict.rule_ref.category != "textareas"
         print()
         print("Conflict — existing rule disagrees with extension answer")
         print(f"  Question: {q.question}")
@@ -451,8 +534,14 @@ def resolve_conflicts_interactively(
         print(f"  Rule answer: {conflict.rule_answer}")
         print("  [1] Keep existing rule (skip)")
         print("  [2] Replace with extension answer (delete old rule, add to auto_rules.json)")
+        if can_combine:
+            print("  [3] Keep both — try the existing answer first, extension answer as fallback")
+            print("  [4] Keep both — try the extension answer first, existing answer as fallback")
+        else:
+            print("  (Free-text answers can't be combined — choose 1 or 2 for this one.)")
+        valid = "1/2/3/4" if can_combine else "1/2"
         while True:
-            choice = input("  Choice [1/2]: ").strip().lower()
+            choice = input(f"  Choice [{valid}]: ").strip().lower()
             if choice in ("1", "keep", "k", ""):
                 kept += 1
                 print("  → Keeping existing rule.")
@@ -467,8 +556,47 @@ def resolve_conflicts_interactively(
                 replaced += 1
                 print("  → Replaced with extension answer in auto_rules.json.")
                 break
-            print("  Enter 1 or 2.")
-    return replaced, kept
+            if can_combine and choice in ("3", "existing", "combine-existing"):
+                result = combined_rule_for_conflict(
+                    conflict, engine=engine, resume=resume, prioritize_existing=True
+                )
+                if result is None:
+                    print("  Could not build a combined rule for this question — try 1 or 2.")
+                    continue
+                category, rule = result
+                if not dry_run:
+                    delete_rule(conflict.rule_ref)
+                    index.reload()
+                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
+                    index.reload()
+                combined_total += 1
+                print(f"  → Combined (existing priority): {_rule_answer_preview(rule)}")
+                break
+            if can_combine and choice in ("4", "new", "combine-new"):
+                result = combined_rule_for_conflict(
+                    conflict, engine=engine, resume=resume, prioritize_existing=False
+                )
+                if result is None:
+                    print("  Could not build a combined rule for this question — try 1 or 2.")
+                    continue
+                category, rule = result
+                if not dry_run:
+                    delete_rule(conflict.rule_ref)
+                    index.reload()
+                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
+                    index.reload()
+                combined_total += 1
+                print(f"  → Combined (extension priority): {_rule_answer_preview(rule)}")
+                break
+            print(f"  Enter {valid.replace('/', ', ')}.")
+    return replaced, kept, combined_total
+
+
+def _rule_answer_preview(rule: dict[str, Any]) -> list[str]:
+    if "answer" in rule:
+        return rule["answer"] if isinstance(rule["answer"], list) else [rule["answer"]]
+    result = rule.get("result") or {}
+    return list(result.get("values") or [])
 
 
 def process_extension_questions(
@@ -493,11 +621,12 @@ def process_extension_questions(
         result.added += 1
 
     if conflicts and interactive and not dry_run:
-        replaced, kept = resolve_conflicts_interactively(
+        replaced, kept, combined_total = resolve_conflicts_interactively(
             conflicts, rules_dir=rules_dir, dry_run=dry_run
         )
         result.resolved_replaced = replaced
         result.resolved_kept = kept
+        result.resolved_combined = combined_total
     elif conflicts and (dry_run or not interactive):
         result.resolved_kept = len(conflicts)
 
@@ -517,10 +646,18 @@ def print_questions_summary(path: Path, result: QuestionProcessResult, *, dry_ru
     if dry_run:
         print("Dry run — no rule files written.")
     if result.conflicts:
-        pending = len(result.conflicts) - result.resolved_replaced - result.resolved_kept
+        pending = (
+            len(result.conflicts)
+            - result.resolved_replaced
+            - result.resolved_kept
+            - result.resolved_combined
+        )
         print(f"Conflicts: {len(result.conflicts)}")
-        if result.resolved_replaced or result.resolved_kept:
-            print(f"  Resolved — replaced: {result.resolved_replaced}, kept: {result.resolved_kept}")
+        if result.resolved_replaced or result.resolved_kept or result.resolved_combined:
+            print(
+                f"  Resolved — replaced: {result.resolved_replaced}, "
+                f"kept: {result.resolved_kept}, combined: {result.resolved_combined}"
+            )
         if pending > 0:
             print("  Unresolved conflicts:")
             for conflict in result.conflicts:
