@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Sequence
@@ -210,6 +211,17 @@ SEL = {
     "job_card_location_row": ".artdeco-entity-lockup__caption .job-card-container__metadata-wrapper li span",
     "job_description": ".jobs-description__content",
     "next_page": 'button[aria-label="View next page"]',
+    # Company page — Jobs tab / See all jobs (filter-mode secondary scan).
+    "company_jobs_tab": (
+        "a.org-page-navigation__item[href*='/jobs'], "
+        "a[href*='/company/'][href*='/jobs'][data-control-name*='jobs'], "
+        "nav a[href*='/jobs']"
+    ),
+    "company_show_all_jobs": (
+        "a[href*='/jobs/search'][href*='f_C='], "
+        "a.jobs-search-box__submit-button, "
+        "a[href*='f_C=']"
+    ),
     # Detail pane — Save / Unsave job (filter mode).
     "job_save_btn": (
         'button[aria-label^="Save "][aria-label*="job"], '
@@ -362,6 +374,8 @@ class JobSearcher:
         max_applies: int | None = None,
         apply_counter: dict[str, int] | None = None,
         maybe_skip_from_list_card: Callable[[Any, dict], bool] | None = None,
+        seen_job_ids: set[str] | None = None,
+        seen_job_ids_lock: threading.Lock | None = None,
     ) -> int:
         """
         One browser session: for each search result, click the card, parse job fields, append a row to
@@ -385,6 +399,10 @@ class JobSearcher:
         caller on each successful apply), the run stops as soon as ``applied >= max_applies``, even when
         ``max_listings`` is not reached.
 
+        ``seen_job_ids`` (optional) is a shared set of job IDs already handled this session. When provided
+        with ``seen_job_ids_lock``, the pipeline claims IDs under that lock so a secondary company-jobs
+        scanner can skip the same postings.
+
         If ``easy_apply_only`` is true, the search URL includes LinkedIn's Easy Apply filter (``f_LF=f_AL``).
         If false, the search shows all jobs for the keywords/location.
         When ``JobSearcher`` was constructed with ``posted_within_24h=True`` (default), ``f_TPR=r86400``
@@ -397,11 +415,25 @@ class JobSearcher:
         driver = build_chrome(headless=self.headless)
         listings_log_path = Path(listings_log_path)
         processed = 0
-        seen_job_ids: set[str] = set()
+        if seen_job_ids is None:
+            seen_job_ids = set()
         apply_goal_met = False
         driver_closed = False
         stop_requested = False
         kw_list = normalize_search_keywords(keywords)
+
+        def _claim_job_id(jid: str) -> bool:
+            """Return True if this id is newly claimed for this session; False if already seen."""
+            if seen_job_ids_lock is not None:
+                with seen_job_ids_lock:
+                    if jid in seen_job_ids:
+                        return False
+                    seen_job_ids.add(jid)
+                    return True
+            if jid in seen_job_ids:
+                return False
+            seen_job_ids.add(jid)
+            return True
 
         try:
             load_cookies(driver, self.session_file)
@@ -535,10 +567,9 @@ class JobSearcher:
                         if not jid:
                             log.debug("Skipping job with no id at index %d", i - 1)
                             continue
-                        if jid in seen_job_ids:
+                        if not _claim_job_id(jid):
                             log.info("Skipping duplicate job id %s (already processed this session)", jid)
                             continue
-                        seen_job_ids.add(jid)
 
                         if maybe_skip_from_list_card is not None and maybe_skip_from_list_card(
                             driver, peek
@@ -1601,10 +1632,27 @@ class JobSearcher:
                 self._driver_stopped(driver)
                 return []
 
-        for css in (SEL["job_unsave_btn"],):
-            if _visible_matches(css):
-                log.info("LinkedIn job already saved (Unsave control visible).")
+        def _saved_state_present() -> bool:
+            """
+            True when the job shows a saved state. Covers the classic ``Unsave`` control and the
+            newer LinkedIn UI whose toggle simply reads **Saved** (no ``Unsave`` label at all).
+            """
+            if _visible_matches(SEL["job_unsave_btn"]):
                 return True
+            saved_xpath = (
+                "//button[normalize-space(.)='Saved' or @aria-label='Saved' "
+                "or contains(@aria-label,'Unsave') "
+                "or .//*[normalize-space(.)='Saved']]"
+            )
+            try:
+                return any(el.is_displayed() for el in driver.find_elements(By.XPATH, saved_xpath))
+            except WebDriverException:
+                self._driver_stopped(driver)
+                return False
+
+        if _saved_state_present():
+            log.info("LinkedIn job already saved (saved-state control visible).")
+            return True
 
         save_selectors: list[str] = [SEL["job_save_btn"]]
         jid = (job_id or "").strip()
@@ -1647,13 +1695,15 @@ class JobSearcher:
                 log.debug("LinkedIn save: click failed (job_id=%s)", jid or "n/a", exc_info=True)
                 return False
 
-        time.sleep(0.45)
-        if _visible_matches(SEL["job_unsave_btn"]):
-            log.info("Saved LinkedIn job%s", f" [job_id={jid}]" if jid else "")
-            return True
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if _saved_state_present():
+                log.info("Saved LinkedIn job%s", f" [job_id={jid}]" if jid else "")
+                return True
+            time.sleep(0.25)
 
         log.warning(
-            "Clicked Save but Unsave control not detected afterward (job_id=%s)",
+            "Clicked Save but saved-state control not detected afterward (job_id=%s)",
             jid or "n/a",
         )
         return False
@@ -1793,6 +1843,161 @@ class JobSearcher:
             )
             return True
         return False
+
+    @staticmethod
+    def company_jobs_base_url(company_url: str) -> str:
+        """Normalize a company (or About) URL to ``…/company/{slug}/jobs/``."""
+        raw = (company_url or "").strip()
+        if not raw:
+            return ""
+        m = re.search(r"(https?://(?:www\.)?linkedin\.com/company/[^/?#]+)", raw, re.IGNORECASE)
+        if not m:
+            return ""
+        return f"{m.group(1).rstrip('/')}/jobs/"
+
+    def open_company_jobs_list(self, driver, company_url: str) -> bool:
+        """
+        From a company page URL, open the Jobs tab and click **Show all jobs** / **See all jobs**
+        so the secondary driver lands on a company-filtered jobs search list.
+
+        Returns True when job list links are visible afterward.
+        """
+        if self._driver_stopped(driver):
+            return False
+        jobs_url = self.company_jobs_base_url(company_url)
+        if not jobs_url:
+            log.warning("Company jobs: could not derive jobs URL from %r", company_url)
+            return False
+
+        try:
+            driver.get(jobs_url)
+            time.sleep(1.2)
+        except WebDriverException:
+            log.debug("Company jobs: failed to open %s", jobs_url, exc_info=True)
+            return False
+
+        # Prefer an explicit "Show/See all jobs" control that deep-links into jobs/search?f_C=…
+        show_all = None
+        for css in (
+            SEL["company_show_all_jobs"],
+            "a[href*='/jobs/search']",
+        ):
+            try:
+                for el in driver.find_elements(By.CSS_SELECTOR, css):
+                    try:
+                        if not el.is_displayed():
+                            continue
+                    except Exception:
+                        continue
+                    label = ((el.text or "") + " " + (el.get_attribute("aria-label") or "")).lower()
+                    href = (el.get_attribute("href") or "").lower()
+                    if "f_c=" in href or "show all" in label or "see all" in label or "see jobs" in label:
+                        show_all = el
+                        break
+                if show_all is not None:
+                    break
+            except WebDriverException:
+                continue
+
+        if show_all is None:
+            # XPath fallback on visible link text.
+            for xp in (
+                "//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+                "'abcdefghijklmnopqrstuvwxyz'), 'show all jobs')]",
+                "//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+                "'abcdefghijklmnopqrstuvwxyz'), 'see all jobs')]",
+                "//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+                "'abcdefghijklmnopqrstuvwxyz'), 'show all jobs')]",
+                "//a[contains(@href,'/jobs/search') and contains(@href,'f_C=')]",
+            ):
+                try:
+                    for el in driver.find_elements(By.XPATH, xp):
+                        try:
+                            if el.is_displayed():
+                                show_all = el
+                                break
+                        except Exception:
+                            continue
+                    if show_all is not None:
+                        break
+                except WebDriverException:
+                    continue
+
+        if show_all is not None:
+            try:
+                if self.highlight:
+                    focus_element(driver, show_all, pause=self.step_delay)
+                show_all.click()
+            except Exception:
+                try:
+                    driver.execute_script("arguments[0].click();", show_all)
+                except Exception:
+                    log.debug("Company jobs: Show all jobs click failed", exc_info=True)
+                    return False
+            time.sleep(1.5)
+        else:
+            log.info(
+                "Company jobs: no Show/See all jobs control — scanning jobs on company jobs page %s",
+                jobs_url,
+            )
+
+        if not self._wait_job_list(driver):
+            log.warning("Company jobs: job list did not appear after opening %s", jobs_url)
+            return False
+        return True
+
+    def iter_company_job_peeks(
+        self,
+        driver,
+        *,
+        max_cards: int | None = None,
+        claim_job_id: Callable[[str], bool] | None = None,
+    ):
+        """
+        Yield ``(link, peek)`` for jobs on the current company / search jobs list.
+
+        ``claim_job_id(jid)`` if provided should return True when this session should process the id
+        (and record it as seen). Duplicates are skipped.
+        """
+        if self._driver_stopped(driver):
+            return
+        self._expand_virtualized_job_list(driver)
+        if self._driver_stopped(driver):
+            return
+        self._scroll_job_list_to_top(driver)
+        links = self._find_job_card_links(driver, expand=False)
+        log.info("Company jobs: found %d list link(s) to scan", len(links))
+        yielded = 0
+        i = 0
+        while i < len(links):
+            if max_cards is not None and yielded >= max_cards:
+                break
+            if self._driver_stopped(driver):
+                break
+            # Re-query periodically — virtual list may remount nodes after scrolls/clicks.
+            if i >= len(links):
+                links = self._find_job_card_links(driver, expand=False)
+            if i >= len(links):
+                break
+            link = links[i]
+            i += 1
+            peek = self._peek_job_from_list_link(link)
+            if not peek:
+                continue
+            jid = str(peek.get("id") or "").strip()
+            if not jid:
+                continue
+            if claim_job_id is not None and not claim_job_id(jid):
+                log.info("Company jobs: skipping duplicate job id %s", jid)
+                continue
+            yield link, peek
+            yielded += 1
+            # Refresh link list after each open (detail pane clicks can invalidate elements).
+            links = self._find_job_card_links(driver, expand=False)
+
+    def complete_company_job(self, driver, link, peek: dict) -> dict | None:
+        """Open a company-list card and return the full job dict (same shape as search pipeline)."""
+        return self._complete_job_after_peek(driver, link, peek)
 
     def parse_current_job_from_detail_pane(self, driver) -> dict | None:
         """
