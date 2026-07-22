@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +52,7 @@ from utils.sheet_csv import (
     read_sheet_csv,
     sheet_row_key,
     sheet_row_keys,
+    sort_sheet_rows_by_date,
     union_sheet_rows,
     write_sheet_csv,
 )
@@ -191,13 +192,23 @@ def delete_cover_letters_for_applied_jobs(
     return total
 
 
+def _job_date_sort_key(job: dict[str, Any]) -> tuple:
+    """Sort key for parsed extension jobs (ascending by ``date_mdy``; bad dates last)."""
+    raw = str(job.get("date_mdy") or "").strip()
+    try:
+        d = datetime.strptime(raw, "%m/%d/%Y")
+        return (0, d.year, d.month, d.day)
+    except ValueError:
+        return (1, 0, 0, 0)
+
+
 def import_saved_jobs_to_assisted(
     jobs: list[dict[str, Any]],
     *,
     dry_run: bool = False,
 ) -> tuple[int, int, list[dict[str, Any]]]:
     """
-    Append new jobs to ``output/assisted_applications.csv``.
+    Merge new jobs into ``output/assisted_applications.csv``, sorted by date ascending.
 
     Skips rows whose URL already appears in the active or archive assisted CSVs.
     Returns ``(added_count, skipped_count, skipped_jobs)``.
@@ -209,7 +220,7 @@ def import_saved_jobs_to_assisted(
 
     to_add: list[list[str]] = []
     skipped_jobs: list[dict[str, Any]] = []
-    for job in jobs:
+    for job in sorted(jobs, key=_job_date_sort_key):
         row = applied_sheet_row(job, job.get("date_mdy"))
         key = sheet_row_key(row)
         if key and key in seen:
@@ -221,7 +232,8 @@ def import_saved_jobs_to_assisted(
 
     if to_add and not dry_run:
         ASSISTED_APPLICATIONS_CSV.parent.mkdir(parents=True, exist_ok=True)
-        write_sheet_csv(ASSISTED_APPLICATIONS_CSV, header, union_sheet_rows(active, to_add))
+        merged = sort_sheet_rows_by_date(union_sheet_rows(active, to_add))
+        write_sheet_csv(ASSISTED_APPLICATIONS_CSV, header, merged)
 
     return len(to_add), len(skipped_jobs), skipped_jobs
 
@@ -383,8 +395,14 @@ def main() -> int:
                 interactive=not args.no_interactive,
             )
             print_questions_summary(questions_path, q_result, dry_run=args.dry_run)
-            if q_result.conflicts and (args.dry_run or args.no_interactive):
-                print("Re-run without --no-interactive to resolve conflicts.")
+            needs_interactive = (q_result.conflicts or q_result.blank_new) and (
+                args.dry_run or args.no_interactive
+            )
+            if needs_interactive:
+                print(
+                    "Re-run without --no-interactive (and without --dry-run) "
+                    "to resolve conflicts / blank-answer prompts."
+                )
         else:
             print(f"=== {SAVED_JOBS_QUESTIONS_FILENAME} ===")
             print(f"Not found: {questions_path.resolve()}")

@@ -4,6 +4,8 @@ Sync the local ``output/`` tree with S3 (see docs/s3_outputs.md).
 Cover letters live under ``output/coverletters/{linkedin,filter,greenhouse}/``. Per-run
 ``cover_letter_modes`` limits which subfolders are downloaded/uploaded/pruned; other
 ``output/`` files always sync.
+
+Local-only trees (never uploaded or downloaded): ``output/screenshots/`` (error diagnostics).
 """
 
 from __future__ import annotations
@@ -27,11 +29,27 @@ log = logging.getLogger(__name__)
 
 _COVER_MODES = cover_letter_mode_names()
 
+# Top-level dirs under ``output/`` that stay machine-local (not synced to/from S3).
+_SYNC_EXCLUDED_TOP_DIRS = frozenset({"screenshots"})
+
 # (memory_csv, archive_csv) pairs — memory is cleaned against its archive after each sync.
 _MEMORY_ARCHIVE_PAIRS: tuple[tuple[Path, Path], ...] = (
     (APPLICATIONS_CSV, APPLICATIONS_ARCHIVE_CSV),
     (ASSISTED_APPLICATIONS_CSV, ASSISTED_APPLICATIONS_HISTORY_CSV),
 )
+
+
+def _sync_progress(msg: str, *args) -> None:
+    """
+    User-visible sync progress.
+
+    Uses the module logger (picked up by ``main.py``'s handlers). Scripts that never call
+    ``logging.basicConfig`` still get stdout so a long sync does not look hung.
+    """
+    text = msg % args if args else msg
+    log.info("%s", text)
+    if not logging.root.handlers:
+        print(text, flush=True)
 
 
 def s3_output_bucket() -> str:
@@ -89,6 +107,12 @@ def _skip_cover_letter_rel(rel: str, cover_letter_modes: tuple[str, ...] | None)
     return mode not in cover_letter_modes
 
 
+def _skip_local_only_rel(rel: str) -> bool:
+    """True for paths under sync-excluded top-level dirs (e.g. ``screenshots/…``)."""
+    parts = rel.replace("\\", "/").split("/")
+    return bool(parts) and parts[0] in _SYNC_EXCLUDED_TOP_DIRS
+
+
 def _preserve_cover_letter_mtime(dest: Path) -> bool:
     try:
         rel = dest.relative_to(resolve_output_dir(OUTPUT_DIR))
@@ -98,12 +122,16 @@ def _preserve_cover_letter_mtime(dest: Path) -> bool:
 
 
 def iter_local_files(root: Path) -> list[Path]:
+    """Local files under *root* that participate in S3 sync (excludes screenshots, etc.)."""
     out: list[Path] = []
     if not root.is_dir():
         return out
     for p in root.rglob("*"):
         if p.is_file():
             if "__pycache__" in p.parts or p.name.endswith(".tmp"):
+                continue
+            rel = p.relative_to(root).as_posix()
+            if _skip_local_only_rel(rel):
                 continue
             out.append(p)
     return sorted(out)
@@ -218,7 +246,11 @@ def sync_download_output(
 
     downloaded = 0
     skipped_cover = 0
+    skipped_local_only = 0
+    skipped_existing_cover = 0
+    to_sync: list[tuple[str, str, dict]] = []
     try:
+        _sync_progress("S3: listing objects under s3://%s/%s …", bucket, list_prefix)
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket, Prefix=list_prefix):
             for obj in page.get("Contents") or []:
@@ -230,25 +262,57 @@ def sync_download_output(
                 rel = key[len(list_prefix):]
                 if not rel:
                     continue
+                if _skip_local_only_rel(rel):
+                    skipped_local_only += 1
+                    continue
                 if _skip_cover_letter_rel(rel, cover_letter_modes):
                     skipped_cover += 1
                     continue
-                dest = root / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if dest.resolve() in merge_csv_paths:
-                    # Merge instead of overwrite: union local + S3 records.
-                    _merge_s3_csv(s3, bucket, key, dest)
-                elif _preserve_cover_letter_mtime(dest) and dest.is_file():
-                    # Never overwrite an existing local cover letter.
-                    continue
-                else:
-                    s3.download_file(bucket, key, str(dest))
-                    if _preserve_cover_letter_mtime(dest):
-                        last_mod = obj.get("LastModified")
-                        if last_mod is not None:
-                            ts = last_mod.timestamp()
-                            os.utime(dest, (ts, ts))
-                downloaded += 1
+                to_sync.append((key, rel, obj))
+
+        work: list[tuple[str, str, dict, str]] = []
+        for key, rel, obj in to_sync:
+            dest = root / rel
+            if dest.resolve() in merge_csv_paths:
+                work.append((key, rel, obj, "merging"))
+            elif _preserve_cover_letter_mtime(dest) and dest.is_file():
+                skipped_existing_cover += 1
+            else:
+                work.append((key, rel, obj, "downloading"))
+
+        total = len(work)
+        if total:
+            _sync_progress(
+                "S3: syncing %d object(s) from s3://%s/%s -> %s",
+                total,
+                bucket,
+                list_prefix,
+                root,
+            )
+        elif to_sync:
+            _sync_progress(
+                "S3: nothing to download under s3://%s/%s (%d local cover letter(s) already present)",
+                bucket,
+                list_prefix,
+                skipped_existing_cover,
+            )
+
+        for i, (key, rel, obj, action) in enumerate(work, 1):
+            dest = root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            # Log before the transfer so a stall names the current object.
+            _sync_progress("S3: download %d/%d (%s %s)", i, total, action, rel)
+            if action == "merging":
+                # Merge instead of overwrite: union local + S3 records.
+                _merge_s3_csv(s3, bucket, key, dest)
+            else:
+                s3.download_file(bucket, key, str(dest))
+                if _preserve_cover_letter_mtime(dest):
+                    last_mod = obj.get("LastModified")
+                    if last_mod is not None:
+                        ts = last_mod.timestamp()
+                        os.utime(dest, (ts, ts))
+            downloaded += 1
     except (ClientError, BotoCoreError, OSError) as e:
         log.error("S3 download failed (s3://%s/%s): %s", bucket, list_prefix, e)
         return downloaded
@@ -257,28 +321,43 @@ def sync_download_output(
     for mem_csv, arch_csv in _MEMORY_ARCHIVE_PAIRS:
         removed = _clean_memory_against_archive(mem_csv, arch_csv)
         if removed:
-            log.info(
+            _sync_progress(
                 "Removed %d record(s) from %s already present in archive",
                 removed,
                 mem_csv.name,
             )
 
+    if skipped_local_only:
+        _sync_progress(
+            "S3: skipped %d local-only object(s) (%s)",
+            skipped_local_only,
+            ", ".join(sorted(_SYNC_EXCLUDED_TOP_DIRS)),
+        )
     if cover_letter_modes and skipped_cover:
-        log.info(
+        _sync_progress(
             "S3: skipped %d cover-letter object(s) outside active mode(s) %s",
             skipped_cover,
             cover_letter_modes,
         )
+    if skipped_existing_cover:
+        _sync_progress(
+            "S3: left %d existing local cover letter(s) unchanged",
+            skipped_existing_cover,
+        )
     if downloaded:
-        log.info(
+        _sync_progress(
             "S3: downloaded/merged %d file(s) from s3://%s/%s -> %s",
             downloaded,
             bucket,
             list_prefix,
             root,
         )
-    else:
-        log.info("S3: no objects under s3://%s/%s (starting with empty or local-only output/)", bucket, list_prefix)
+    elif not to_sync:
+        _sync_progress(
+            "S3: no objects under s3://%s/%s (starting with empty or local-only output/)",
+            bucket,
+            list_prefix,
+        )
     return downloaded
 
 
@@ -316,13 +395,41 @@ def sync_upload_output(
 
     uploaded = 0
     skipped_cover = 0
+    to_upload: list[tuple[Path, str]] = []
+    for path in files:
+        rel = path.relative_to(root).as_posix()
+        if _skip_cover_letter_rel(rel, cover_letter_modes):
+            skipped_cover += 1
+            continue
+        to_upload.append((path, rel))
+
+    skipped_local_only = 0
+    for name in _SYNC_EXCLUDED_TOP_DIRS:
+        excluded = root / name
+        if excluded.is_dir():
+            skipped_local_only += sum(1 for p in excluded.rglob("*") if p.is_file())
+    if skipped_local_only:
+        _sync_progress(
+            "S3: skipping %d local-only file(s) (%s)",
+            skipped_local_only,
+            ", ".join(sorted(_SYNC_EXCLUDED_TOP_DIRS)),
+        )
+
+    total = len(to_upload)
+    if total:
+        _sync_progress(
+            "S3: uploading %d file(s) from %s -> s3://%s/%s",
+            total,
+            root,
+            bucket,
+            s3_list_prefix_for_dir(root),
+        )
+
     try:
-        for path in files:
-            rel = path.relative_to(root).as_posix()
-            if _skip_cover_letter_rel(rel, cover_letter_modes):
-                skipped_cover += 1
-                continue
+        for i, (path, rel) in enumerate(to_upload, 1):
             key = s3_key_for_file(root, path)
+            # Log before the transfer so a stall names the current object.
+            _sync_progress("S3: upload %d/%d (%s)", i, total, rel)
             ctype, _ = mimetypes.guess_type(path.name)
             extra = {"ContentType": ctype} if ctype else {}
             if extra:
@@ -335,12 +442,12 @@ def sync_upload_output(
         return uploaded
 
     if cover_letter_modes and skipped_cover:
-        log.info(
+        _sync_progress(
             "S3: skipped uploading %d local cover-letter file(s) outside active mode(s) %s",
             skipped_cover,
             cover_letter_modes,
         )
-    log.info(
+    _sync_progress(
         "S3: uploaded %d file(s) from %s -> s3://%s/%s",
         uploaded,
         root,

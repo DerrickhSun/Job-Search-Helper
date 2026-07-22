@@ -4,6 +4,9 @@ Import screening / text answers captured by the browser extension into form fill
 Parses ``saved_jobs_application_questions.txt``, compares each Q/A pair to existing rules in
 ``output/form_fill_rules/``, appends new rules to ``auto_rules.json``, and interactively resolves
 conflicts when an existing rule disagrees with the extension answer.
+
+Blank extension answers are not auto-saved: each is confirmed interactively (same style as
+conflicts). Empty literal rules already in ``auto_rules.json`` are purged on import.
 """
 
 from __future__ import annotations
@@ -52,6 +55,29 @@ class QuestionConflict:
     question: ExtensionQuestion
     rule_ref: RuleRef
     rule_answer: str
+
+
+def _is_blank_answer(value: str | None) -> bool:
+    return not (value or "").strip()
+
+
+def _rule_is_blank(rule: dict[str, Any]) -> bool:
+    """True when a rule only stores an empty literal / empty answer list (no useful fill value)."""
+    if "answer" in rule:
+        ans = rule.get("answer")
+        if isinstance(ans, list):
+            return not ans or all(_is_blank_answer(str(x)) for x in ans)
+        return _is_blank_answer(str(ans) if ans is not None else "")
+    result = rule.get("result")
+    if not isinstance(result, dict):
+        return False
+    t = (result.get("type") or "").strip()
+    if t == "literal":
+        return _is_blank_answer(str(result.get("value") or ""))
+    if t == "literal_fallbacks":
+        values = result.get("values") or []
+        return not values or all(_is_blank_answer(str(x)) for x in values)
+    return False
 
 
 class RuleIndex:
@@ -411,6 +437,32 @@ def auto_rules_path(rules_dir: Path | None = None) -> Path:
     return base / AUTO_RULES_FILENAME
 
 
+def remove_empty_auto_rules(*, rules_dir: Path | None = None, dry_run: bool = False) -> int:
+    """
+    Delete blank literal / empty-answer rules from ``auto_rules.json``.
+
+    Returns the number of rules removed.
+    """
+    path = auto_rules_path(rules_dir)
+    data = _read_json_object(path)
+    removed = 0
+    for category in RULE_CATEGORIES:
+        rules = data.get(category)
+        if not isinstance(rules, list):
+            continue
+        kept: list[Any] = []
+        for rule in rules:
+            if isinstance(rule, dict) and _rule_is_blank(rule):
+                removed += 1
+                continue
+            kept.append(rule)
+        data[category] = kept
+    if removed and not dry_run:
+        _write_json_object(path, data)
+        log.info("Removed %d empty rule(s) from %s", removed, path)
+    return removed
+
+
 def append_rule_to_auto_rules(
     category: str,
     rule: dict[str, Any],
@@ -449,10 +501,14 @@ class QuestionProcessResult:
     matched: int = 0
     added: int = 0
     conflicts: list[QuestionConflict] | None = None
+    blank_new: list[ExtensionQuestion] | None = None
+    blank_saved: int = 0
+    blank_skipped: int = 0
     resolved_replaced: int = 0
     resolved_kept: int = 0
     resolved_combined: int = 0
     invalid_blocks: list[str] | None = None
+    empty_rules_removed: int = 0
 
 
 def classify_extension_questions(
@@ -460,10 +516,17 @@ def classify_extension_questions(
     *,
     rules_dir: Path | None = None,
     resume: dict[str, Any] | None = None,
-) -> tuple[list[ExtensionQuestion], list[QuestionConflict], list[tuple[ExtensionQuestion, str, dict[str, Any]]]]:
+) -> tuple[
+    list[ExtensionQuestion],
+    list[QuestionConflict],
+    list[tuple[ExtensionQuestion, str, dict[str, Any]]],
+    list[tuple[ExtensionQuestion, str, dict[str, Any]]],
+]:
     """
-    Return ``(skipped_same_answer, conflicts, new_rules)`` where ``new_rules`` is
-    ``(question, category, rule_dict)`` tuples to append.
+    Return ``(skipped_same_answer, conflicts, new_rules, blank_new_rules)``.
+
+    ``new_rules`` / ``blank_new_rules`` are ``(question, category, rule_dict)`` tuples.
+    Blank extension answers with no matching rule go in ``blank_new_rules`` (need confirmation).
     """
     index = RuleIndex(rules_dir)
     engine = FormFillRulesEngine(rules_path=rules_dir or FORM_FILL_RULES_DIR, apply_source="linkedin")
@@ -472,23 +535,35 @@ def classify_extension_questions(
     skipped: list[ExtensionQuestion] = []
     conflicts: list[QuestionConflict] = []
     new_rules: list[tuple[ExtensionQuestion, str, dict[str, Any]]] = []
+    blank_new_rules: list[tuple[ExtensionQuestion, str, dict[str, Any]]] = []
 
     for item in questions:
         ref = index.find_matching_rule(item.question)
         if ref is None:
             category, rule = new_rule_for_question(item.question, item.answer)
-            new_rules.append((item, category, rule))
+            if _is_blank_answer(item.answer):
+                blank_new_rules.append((item, category, rule))
+            else:
+                new_rules.append((item, category, rule))
             continue
         rule_answer = resolve_rule_answer(ref, item.question, engine=engine, resume=resume)
+        # Empty stored literals resolve to None; treat blank-vs-blank as a match.
+        if rule_answer is None and _rule_is_blank(ref.rule) and _is_blank_answer(item.answer):
+            skipped.append(item)
+            continue
         if _answers_match(rule_answer, item.answer):
             skipped.append(item)
             continue
         if rule_answer is None:
+            if _rule_is_blank(ref.rule):
+                display = "(empty rule)"
+            else:
+                display = "(non-literal rule — could not compare)"
             conflicts.append(
                 QuestionConflict(
                     question=item,
                     rule_ref=ref,
-                    rule_answer="(non-literal rule — could not compare)",
+                    rule_answer=display,
                 )
             )
             continue
@@ -499,7 +574,7 @@ def classify_extension_questions(
                 rule_answer=rule_answer,
             )
         )
-    return skipped, conflicts, new_rules
+    return skipped, conflicts, new_rules, blank_new_rules
 
 
 def resolve_conflicts_interactively(
@@ -526,14 +601,20 @@ def resolve_conflicts_interactively(
             print(f"  Job: {q.company_title}")
         if q.url:
             print(f"  URL: {q.url}")
-        print(f"  Extension answer: {q.answer}")
+        if _is_blank_answer(q.answer):
+            print("  Extension answer: (blank)")
+        else:
+            print(f"  Extension answer: {q.answer}")
         print(
             f"  Existing rule: {conflict.rule_ref.file.name} "
             f"[{conflict.rule_ref.rule.get('id') or conflict.rule_ref.index}]"
         )
         print(f"  Rule answer: {conflict.rule_answer}")
         print("  [1] Keep existing rule (skip)")
-        print("  [2] Replace with extension answer (delete old rule, add to auto_rules.json)")
+        if _is_blank_answer(q.answer):
+            print("  [2] Replace with blank extension answer (delete old rule, save empty rule)")
+        else:
+            print("  [2] Replace with extension answer (delete old rule, add to auto_rules.json)")
         if can_combine:
             print("  [3] Keep both — try the existing answer first, extension answer as fallback")
             print("  [4] Keep both — try the extension answer first, existing answer as fallback")
@@ -596,7 +677,49 @@ def _rule_answer_preview(rule: dict[str, Any]) -> list[str]:
     if "answer" in rule:
         return rule["answer"] if isinstance(rule["answer"], list) else [rule["answer"]]
     result = rule.get("result") or {}
+    if "value" in result and not result.get("values"):
+        return [str(result.get("value") or "")]
     return list(result.get("values") or [])
+
+
+def confirm_blank_rules_interactively(
+    blank_new_rules: list[tuple[ExtensionQuestion, str, dict[str, Any]]],
+    *,
+    rules_dir: Path | None = None,
+    dry_run: bool = False,
+) -> tuple[int, int]:
+    """
+    Prompt before saving extension answers that are blank.
+
+    Returns ``(saved_count, skipped_count)``.
+    """
+    saved = 0
+    skipped = 0
+    for item, category, rule in blank_new_rules:
+        print()
+        print("Blank answer from extension — save an empty rule?")
+        print(f"  Question: {item.question}")
+        if item.company_title:
+            print(f"  Job: {item.company_title}")
+        if item.url:
+            print(f"  URL: {item.url}")
+        print("  Extension answer: (blank)")
+        print("  [1] Skip (do not save)")
+        print(f"  [2] Save blank rule to {AUTO_RULES_FILENAME}")
+        while True:
+            choice = input("  Choice [1/2]: ").strip().lower()
+            if choice in ("1", "skip", "s", ""):
+                skipped += 1
+                print("  → Skipped (no rule saved).")
+                break
+            if choice in ("2", "save", "yes", "y"):
+                if not dry_run:
+                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
+                saved += 1
+                print(f"  → Saved blank rule to {AUTO_RULES_FILENAME}.")
+                break
+            print("  Enter 1 or 2.")
+    return saved, skipped
 
 
 def process_extension_questions(
@@ -609,16 +732,34 @@ def process_extension_questions(
     questions, invalid = parse_saved_questions_file(path)
     result = QuestionProcessResult(invalid_blocks=invalid)
     if not questions:
+        # Still purge empty auto rules even when the export has no parseable Q/A.
+        result.empty_rules_removed = remove_empty_auto_rules(rules_dir=rules_dir, dry_run=dry_run)
         return result
 
-    skipped, conflicts, new_rules = classify_extension_questions(questions, rules_dir=rules_dir)
+    result.empty_rules_removed = remove_empty_auto_rules(rules_dir=rules_dir, dry_run=dry_run)
+
+    skipped, conflicts, new_rules, blank_new_rules = classify_extension_questions(
+        questions, rules_dir=rules_dir
+    )
 
     result.matched = len(skipped)
     result.conflicts = conflicts
+    result.blank_new = [item for item, _cat, _rule in blank_new_rules]
 
     for _item, category, rule in new_rules:
         append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, dry_run=dry_run)
         result.added += 1
+
+    if blank_new_rules and interactive and not dry_run:
+        saved, skipped_blank = confirm_blank_rules_interactively(
+            blank_new_rules, rules_dir=rules_dir, dry_run=dry_run
+        )
+        result.blank_saved = saved
+        result.blank_skipped = skipped_blank
+        result.added += saved
+    elif blank_new_rules:
+        # Dry-run / --no-interactive: never auto-save blanks.
+        result.blank_skipped = len(blank_new_rules)
 
     if conflicts and interactive and not dry_run:
         replaced, kept, combined_total = resolve_conflicts_interactively(
@@ -641,8 +782,20 @@ def print_questions_summary(path: Path, result: QuestionProcessResult, *, dry_ru
         for blk in result.invalid_blocks:
             preview = blk.strip().replace("\n", " | ")[:200]
             print(f"  • {preview}")
+    if result.empty_rules_removed:
+        print(f"Removed {result.empty_rules_removed} empty rule(s) from {AUTO_RULES_FILENAME}")
     print(f"Already matched by existing rules (same answer): {result.matched}")
     print(f"New rules added to {AUTO_RULES_FILENAME}: {result.added}")
+    if result.blank_new:
+        print(
+            f"Blank extension answers: {len(result.blank_new)} "
+            f"(saved: {result.blank_saved}, skipped: {result.blank_skipped})"
+        )
+        pending_blank = len(result.blank_new) - result.blank_saved - result.blank_skipped
+        if pending_blank > 0 or (result.blank_skipped and dry_run):
+            print("  Blank questions:")
+            for item in result.blank_new:
+                print(f"    • {item.question[:80]}")
     if dry_run:
         print("Dry run — no rule files written.")
     if result.conflicts:
