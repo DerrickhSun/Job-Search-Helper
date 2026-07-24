@@ -29,9 +29,16 @@
     },
     {
       "id": "us_work_authorization_status",
-      "comment": "Current U.S. work authorization status dropdown (1 OPT/CPT, 2 H1-B, 3 Green Card, 4 U.S. Citizen)",
+      "comment": "Coded work-authorization status field where the label itself lists options like (1 OPT/CPT, 2 H1-B, 3 Green Card, 4 U.S. Citizen). Answer 4 only when that legend is present.",
       "match": {
-        "all_substrings": ["work authorization", "status"]
+        "all_substrings": ["work authorization"],
+        "any_substrings": [
+          "4 u.s. citizen",
+          "4 us citizen",
+          "4 u.s citizen",
+          "4) u.s. citizen",
+          "4. u.s. citizen"
+        ]
       },
       "answer": "4"
     },
