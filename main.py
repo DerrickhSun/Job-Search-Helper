@@ -135,7 +135,12 @@ from utils.form_filler import (
 from utils.greenhouse_session import run_greenhouse_sign_in_flow
 from utils.job_records import append_listing_record
 from utils.job_searcher import JobSearcher, StopApplyPipeline
-from utils.matcher import JobMatcher, print_job_fit_debug
+from utils.matcher import (
+    JobMatcher,
+    print_job_fit_debug,
+    title_has_overqualified_role_level,
+    title_shares_search_keyword_token,
+)
 from utils.extension_rules import migrate_extension_auto_rules_to_exact
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
@@ -376,7 +381,10 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
         if _apply_cap_reached():
             log.info("Company jobs scan skipped — successful-save cap already reached.")
             return
-        log.info("Company jobs scan starting for %s", company_url)
+        log.info(
+            "Company jobs scan starting for %s (LinkedIn past week — f_TPR=r604800)",
+            company_url,
+        )
         if not searcher.open_company_jobs_list(lookup_driver, company_url):
             log.warning("Company jobs scan: could not open jobs list for %s", company_url)
             return
@@ -427,6 +435,22 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             if peek.get("easy_apply"):
                 log.info(
                     "Company jobs: skipping Easy Apply (filter mode): %s at %s",
+                    title or jid,
+                    company or "(no company)",
+                )
+                _tracker_log(peek, status="skipped", score=0.0)
+                continue
+            if title_has_overqualified_role_level(title):
+                log.info(
+                    "Company jobs: skipping overqualified title (no click): %s at %s",
+                    title or jid,
+                    company or "(no company)",
+                )
+                _tracker_log(peek, status="skipped", score=0.0)
+                continue
+            if not title_shares_search_keyword_token(title, search["keywords"]):
+                log.info(
+                    "Company jobs: skipping title with no keyword overlap (no click): %s at %s",
                     title or jid,
                     company or "(no company)",
                 )
@@ -1077,7 +1101,7 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
         log.error("Run stopped: %s", e)
     finally:
         if company_lookup_worker is not None:
-            log.info("Waiting for company lookup worker to finish…")
+            log.info("Stopping company lookup worker (dropping any queued scans/lookups)…")
             company_lookup_worker.stop()
         try:
             tracker.export_csv("output/applications.csv")

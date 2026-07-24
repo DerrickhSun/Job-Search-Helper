@@ -43,6 +43,8 @@ class CompanyLookupWorker:
     ``submit_consulting`` / ``submit_dedicated_reqs`` return results and wait if a
     company scan (or earlier command) is still running. ``submit_company_scan`` is
     fire-and-forget.
+
+    ``stop()`` discards any queued work (does not run pending scans/lookups) and quits Chrome.
     """
 
     def __init__(
@@ -61,6 +63,7 @@ class CompanyLookupWorker:
         self._thread: threading.Thread | None = None
         self._driver: Any = None
         self._started = False
+        self._stopping = False
         self._lock = threading.Lock()
 
     @property
@@ -69,7 +72,7 @@ class CompanyLookupWorker:
 
     def start(self) -> None:
         with self._lock:
-            if self._started:
+            if self._stopping or self._started:
                 return
             self._started = True
             self._thread = threading.Thread(
@@ -79,28 +82,86 @@ class CompanyLookupWorker:
             )
             self._thread.start()
 
-    def stop(self, *, timeout: float = 120.0) -> None:
-        """Drain in-flight work (including company scans), then quit Chrome."""
+    def stop(self, *, timeout: float = 30.0) -> None:
+        """
+        Stop the worker: drop queued commands, wake the thread, quit Chrome.
+
+        Does **not** run pending company scans / consulting / dedicated-reqs after stop is
+        requested (avoids opening a new Chrome during pipeline shutdown).
+        """
         with self._lock:
-            if not self._started:
+            if self._stopping:
                 return
+            self._stopping = True
+            started = self._started
+        if not started:
+            return
+
+        dropped = self._clear_queue(cancel_futures=True)
+        if dropped:
+            log.info("Company lookup worker: dropped %d queued command(s) on shutdown.", dropped)
         self._q.put(_STOP)
+
         t = self._thread
         if t is not None:
             t.join(timeout=timeout)
             if t.is_alive():
-                log.warning("Company lookup worker did not stop within %.0fs.", timeout)
+                log.warning(
+                    "Company lookup worker did not stop within %.0fs — force-quitting its Chrome.",
+                    timeout,
+                )
+                # Worker finally may never run if the thread is stuck in a WebDriver call.
+                quit_chrome(self._take_driver())
+
+    def _clear_queue(self, *, cancel_futures: bool) -> int:
+        """Remove pending commands from the queue. Returns how many were dropped."""
+        dropped = 0
+        while True:
+            try:
+                item = self._q.get_nowait()
+            except queue.Empty:
+                break
+            if item is _STOP:
+                continue
+            dropped += 1
+            if cancel_futures and isinstance(item, _Cmd) and item.future is not None:
+                fut = item.future
+                if not fut.done():
+                    if item.kind == "consulting":
+                        fut.set_result(False)
+                    else:
+                        fut.set_result("")
+        return dropped
+
+    def _take_driver(self) -> Any:
+        """Atomically clear and return the owned driver (for quit from worker or force-stop)."""
+        with self._lock:
+            drv = self._driver
+            self._driver = None
+            return drv
+
+    def _accepting_work(self) -> bool:
+        with self._lock:
+            return not self._stopping
 
     def submit_consulting(self, company_url: str) -> bool:
         """Block until the worker checks the company About page. True = consulting/recruiting."""
+        if not self._accepting_work():
+            return False
         self.start()
+        if not self._accepting_work():
+            return False
         fut: Future[bool] = Future()
         self._q.put(_Cmd(kind="consulting", payload=company_url, future=fut))
         return bool(fut.result())
 
     def submit_dedicated_reqs(self, job_id: str) -> str:
         """Block until the worker fetches dedicated-page requirements text."""
+        if not self._accepting_work():
+            return ""
         self.start()
+        if not self._accepting_work():
+            return ""
         fut: Future[str] = Future()
         self._q.put(_Cmd(kind="dedicated_reqs", payload=job_id, future=fut))
         return str(fut.result() or "")
@@ -113,15 +174,24 @@ class CompanyLookupWorker:
         """
         if not company_url or self._company_scan_handler is None:
             return
+        if not self._accepting_work():
+            log.info("Company lookup worker: ignoring company scan during shutdown.")
+            return
         self.start()
+        if not self._accepting_work():
+            return
         self._q.put(_Cmd(kind="company_scan", payload=company_url, future=None))
 
     def _ensure_driver(self) -> Any:
+        if not self._accepting_work():
+            raise RuntimeError("company lookup worker is shutting down")
         if self._driver is not None and driver_session_alive(self._driver):
             return self._driver
         if self._driver is not None:
             quit_chrome(self._driver)
             self._driver = None
+        if not self._accepting_work():
+            raise RuntimeError("company lookup worker is shutting down")
         log.info("Starting second Chrome session for LinkedIn company-page consulting checks.")
         driver = build_chrome(headless=self._headless)
         try:
@@ -138,6 +208,9 @@ class CompanyLookupWorker:
             log.exception("Company lookup driver: LinkedIn login failed; closing second Chrome.")
             quit_chrome(driver)
             raise
+        if not self._accepting_work():
+            quit_chrome(driver)
+            raise RuntimeError("company lookup worker is shutting down")
         self._driver = driver
         return driver
 
@@ -146,22 +219,27 @@ class CompanyLookupWorker:
             while True:
                 item = self._q.get()
                 if item is _STOP:
-                    # Finish any commands already queued before stop was sent.
-                    while True:
-                        try:
-                            nxt = self._q.get_nowait()
-                        except queue.Empty:
-                            break
-                        if nxt is _STOP:
-                            continue
-                        self._handle(nxt)  # type: ignore[arg-type]
+                    # Discard anything still queued — do not start Chrome for leftover scans.
+                    dropped = self._clear_queue(cancel_futures=True)
+                    if dropped:
+                        log.info(
+                            "Company lookup worker: discarded %d command(s) after stop signal.",
+                            dropped,
+                        )
                     break
+                if not self._accepting_work():
+                    # Stop was requested while we were idle; drop this item and exit via _STOP.
+                    if isinstance(item, _Cmd) and item.future is not None and not item.future.done():
+                        if item.kind == "consulting":
+                            item.future.set_result(False)
+                        else:
+                            item.future.set_result("")
+                    continue
                 self._handle(item)  # type: ignore[arg-type]
         except Exception:
             log.exception("Company lookup worker crashed.")
         finally:
-            drv = self._driver
-            self._driver = None
+            drv = self._take_driver()
             if drv is not None:
                 try:
                     save_cookies(drv, self._session_file)
@@ -172,6 +250,10 @@ class CompanyLookupWorker:
 
     def _handle(self, cmd: _Cmd) -> None:
         fut = cmd.future
+        if not self._accepting_work():
+            if fut is not None and not fut.done():
+                fut.set_result(False if cmd.kind == "consulting" else "")
+            return
         try:
             if cmd.kind == "consulting":
                 driver = self._ensure_driver()
@@ -201,6 +283,15 @@ class CompanyLookupWorker:
             log.warning("Company lookup worker: unknown command kind %r", cmd.kind)
             if fut is not None and not fut.done():
                 fut.set_result(False if cmd.kind == "consulting" else "")
+        except RuntimeError as e:
+            if "shutting down" in str(e).lower():
+                log.info("Company lookup worker: aborted %s — shutting down.", cmd.kind)
+                if fut is not None and not fut.done():
+                    fut.set_result(False if cmd.kind == "consulting" else "")
+                return
+            log.exception("Company lookup worker command %r failed", cmd.kind)
+            if fut is not None and not fut.done():
+                fut.set_exception(e)
         except Exception as e:
             log.exception("Company lookup worker command %r failed", cmd.kind)
             if fut is not None and not fut.done():

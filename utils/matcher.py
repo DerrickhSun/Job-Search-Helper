@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from typing import Any
 
 import dspy
@@ -694,6 +695,14 @@ def _title_implies_five_years_role_level_no_numeric_floor(title: str | None) -> 
     **Manager**, or **Director** (case-insensitive). Used only when no numeric year minima exist in
     title + description.
     """
+    return title_has_overqualified_role_level(title)
+
+
+def title_has_overqualified_role_level(title: str | None) -> bool:
+    """
+    True when the title contains a whole-word seniority cue that typically exceeds new-grad fit:
+    Senior / Sr, Lead, Manager, or Director.
+    """
     if not (title or "").strip():
         return False
     t = title.strip()
@@ -701,11 +710,67 @@ def _title_implies_five_years_role_level_no_numeric_floor(title: str | None) -> 
         re.search(p, t, re.IGNORECASE)
         for p in (
             r"\bsenior\b",
+            r"\bsr\b",
             r"\blead\b",
             r"\bmanager\b",
             r"\bdirector\b",
         )
     )
+
+
+# Tokens ignored when matching job titles against search keywords (company-scan heuristic).
+_KEYWORD_MATCH_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "of",
+        "for",
+        "in",
+        "on",
+        "at",
+        "to",
+        "with",
+        "by",
+        "job",
+        "jobs",
+        "role",
+        "roles",
+        "position",
+        "positions",
+    }
+)
+
+
+def _significant_title_tokens(text: str) -> set[str]:
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {w for w in words if len(w) >= 3 and w not in _KEYWORD_MATCH_STOPWORDS}
+
+
+def title_shares_search_keyword_token(title: str | None, keywords: Sequence[str] | None) -> bool:
+    """
+    True when the job title shares at least one significant word with any search keyword phrase.
+
+    Example: title \"Application Developer\" matches keyword \"software developer\" via ``developer``.
+    Empty keywords → True (do not filter). Empty title → False.
+    """
+    if keywords is None:
+        return True
+    if isinstance(keywords, str):
+        kw_list = [keywords]
+    else:
+        kw_list = [str(k) for k in keywords]
+    kw_toks: set[str] = set()
+    for kw in kw_list:
+        kw_toks |= _significant_title_tokens(kw)
+    if not kw_toks:
+        return True
+    title_toks = _significant_title_tokens(title or "")
+    if not title_toks:
+        return False
+    return bool(title_toks & kw_toks)
 
 
 def _regex_implied_years_senior_level_no_numeric(text_lower: str) -> bool:

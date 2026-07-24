@@ -25,6 +25,10 @@ from selenium.common.exceptions import NoSuchElementException, WebDriverExceptio
 
 # Sentinel for "unlimited" quota math (last page, no max_jobs cap).
 _MAX_QUOTA = 2**30
+
+# LinkedIn ``f_TPR`` windows (seconds since post). Primary search uses 24h; company scans use 7d.
+_F_TPR_PAST_24H = "r86400"
+_F_TPR_PAST_WEEK = "r604800"  # 7 * 86400
 from selenium.webdriver.common.by import By
 
 from .chrome_driver import (
@@ -315,7 +319,7 @@ class JobSearcher:
         if easy_apply_only:
             params["f_LF"] = "f_AL"
         if self.posted_within_24h:
-            params["f_TPR"] = "r86400"
+            params["f_TPR"] = _F_TPR_PAST_24H
         return urllib.parse.urlencode(params)
 
     def _pause(self) -> None:
@@ -864,12 +868,25 @@ class JobSearcher:
         """
         stable = 0
         last_n = -1
+        zero_streak = 0
         for round_i in range(self.job_list_scroll_max_rounds):
             if self._driver_stopped(driver):
                 return
             n = self._count_left_rail_job_links(driver)
             if n is None:
                 return
+            if n <= 0:
+                zero_streak += 1
+                # Empty left rail for many rounds almost always means wrong page chrome
+                # (e.g. /jobs/search-results/) — abort instead of burning ~minute of scrolls.
+                if zero_streak >= 12:
+                    log.warning(
+                        "Virtual job list: still 0 left-rail link(s) after %d scroll rounds — stopping expand",
+                        round_i + 1,
+                    )
+                    return
+            else:
+                zero_streak = 0
             if n > 0 and n == last_n:
                 stable += 1
                 if stable >= self.job_list_scroll_stable_rounds:
@@ -1855,10 +1872,119 @@ class JobSearcher:
             return ""
         return f"{m.group(1).rstrip('/')}/jobs/"
 
+    @staticmethod
+    def _linkedin_query_param(url: str, name: str) -> str | None:
+        """First non-empty query value for ``name`` (case-insensitive key match)."""
+        raw = (url or "").strip()
+        if not raw:
+            return None
+        try:
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(raw).query, keep_blank_values=False)
+        except ValueError:
+            return None
+        for key, values in q.items():
+            if key.lower() == name.lower() and values:
+                v = (values[0] or "").strip()
+                if v:
+                    return v
+        return None
+
+    @classmethod
+    def classic_company_jobs_search_url(
+        cls,
+        source_url: str,
+        *,
+        f_tpr: str = _F_TPR_PAST_WEEK,
+    ) -> str | None:
+        """
+        Build a classic two-pane ``/jobs/search/?f_C=…&f_TPR=…`` URL from a company Jobs /
+        ``search-results`` / ``jobs/search`` link.
+
+        LinkedIn's newer ``/jobs/search-results/`` company expansion pages do not expose the
+        left-rail card markup our scanners use, so company scans must land on ``/jobs/search/``.
+        """
+        raw = (source_url or "").strip()
+        if not raw:
+            return None
+        company_id = cls._linkedin_query_param(raw, "f_C")
+        if not company_id:
+            return None
+        params: dict[str, str] = {"f_C": company_id}
+        if f_tpr:
+            params["f_TPR"] = f_tpr
+        geo = cls._linkedin_query_param(raw, "geoId")
+        if geo:
+            params["geoId"] = geo
+        return "https://www.linkedin.com/jobs/search/?" + urllib.parse.urlencode(params)
+
+    def _apply_company_jobs_posted_window(self, driver, *, f_tpr: str = _F_TPR_PAST_WEEK) -> bool:
+        """
+        Navigate to a classic company ``/jobs/search/`` URL with ``f_tpr`` (default: past week).
+
+        Accepts the current page URL or a ``f_C=`` deep link on the page. Returns True when
+        navigation was attempted successfully.
+        """
+        if self._driver_stopped(driver):
+            return False
+        try:
+            current = (driver.current_url or "").strip()
+        except WebDriverException:
+            return False
+
+        target = self.classic_company_jobs_search_url(current, f_tpr=f_tpr)
+        if not target:
+            # Still on /company/.../jobs/ — find a search deep-link that carries f_C.
+            href = ""
+            try:
+                for css in (
+                    "a[href*='f_C=']",
+                    "a[href*='/jobs/search']",
+                    "a[href*='/jobs/search-results']",
+                ):
+                    for el in driver.find_elements(By.CSS_SELECTOR, css):
+                        try:
+                            if not el.is_displayed():
+                                continue
+                        except Exception:
+                            continue
+                        cand = (el.get_attribute("href") or "").strip()
+                        if self._linkedin_query_param(cand, "f_C"):
+                            href = cand
+                            break
+                    if href:
+                        break
+            except WebDriverException:
+                href = ""
+            target = self.classic_company_jobs_search_url(href, f_tpr=f_tpr) if href else None
+
+        if not target:
+            log.warning(
+                "Company jobs: could not build classic /jobs/search/ URL with %s date filter.",
+                f_tpr,
+            )
+            return False
+
+        if (current or "").rstrip("/") == target.rstrip("/"):
+            return True
+
+        log.info("Company jobs: opening classic search with date filter %s → %s", f_tpr, target)
+        try:
+            driver.get(target)
+            time.sleep(1.5)
+        except WebDriverException:
+            log.debug("Company jobs: failed to open classic date-filtered search", exc_info=True)
+            return False
+        return True
+
     def open_company_jobs_list(self, driver, company_url: str) -> bool:
         """
         From a company page URL, open the Jobs tab and click **Show all jobs** / **See all jobs**
         so the secondary driver lands on a company-filtered jobs search list.
+
+        After landing, navigates to classic ``/jobs/search/?f_C=…&f_TPR=r604800`` (Past week) —
+        intentionally wider than the primary search's past-24-hours window. Newer LinkedIn
+        ``/jobs/search-results/`` company pages are avoided because they do not expose scannable
+        left-rail job cards.
 
         Returns True when job list links are visible afterward.
         """
@@ -1881,6 +2007,7 @@ class JobSearcher:
         for css in (
             SEL["company_show_all_jobs"],
             "a[href*='/jobs/search']",
+            "a[href*='f_C=']",
         ):
             try:
                 for el in driver.find_elements(By.CSS_SELECTOR, css):
@@ -1908,7 +2035,7 @@ class JobSearcher:
                 "'abcdefghijklmnopqrstuvwxyz'), 'see all jobs')]",
                 "//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
                 "'abcdefghijklmnopqrstuvwxyz'), 'show all jobs')]",
-                "//a[contains(@href,'/jobs/search') and contains(@href,'f_C=')]",
+                "//a[contains(@href,'f_C=')]",
             ):
                 try:
                     for el in driver.find_elements(By.XPATH, xp):
@@ -1924,22 +2051,44 @@ class JobSearcher:
                     continue
 
         if show_all is not None:
+            show_href = ""
             try:
-                if self.highlight:
-                    focus_element(driver, show_all, pause=self.step_delay)
-                show_all.click()
+                show_href = (show_all.get_attribute("href") or "").strip()
             except Exception:
+                show_href = ""
+            classic = self.classic_company_jobs_search_url(show_href, f_tpr=_F_TPR_PAST_WEEK)
+            if classic:
+                log.info(
+                    "Company jobs: opening Show all jobs as classic past-week search → %s",
+                    classic,
+                )
                 try:
-                    driver.execute_script("arguments[0].click();", show_all)
-                except Exception:
-                    log.debug("Company jobs: Show all jobs click failed", exc_info=True)
+                    driver.get(classic)
+                    time.sleep(1.5)
+                except WebDriverException:
+                    log.debug("Company jobs: classic Show all navigation failed", exc_info=True)
                     return False
-            time.sleep(1.5)
+            else:
+                try:
+                    if self.highlight:
+                        focus_element(driver, show_all, pause=self.step_delay)
+                    show_all.click()
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].click();", show_all)
+                    except Exception:
+                        log.debug("Company jobs: Show all jobs click failed", exc_info=True)
+                        return False
+                time.sleep(1.5)
+                if not self._apply_company_jobs_posted_window(driver, f_tpr=_F_TPR_PAST_WEEK):
+                    return False
         else:
             log.info(
-                "Company jobs: no Show/See all jobs control — scanning jobs on company jobs page %s",
+                "Company jobs: no Show/See all jobs control — deriving classic search from %s",
                 jobs_url,
             )
+            if not self._apply_company_jobs_posted_window(driver, f_tpr=_F_TPR_PAST_WEEK):
+                return False
 
         if not self._wait_job_list(driver):
             log.warning("Company jobs: job list did not appear after opening %s", jobs_url)

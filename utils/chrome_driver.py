@@ -30,6 +30,9 @@ _DRIVER_ALIVE_PROBE_TIMEOUT = 3.0
 # HTTP read timeout for WebDriver commands (fail faster when the browser window is gone).
 _DRIVER_COMMAND_TIMEOUT = 12.0
 
+# How long to wait for a clean ``driver.quit()`` before force-killing the process tree.
+_QUIT_TIMEOUT = 20.0
+
 
 def _running_in_container() -> bool:
     return os.path.exists("/.dockerenv") or os.environ.get("CHROME_DOCKER", "").strip().lower() in (
@@ -77,6 +80,32 @@ def build_chrome(headless: bool = False) -> webdriver.Chrome:
     return driver
 
 
+def _force_kill_process_tree(pid: int) -> None:
+    """Best-effort kill of chromedriver and its Chrome children (orphans after a hung quit)."""
+    if pid <= 0:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        else:
+            # Kill the process group when chromedriver was started in its own session;
+            # fall back to the single PID.
+            try:
+                os.killpg(pid, 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    os.kill(pid, 9)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+    except Exception:
+        log.debug("quit_chrome: process-tree kill failed for pid=%s", pid, exc_info=True)
+
+
 def quit_chrome(driver: webdriver.Chrome | None) -> None:
     """
     Quit ``driver`` and guarantee the chromedriver + chrome process tree is gone.
@@ -85,7 +114,8 @@ def quit_chrome(driver: webdriver.Chrome | None) -> None:
     stops the chromedriver process. If that command hangs or times out (slow/unresponsive page),
     Selenium falls back to killing chromedriver via Windows ``TerminateProcess``, which does not
     cascade to its child chrome.exe — the browser is silently orphaned. Capture chromedriver's PID
-    up front and force-kill its process tree as a backstop so this can't leave Chrome running.
+    up front, bound ``quit()`` with a timeout, and force-kill the process tree as a backstop so this
+    can't leave Chrome running.
     """
     if driver is None:
         return
@@ -95,19 +125,18 @@ def quit_chrome(driver: webdriver.Chrome | None) -> None:
     except Exception:
         pass
     try:
-        driver.quit()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(driver.quit)
+            fut.result(timeout=_QUIT_TIMEOUT)
+    except concurrent.futures.TimeoutError:
+        log.warning(
+            "quit_chrome: driver.quit() timed out after %.0fs — force-killing browser process tree",
+            _QUIT_TIMEOUT,
+        )
     except Exception:
         log.debug("quit_chrome: driver.quit() raised", exc_info=True)
-    if pid and os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-            )
-        except Exception:
-            log.debug("quit_chrome: taskkill backstop failed", exc_info=True)
+    if pid:
+        _force_kill_process_tree(int(pid))
 
 
 def _probe_driver_session_alive(driver: webdriver.Chrome) -> bool:

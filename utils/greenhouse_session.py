@@ -1662,6 +1662,12 @@ def _run_greenhouse_application_helper_concurrent(
         except queue.Empty:
             pass
         producer.join(timeout=15.0)
+        if producer.is_alive():
+            log.warning(
+                "Greenhouse prefetch: scanner thread still alive after stop — force-quitting scanner Chrome."
+            )
+            quit_chrome(scanner)
+            producer.join(timeout=5.0)
     return True
 
 
