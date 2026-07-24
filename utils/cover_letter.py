@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +109,72 @@ def write_cover_letter_docx(body: str, path: Path | str) -> Path:
             doc.add_paragraph(p)
     doc.save(str(path.resolve()))
     return path
+
+
+def read_cover_letter_docx(path: Path | str) -> str:
+    """
+    Read cover letter body text from a ``.docx`` (paragraphs joined with blank lines).
+    Requires ``python-docx``.
+    """
+    from docx import Document
+
+    path = Path(path)
+    doc = Document(str(path))
+    parts = [p.text.strip() for p in doc.paragraphs if (p.text or "").strip()]
+    return normalize_cover_letter_dashes("\n\n".join(parts).strip())
+
+
+def find_cover_letter_docx_for_job_id(
+    job_id: str,
+    *,
+    search_dirs: Sequence[Path] | None = None,
+) -> Path | None:
+    """
+    Find an existing cover letter under ``output/coverletters/`` for ``job_id``.
+
+    Matches ``*.docx`` names ending in ``_{job_id}.docx`` or ``_{job_id}__N.docx``
+    (the uniqueness suffix from :func:`unique_docx_path`). Searches mode subfolders
+    (linkedin / filter / greenhouse) plus the legacy flat ``coverletters/`` root.
+    When several match, returns the newest by mtime.
+    """
+    from .output_paths import COVERLETTERS_DIR, cover_letter_output_dirs
+
+    raw_id = str(job_id or "").strip()
+    if not raw_id:
+        return None
+    jid = re.sub(r"[^\w\-.]+", "_", raw_id).strip("_")
+    if not jid:
+        return None
+
+    if search_dirs is None:
+        dirs: list[Path] = [COVERLETTERS_DIR, *cover_letter_output_dirs()]
+    else:
+        dirs = list(search_dirs)
+
+    suffix_re = re.compile(rf"_{re.escape(jid)}(?:__\d+)?\.docx$", re.IGNORECASE)
+    matches: list[Path] = []
+    seen: set[Path] = set()
+    for d in dirs:
+        root = Path(d)
+        if not root.is_dir():
+            continue
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            for p in root.glob("*.docx"):
+                if p.is_file() and suffix_re.search(p.name):
+                    matches.append(p)
+        except OSError as e:
+            log.debug("Could not scan cover letters in %s: %s", root, e)
+
+    if not matches:
+        return None
+    return max(matches, key=lambda p: p.stat().st_mtime)
 
 
 _MAX_COVER_LETTER_FILENAME_STEM_CHARS = 200

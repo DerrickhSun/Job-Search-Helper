@@ -47,6 +47,11 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
     ``process_extension.py`` when the job is later marked applied; Downloads is a folder the user
     manages themselves.
 
+    Before calling the LLM, ``/cover-letter`` looks under ``output/coverletters/`` (linkedin /
+    filter / greenhouse) for an existing ``.docx`` for the same job id. If one is found, its text
+    is reused and the file is copied into Downloads when ``save_docx`` is true — no OpenAI call.
+    Downloads itself is never scanned as a source.
+
 AUTH:
     This server binds to 127.0.0.1 only, but any web page open in the browser can still attempt
     to ``fetch()`` a localhost port — without a check, a page other than our own extension could
@@ -74,6 +79,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sys
 import unicodedata
 from http import HTTPStatus
@@ -87,6 +93,8 @@ from utils.cover_letter import (
     _MAX_COVER_LETTER_FILENAME_STEM_CHARS,
     _sanitize_cover_letter_filename_segment,
     CoverLetterGenerator,
+    find_cover_letter_docx_for_job_id,
+    read_cover_letter_docx,
     unique_docx_path,
     write_cover_letter_docx,
 )
@@ -272,20 +280,58 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "title and company are required"})
             return
 
-        job = {"title": title, "company": company, "description": description}
-        cover_letter = self.cover_gen.generate(self.resume, job)
+        job_id = _job_id_for(
+            company=company,
+            title=title,
+            url=str(data.get("url") or ""),
+            explicit=str(data.get("job_id") or "").strip(),
+        )
+        existing = find_cover_letter_docx_for_job_id(job_id)
+        reused = False
+        if existing is not None:
+            try:
+                cover_letter = read_cover_letter_docx(existing)
+            except Exception:
+                log.warning(
+                    "Could not read existing cover letter %s — generating a new one",
+                    existing,
+                    exc_info=True,
+                )
+                cover_letter = ""
+            else:
+                if cover_letter.strip():
+                    reused = True
+                    log.info(
+                        "Reusing existing cover letter for job_id=%s from %s (skipping OpenAI)",
+                        job_id,
+                        existing,
+                    )
+                else:
+                    log.warning(
+                        "Existing cover letter %s was empty — generating a new one",
+                        existing,
+                    )
+
+        if not reused:
+            job = {"title": title, "company": company, "description": description}
+            cover_letter = self.cover_gen.generate(self.resume, job)
 
         docx_path: str | None = None
         if data.get("save_docx", True):
-            job_id = _job_id_for(
-                company=company,
-                title=title,
-                url=str(data.get("url") or ""),
-                explicit=str(data.get("job_id") or "").strip(),
-            )
             stem = _extension_cover_letter_stem(company=company, title=title, job_id=job_id)
             path = unique_docx_path(self.downloads_dir, stem)
-            write_cover_letter_docx(cover_letter, path)
+            if reused and existing is not None:
+                try:
+                    shutil.copy2(existing, path)
+                except OSError:
+                    log.warning(
+                        "Could not copy %s to Downloads — writing text instead",
+                        existing,
+                        exc_info=True,
+                    )
+                    write_cover_letter_docx(cover_letter, path)
+            else:
+                write_cover_letter_docx(cover_letter, path)
             docx_path = str(path.resolve())
 
         self._send_json(HTTPStatus.OK, {"cover_letter": cover_letter, "docx_path": docx_path})
