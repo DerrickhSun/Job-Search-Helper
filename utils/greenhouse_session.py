@@ -23,7 +23,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from .company_blacklist import is_company_blacklisted, load_company_blacklist
+from .eval_utils.company_blacklist import is_company_blacklisted, load_company_blacklist
 from .chrome_driver import (
     build_chrome,
     driver_session_alive,
@@ -36,7 +36,7 @@ from .cover_letter import CoverLetterGenerator, cover_letter_docx_path_unique, d
 from .dspy_lm import configure_dspy
 from .form_fill_rules import DEFAULT_RULES_PATH, FormFillRulesEngine
 from .job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS
-from .matcher import JobMatcher, print_job_fit_debug
+from .eval_utils.matcher import JobMatcher, print_job_fit_debug
 from .output_paths import (
     ASSISTED_APPLICATIONS_CSV as ASSISTED_GREENHOUSE_CSV,
     ASSISTED_APPLICATIONS_HISTORY_CSV as ASSISTED_GREENHOUSE_HISTORY_CSV,

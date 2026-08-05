@@ -36,7 +36,7 @@ from typing import Any
 
 import dspy
 
-from .resume_parser import experience_entry_description
+from ..resume_parser import experience_entry_description
 
 log = logging.getLogger(__name__)
 

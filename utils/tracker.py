@@ -9,7 +9,7 @@ Logs every job to SQLite and exports CSV in the same 6-column layout as Google S
 - ``output/archive/applications_archive.csv`` — optional archive (see root ``archive_applications.py``,
   which also archives assisted rows by default); LinkedIn
   ``already_applied`` also matches job ids found in column E of this file
-- ``consulting`` — skipped for staffing / consulting heuristics (see ``consulting_filter``)
+- ``consulting`` — skipped for staffing / consulting heuristics (see ``eval_utils.consulting_filter``)
 """
 
 import csv

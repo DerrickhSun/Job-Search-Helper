@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .company_blacklist import normalize_company_name
-from .output_paths import CONSULTING_COMPANIES_JSON
+from ..output_paths import CONSULTING_COMPANIES_JSON
 
 log = logging.getLogger(__name__)
 

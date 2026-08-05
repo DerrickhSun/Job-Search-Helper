@@ -110,13 +110,13 @@ from utils.chrome_driver import (
     driver_session_alive,
     log_driver_session_closed,
 )
-from utils.company_blacklist import is_company_blacklisted, load_company_blacklist
 from utils.company_lookup_worker import CompanyLookupWorker
-from utils.consulting_company_memory import (
+from utils.eval_utils.company_blacklist import is_company_blacklisted, load_company_blacklist
+from utils.eval_utils.consulting_company_memory import (
     load_consulting_company_memory,
     linkedin_company_slug_from_url,
 )
-from utils.consulting_filter import (
+from utils.eval_utils.consulting_filter import (
     is_consulting_listing_from_job_posting_text_only,
     is_consulting_listing_from_listing_company_line_only,
 )
@@ -135,7 +135,7 @@ from utils.form_filler import (
 from utils.greenhouse_session import run_greenhouse_sign_in_flow
 from utils.job_records import append_listing_record
 from utils.job_searcher import JobSearcher, StopApplyPipeline
-from utils.matcher import (
+from utils.eval_utils.matcher import (
     JobMatcher,
     print_job_fit_debug,
     title_has_overqualified_role_level,

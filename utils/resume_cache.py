@@ -8,7 +8,7 @@ a string ``description`` (role narrative); older caches may still list ``bullets
 Each ``projects`` item is ``title``, ``dates``, and ``description`` (optional legacy ``bullets`` for body text).
 
 Optional ``experience_years_cap`` (number): caps the resume ``years`` heuristic used only for
-education/years **gates** in ``matcher`` (see ``_estimate_years_experience``), e.g. when calendar
+education/years **gates** in ``eval_utils.matcher`` (see ``_estimate_years_experience``), e.g. when calendar
 span overstates how senior you are vs per-skill posting requirements.
 """
 
