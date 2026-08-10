@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from dotenv import load_dotenv
 
+from utils.job_records import warn_if_listings_log_sidecars
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
     APPLICATIONS_ARCHIVE_CSV,
@@ -60,6 +61,7 @@ def main() -> None:
     # 2. Pull the shared S3 state (overwrites the local files read above).
     sync_download_output()
     prune_cover_letters_for_sync()
+    warn_if_listings_log_sidecars()
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
     migrate_form_fill_rules()

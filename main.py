@@ -133,7 +133,7 @@ from utils.form_filler import (
     EasyApplyFiller,
 )
 from utils.greenhouse_session import run_greenhouse_sign_in_flow
-from utils.job_records import append_listing_record
+from utils.job_records import append_listing_record, warn_if_listings_log_sidecars
 from utils.job_searcher import JobSearcher, StopApplyPipeline
 from utils.eval_utils.matcher import (
     JobMatcher,
@@ -1161,6 +1161,7 @@ def main():
         )
     sync_download_output(cover_letter_modes=cover_modes)
     prune_cover_letters_for_sync(cover_letter_modes=cover_modes)
+    warn_if_listings_log_sidecars(paths.get("listings_log"))
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
     migrate_legacy_cover_letter_layout()

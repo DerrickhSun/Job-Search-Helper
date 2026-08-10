@@ -454,4 +454,11 @@ def sync_upload_output(
         bucket,
         s3_list_prefix_for_dir(root),
     )
+    if uploaded > 0:
+        try:
+            from .job_records import cleanup_listings_log_sidecars
+
+            cleanup_listings_log_sidecars()
+        except Exception:
+            log.debug("Listings log sidecar cleanup after S3 upload failed", exc_info=True)
     return uploaded

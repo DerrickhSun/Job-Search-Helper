@@ -18,6 +18,9 @@ data/selenium_greenhouse_cookies.json
 data/applications.db
 data/bot.log
 data/listings_log.jsonl
+data/listings_log_*.jsonl
+data/listings_log_*.jsonl.bak
+data/listings_log*.bak
 data/form_fill_rules/
 data/form_fill_rules.json
 
