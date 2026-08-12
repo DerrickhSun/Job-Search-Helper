@@ -15,7 +15,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from selenium.common.exceptions import NoSuchElementException, WebDriverException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+    WebDriverException,
+)
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -108,13 +112,20 @@ JOB_TRUST_SAFETY_MODAL_DISMISS = (
 
 APPLY_ABORT_JOB_TRUST_SAFETY = "job_trust_safety_reminder"
 
-# LinkedIn daily Easy Apply submission cap. When reached, an inline feedback message appears (e.g.
-# "We limit daily submissions to maintain quality and prevent bots… Save this job and apply tomorrow.").
+# LinkedIn daily Easy Apply submission cap. Two known presentations:
+#  - older: inline feedback message under a grayed-out Apply button (e.g. "We limit daily
+#    submissions to maintain quality and prevent bots… Save this job and apply tomorrow.").
+#  - newer: a popup dialog on Apply click, identified by its stable (locale-independent)
+#    ``data-sdui-screen`` value — "You reached today's Easy Apply limit … Save this job and
+#    continue applying tomorrow."
 APPLY_ABORT_DAILY_LIMIT = "linkedin_daily_application_limit"
 LINKEDIN_DAILY_LIMIT_MESSAGE = "artdeco-inline-feedback__message"
+LINKEDIN_DAILY_LIMIT_DIALOG_SCREEN = "com.linkedin.sdui.flagshipnav.jobs.EasyApplyFuseLimitDialogModal"
 LINKEDIN_DAILY_LIMIT_SUBSTRINGS = (
     "we limit daily submissions",
     "apply tomorrow",
+    "applying tomorrow",
+    "easy apply limit",
 )
 
 # Success / follow-up UI after submit is often *not* inside ``.jobs-easy-apply-modal`` — same tab, different layer.
@@ -876,19 +887,33 @@ class EasyApplyFiller:
 
     def _linkedin_daily_limit_reached(self, driver: Any) -> bool:
         """
-        True when LinkedIn's daily Easy Apply submission cap message is on the page (inline feedback
-        such as "We limit daily submissions … Save this job and apply tomorrow.").
+        True when LinkedIn's daily Easy Apply submission cap is signaled — either the newer
+        popup dialog (matched by its stable, locale-independent ``data-sdui-screen`` value) or
+        the older inline feedback message under a grayed-out Apply button (matched by English
+        text substrings, since it carries no comparable stable attribute).
 
-        The message can sit under a grayed-out Apply button; such text is often not "visible" to Selenium,
-        so we read ``textContent`` (via JS) rather than ``element.text`` (which is empty for hidden nodes).
+        The inline message can sit under a grayed-out Apply button; such text is often not
+        "visible" to Selenium, so we read ``textContent`` (via JS) rather than ``element.text``
+        (which is empty for hidden nodes).
         """
+        try:
+            found = driver.execute_script(
+                "return !!document.querySelector(arguments[0]);",
+                f'[data-sdui-screen="{LINKEDIN_DAILY_LIMIT_DIALOG_SCREEN}"]',
+            )
+            if found:
+                return True
+        except Exception as e:
+            log.debug("Daily-limit dialog scan failed (%s); falling back to text scan.", e)
+
         subs = list(LINKEDIN_DAILY_LIMIT_SUBSTRINGS)
         try:
             found = driver.execute_script(
                 """
                 const subs = arguments[0];
                 const nodes = document.querySelectorAll(
-                  '.artdeco-inline-feedback__message, .artdeco-inline-feedback, [class*="inline-feedback"]'
+                  '.artdeco-inline-feedback__message, .artdeco-inline-feedback, [class*="inline-feedback"], '
+                  + 'dialog[data-testid="dialog"]'
                 );
                 for (const el of nodes) {
                   const t = (el.textContent || '').toLowerCase();
@@ -995,9 +1020,41 @@ class EasyApplyFiller:
                 focus_element(driver, apply_btn, pause=self.step_delay)
             try:
                 apply_btn.click()
+            except StaleElementReferenceException:
+                # LinkedIn's SDUI apply flow can mutate the DOM synchronously on click (e.g.
+                # swapping in the daily-limit popup) — the click itself already landed even
+                # though Selenium's call raises stale. Do NOT retry with this same handle (the
+                # JS fallback below would raise the identical exception, uncaught, and skip
+                # the limit/trust-safety checks that follow). Fall through to those checks.
+                log.debug("Apply button went stale right after click (likely UI mutated on click).")
             except Exception:
-                driver.execute_script("arguments[0].click();", apply_btn)
+                try:
+                    driver.execute_script("arguments[0].click();", apply_btn)
+                except StaleElementReferenceException:
+                    log.debug("Apply button went stale on JS click fallback (likely UI mutated on click).")
             self._after_ui_click()
+
+            # The Apply control is an <a href="…/apply/?openSDUIApplyFlow=true…"> whose click handler
+            # is expected to intercept navigation and open the modal in place. If that handler doesn't
+            # fire in time, the browser can fall through to the anchor's literal href and leave the
+            # jobs context entirely (observed once landing on an unrelated /feed/update/ post) — recover
+            # and log the URL so a recurrence is diagnosable instead of silently stuck off-page.
+            try:
+                cur_url = (driver.current_url or "")
+            except WebDriverException:
+                cur_url = ""
+            if cur_url and "linkedin.com/jobs" not in cur_url.lower():
+                log.warning(
+                    "Clicking Apply left the jobs context (url=%s) for %s at %s — navigating back.",
+                    cur_url[:200],
+                    job.get("title"),
+                    job.get("company"),
+                )
+                try:
+                    driver.back()
+                    time.sleep(1.0)
+                except WebDriverException:
+                    pass
 
             if self._abort_apply_for_job_trust_safety(driver, job):
                 return False
