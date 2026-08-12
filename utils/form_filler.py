@@ -44,12 +44,42 @@ DEFAULT_HEADSHOT_IMAGE = Path("data/selfInSuit.png")
 SEL = {
     # Primary apply CTA on the job detail pane (two-pane search or /jobs/view/…).
     "apply_button_id": "jobs-apply-button-id",
-    "easy_apply_btn": 'button.jobs-apply-button, button[aria-label*="Easy Apply"]',
-    "modal": ".jobs-easy-apply-modal",
-    "next_btn": 'button[aria-label="Continue to next step"]',
-    "review_btn": 'button[aria-label="Review your application"]',
-    "submit_btn": 'button[aria-label="Submit application"]',
-    "close_btn": 'button[aria-label="Dismiss"], button[aria-label="dismiss"]',
+    # Newer LinkedIn: ``<a aria-label="Easy Apply to this job" href="…/apply/?openSDUIApplyFlow=true…">``.
+    # Some rollouts use ``LinkedIn Apply to …`` instead of ``Easy Apply``.
+    # Legacy: ``button.jobs-apply-button`` / ``#jobs-apply-button-id``.
+    "easy_apply_btn": (
+        'a[aria-label="Easy Apply to this job"], '
+        'a[aria-label*="Easy Apply to this job"], '
+        'a[aria-label*="Easy Apply"][href*="/apply"], '
+        'a[aria-label*="LinkedIn Apply to"], '
+        'button[aria-label*="LinkedIn Apply to"], '
+        'a[href*="openSDUIApplyFlow=true"], '
+        'button.jobs-apply-button, '
+        'button[aria-label*="Easy Apply"]'
+    ),
+    # Classic light-DOM Easy Apply sheet (still used after openSDUIApplyFlow clicks).
+    "modal": (
+        ".jobs-easy-apply-modal, "
+        'div[role="dialog"].jobs-easy-apply-modal, '
+        'div[data-test-modal][role="dialog"].artdeco-modal'
+    ),
+    # Alternate SDUI host used on some /jobs/search-results/ rollouts.
+    "sdui_shadow_host": '[data-testid="interop-shadowdom"]',
+    "next_btn": (
+        'button[aria-label="Continue to next step"], '
+        'button[aria-label*="Continue to next step"], '
+        'button[data-easy-apply-next-button], '
+        'button[data-live-test-easy-apply-next-button]'
+    ),
+    "review_btn": (
+        'button[aria-label="Review your application"], '
+        'button[aria-label*="Review your application"]'
+    ),
+    "submit_btn": (
+        'button[aria-label="Submit application"], '
+        'button[aria-label*="Submit application"]'
+    ),
+    "close_btn": 'button[aria-label="Dismiss"], button[aria-label="dismiss"], button[aria-label="Close"]',
     # Post-submit success / blocking overlay — must dismiss before the next job in the same session.
     "done_btn": (
         'button[aria-label="Done"], '
@@ -356,18 +386,16 @@ class EasyApplyFiller:
 
     def _resolve_fill_root(self, driver: Any) -> Any | None:
         """
-        LinkedIn: visible ``.jobs-easy-apply-modal``. Workday: ``body`` in the document or nested iframes
-        when ``WORKDAY_FIELD_MARKERS`` match. Greenhouse: ``body`` when embedded apply fields match
+        LinkedIn: visible Easy Apply sheet (legacy ``.jobs-easy-apply-modal`` or SDUI shadow dialog).
+        Workday: ``body`` in the document or nested iframes when ``WORKDAY_FIELD_MARKERS`` match.
+        Greenhouse: ``body`` when embedded apply fields match
         (``input.input__single-line``, ``input[id^="question_"]``, etc.), including inside iframes.
         Leaves ``driver`` inside the iframe when the form lives there.
         """
         self._default_content(driver)
-        for el in driver.find_elements(By.CSS_SELECTOR, SEL["modal"]):
-            try:
-                if el.is_displayed():
-                    return el
-            except Exception:
-                continue
+        modal = self._find_easy_apply_modal(driver)
+        if modal is not None:
+            return modal
         wd = self._find_workday_fill_body(driver, 0)
         if wd is not None:
             return wd
@@ -924,7 +952,9 @@ class EasyApplyFiller:
                 ):
                     return False
                 raise RuntimeError(
-                    "Apply button not found: expected #jobs-apply-button-id or Easy Apply fallback"
+                    "Apply button not found: expected Easy Apply link "
+                    "(aria-label Easy Apply to this job / openSDUIApplyFlow) "
+                    "or legacy #jobs-apply-button-id / button.jobs-apply-button"
                 )
             scroll_into_view(driver, apply_btn)
             if self.highlight:
@@ -934,12 +964,27 @@ class EasyApplyFiller:
             except Exception:
                 driver.execute_script("arguments[0].click();", apply_btn)
             self._after_ui_click()
-            time.sleep(0.35)
 
             if self._abort_apply_for_job_trust_safety(driver, job):
                 return False
 
             if self._abort_apply_for_daily_limit(driver, job, when="after clicking Apply"):
+                return False
+
+            # The new Easy Apply control is an <a href="…/apply/?openSDUIApplyFlow=true…">.
+            # The sheet (still ``.jobs-easy-apply-modal`` in current UI) can take several seconds
+            # to mount after that click — do not start filling until it is visible.
+            modal = self._wait_for_easy_apply_modal(driver, timeout_s=12.0)
+            if modal is None:
+                log.warning(
+                    "Easy Apply sheet did not open after clicking Apply "
+                    "(expected .jobs-easy-apply-modal or SDUI shadow dialog)"
+                )
+                try:
+                    path = self.screenshot_dir / f"error_{job['id']}.png"
+                    driver.save_screenshot(str(path))
+                except Exception:
+                    pass
                 return False
 
             return self._fill_form(driver, resume, cover_letter, job)
@@ -964,15 +1009,55 @@ class EasyApplyFiller:
 
     def _find_apply_button(self, driver: Any):
         """
-        First try the job view apply control ``#jobs-apply-button-id``, then legacy Easy Apply selectors.
+        Find the job-pane Easy Apply control.
+
+        Prefer the newer ``<a aria-label="Easy Apply to this job">`` / ``openSDUIApplyFlow`` link,
+        then legacy ``#jobs-apply-button-id`` / ``button.jobs-apply-button``.
         Polls briefly — the detail pane can lag after clicking a card in search results.
         """
         aid = SEL["apply_button_id"]
         pause = max(0.25, min(0.6, self.step_delay))
+
+        def _visible_easy_apply():
+            try:
+                els = driver.find_elements(By.CSS_SELECTOR, SEL["easy_apply_btn"])
+            except Exception:
+                return None
+            for el in els:
+                try:
+                    if not el.is_displayed():
+                        continue
+                    disabled = (el.get_attribute("aria-disabled") or "").strip().lower()
+                    if disabled in ("true", "1"):
+                        continue
+                    label = (el.get_attribute("aria-label") or el.text or "").lower()
+                    href = (el.get_attribute("href") or "").lower()
+                    # Prefer Easy Apply over a plain external "Apply" link when both match broadly.
+                    if "easy apply" in label or "opensduiapplyflow" in href or "/apply" in href:
+                        return el
+                    tag = (el.tag_name or "").lower()
+                    if tag == "button" and "jobs-apply-button" in (
+                        (el.get_attribute("class") or "").lower()
+                    ):
+                        return el
+                except Exception:
+                    continue
+            # Fallback: first displayed match from the selector list.
+            for el in els:
+                try:
+                    if el.is_displayed():
+                        return el
+                except Exception:
+                    continue
+            return None
+
         for _ in range(24):
             if not driver_session_alive(driver):
                 log_driver_session_closed()
                 return None
+            found = _visible_easy_apply()
+            if found is not None:
+                return found
             try:
                 el = driver.find_element(By.ID, aid)
                 if el.is_displayed():
@@ -982,31 +1067,108 @@ class EasyApplyFiller:
             except Exception:
                 log_driver_session_closed()
                 return None
-            try:
-                els = driver.find_elements(By.CSS_SELECTOR, SEL["easy_apply_btn"])
-            except Exception:
-                log_driver_session_closed()
-                return None
-            if els:
-                return els[0]
             if not interruptible_sleep(pause, driver):
                 return None
+
+        found = _visible_easy_apply()
+        if found is not None:
+            return found
         try:
-            return driver.find_element(By.ID, aid)
+            el = driver.find_element(By.ID, aid)
+            if el.is_displayed():
+                return el
         except NoSuchElementException:
             pass
-        els = driver.find_elements(By.CSS_SELECTOR, SEL["easy_apply_btn"])
-        return els[0] if els else None
+        return None
+
+    def _find_legacy_easy_apply_modal(self, driver: Any):
+        """Visible classic ``.jobs-easy-apply-modal`` / artdeco apply dialog in the light DOM."""
+        for el in driver.find_elements(By.CSS_SELECTOR, SEL["modal"]):
+            try:
+                if not el.is_displayed():
+                    continue
+                # Prefer the real Easy Apply sheet over unrelated artdeco dialogs matched by
+                # the broader ``[data-test-modal]`` fallback.
+                cls = (el.get_attribute("class") or "").lower()
+                labelled = (el.get_attribute("aria-labelledby") or "").lower()
+                if "jobs-easy-apply-modal" in cls or labelled == "jobs-apply-header":
+                    return el
+                # Broader match only if it looks like an apply dialog.
+                text = (el.text or "").lower()
+                if "apply to" in text or "contact info" in text:
+                    return el
+            except Exception:
+                continue
+        # Header id is stable in the Inspect markup you shared.
+        try:
+            header = driver.find_element(By.ID, "jobs-apply-header")
+            dlg = header.find_element(
+                By.XPATH,
+                './ancestor::*[@role="dialog" or contains(@class,"jobs-easy-apply-modal")][1]',
+            )
+            if dlg.is_displayed():
+                return dlg
+        except Exception:
+            pass
+        return None
+
+    def _find_sdui_apply_modal(self, driver: Any):
+        """
+        SDUI apply dialog inside ``[data-testid="interop-shadowdom"]`` open shadow root
+        (some LinkedIn rollouts). Returns None when that host is absent.
+        """
+        try:
+            hosts = driver.find_elements(By.CSS_SELECTOR, SEL["sdui_shadow_host"])
+        except Exception:
+            return None
+        for host in hosts:
+            try:
+                shadow = host.shadow_root
+            except Exception:
+                continue
+            if shadow is None:
+                continue
+            try:
+                dialogs = shadow.find_elements(
+                    By.CSS_SELECTOR, '[role="dialog"], [role="alertdialog"]'
+                )
+            except Exception:
+                continue
+            for dialog in dialogs:
+                try:
+                    if not dialog.is_displayed():
+                        continue
+                    rect = dialog.rect or {}
+                    if float(rect.get("width") or 0) < 100 or float(rect.get("height") or 0) < 100:
+                        continue
+                    return dialog
+                except Exception:
+                    continue
+        return None
+
+    def _find_easy_apply_modal(self, driver: Any):
+        """Legacy light-DOM Easy Apply sheet, else SDUI shadow dialog."""
+        legacy = self._find_legacy_easy_apply_modal(driver)
+        if legacy is not None:
+            return legacy
+        return self._find_sdui_apply_modal(driver)
+
+    def _wait_for_easy_apply_modal(self, driver: Any, timeout_s: float = 12.0):
+        """Poll until the Easy Apply sheet is visible (or timeout)."""
+        deadline = time.monotonic() + max(0.5, float(timeout_s))
+        while time.monotonic() < deadline:
+            if self._stop_dismiss_if_driver_closed(driver):
+                return None
+            modal = self._find_easy_apply_modal(driver)
+            if modal is not None:
+                return modal
+            if not interruptible_sleep(0.35, driver):
+                return None
+        return self._find_easy_apply_modal(driver)
 
     def _easy_apply_modal_is_open(self, driver: Any) -> bool:
         """True when the Easy Apply dialog is visible (blocks clicking Apply on the next job)."""
-        for el in driver.find_elements(By.CSS_SELECTOR, SEL["modal"]):
-            try:
-                if el.is_displayed():
-                    return True
-            except Exception:
-                continue
-        return False
+        return self._find_easy_apply_modal(driver) is not None
 
     @staticmethod
     def _element_in_dialog_or_modal_shell(el) -> bool:
@@ -1164,14 +1326,15 @@ class EasyApplyFiller:
                 except Exception:
                     continue
         try:
-            modal = driver.find_element(By.CSS_SELECTOR, SEL["modal"])
-            for btn in modal.find_elements(
-                By.XPATH, ".//button[contains(normalize-space(), 'Done')]"
-            ):
-                if btn.is_displayed() and btn.is_enabled():
-                    btn.click()
-                    self._after_ui_click()
-                    return True
+            modal = self._find_easy_apply_modal(driver)
+            if modal is not None:
+                for btn in modal.find_elements(
+                    By.XPATH, ".//button[contains(normalize-space(), 'Done')]"
+                ):
+                    if btn.is_displayed() and btn.is_enabled():
+                        btn.click()
+                        self._after_ui_click()
+                        return True
         except Exception:
             pass
         for xp in (
@@ -1240,9 +1403,8 @@ class EasyApplyFiller:
 
     def _modal_has_unfilled_required_fields(self, driver: Any) -> bool:
         """True if a required control is still empty (we could not complete the step)."""
-        try:
-            modal = driver.find_element(By.CSS_SELECTOR, SEL["modal"])
-        except Exception:
+        modal = self._find_easy_apply_modal(driver)
+        if modal is None:
             return False
         for el in modal.find_elements(By.CSS_SELECTOR, SEL["text_input"]):
             try:
@@ -1437,22 +1599,31 @@ class EasyApplyFiller:
         """Close the flow via the header **Dismiss** control (``aria-label`` Dismiss / dismiss)."""
         if self._stop_dismiss_if_driver_closed(driver):
             return False
+        modal = self._find_easy_apply_modal(driver)
+        scopes = [s for s in (modal, driver) if s is not None]
         for sel in (
             'button[aria-label="Dismiss"]',
             'button[aria-label="dismiss"]',
+            'button[data-test-modal-close-btn]',
+            "button.artdeco-modal__dismiss",
         ):
-            for btn in driver.find_elements(By.CSS_SELECTOR, sel):
+            for scope in scopes:
                 try:
-                    if btn.is_displayed() and btn.is_enabled():
-                        if self.highlight:
-                            focus_element(driver, btn, pause=0.2)
-                        btn.click()
-                        self._after_ui_click()
-                        time.sleep(0.45)
-                        self._click_dismiss_followup(driver, discard=discard_draft)
-                        return True
+                    buttons = scope.find_elements(By.CSS_SELECTOR, sel)
                 except Exception:
                     continue
+                for btn in buttons:
+                    try:
+                        if btn.is_displayed() and btn.is_enabled():
+                            if self.highlight:
+                                focus_element(driver, btn, pause=0.2)
+                            btn.click()
+                            self._after_ui_click()
+                            time.sleep(0.45)
+                            self._click_dismiss_followup(driver, discard=discard_draft)
+                            return True
+                    except Exception:
+                        continue
         return False
 
     def _abandon_apply_and_dismiss(self, driver: Any, job: dict, reason: str) -> bool:
@@ -1503,8 +1674,10 @@ class EasyApplyFiller:
             self._pause()
             time.sleep(0.6)
 
-            modals = driver.find_elements(By.CSS_SELECTOR, SEL["modal"])
-            if not modals:
+            modal = self._find_easy_apply_modal(driver)
+            if modal is None and step == 0:
+                modal = self._wait_for_easy_apply_modal(driver, timeout_s=8.0)
+            if modal is None:
                 log.warning("Modal closed unexpectedly at step %d", step)
                 return False
 
@@ -1524,7 +1697,15 @@ class EasyApplyFiller:
                 )
                 return False
 
-            errors = driver.find_elements(By.CSS_SELECTOR, SEL["error_msg"])
+            errors = []
+            try:
+                errors = [
+                    e
+                    for e in modal.find_elements(By.CSS_SELECTOR, SEL["error_msg"])
+                    if e.is_displayed()
+                ]
+            except Exception:
+                errors = driver.find_elements(By.CSS_SELECTOR, SEL["error_msg"])
             if errors:
                 error_text = errors[0].text
                 # Try to find the label of the failing field for easier debugging.
@@ -1556,9 +1737,9 @@ class EasyApplyFiller:
                 self._abandon_apply_and_dismiss(driver, job, f"validation error: {error_text}")
                 return False
 
-            submit_btns = driver.find_elements(By.CSS_SELECTOR, SEL["submit_btn"])
-            review_btns = driver.find_elements(By.CSS_SELECTOR, SEL["review_btn"])
-            next_btns = driver.find_elements(By.CSS_SELECTOR, SEL["next_btn"])
+            submit_btns = self._visible_controls_in(modal, driver, SEL["submit_btn"])
+            review_btns = self._visible_controls_in(modal, driver, SEL["review_btn"])
+            next_btns = self._visible_controls_in(modal, driver, SEL["next_btn"])
 
             if submit_btns:
                 btn = submit_btns[0]
@@ -1598,6 +1779,27 @@ class EasyApplyFiller:
         log.error("Exceeded max steps (%d) without submitting", max_steps)
         self._abandon_apply_and_dismiss(driver, job, "max form steps exceeded")
         return False
+
+    @staticmethod
+    def _visible_controls_in(root: Any, driver: Any, css: str) -> list:
+        """Prefer controls inside the apply sheet; fall back to the top document."""
+        found: list = []
+        for scope in (root, driver):
+            if scope is None:
+                continue
+            try:
+                els = scope.find_elements(By.CSS_SELECTOR, css)
+            except Exception:
+                continue
+            for el in els:
+                try:
+                    if el.is_displayed() and el.is_enabled():
+                        found.append(el)
+                except Exception:
+                    continue
+            if found:
+                return found
+        return found
 
     @staticmethod
     def _choice_labels_equivalent(want: str, option: str) -> bool:

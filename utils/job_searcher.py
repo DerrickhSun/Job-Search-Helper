@@ -29,6 +29,10 @@ _MAX_QUOTA = 2**30
 # LinkedIn ``f_TPR`` windows (seconds since post). Primary search uses 24h; company scans use 7d.
 _F_TPR_PAST_24H = "r86400"
 _F_TPR_PAST_WEEK = "r604800"  # 7 * 86400
+
+# Newer LinkedIn jobs list: clickable cards (not ``<a href="/jobs/view/…">``).
+_JOB_CARD_BUTTON_CSS = 'div[role="button"][componentkey^="job-card-component-ref-"]'
+_JOB_CARD_REF_RE = re.compile(r"job-card-component-ref-(\d+)", re.IGNORECASE)
 from selenium.webdriver.common.by import By
 
 from .chrome_driver import (
@@ -41,6 +45,7 @@ from .chrome_driver import (
     log_driver_session_closed,
     quit_chrome,
     save_cookies,
+    scroll_into_view,
 )
 from .job_records import append_listing_record
 
@@ -204,8 +209,8 @@ SEL = {
     "saved_account_login": 'button[aria-label^="Login as "]',
     # ``Welcome Back`` + saved profile (cookies weak but browser remembers user).
     "welcome_back_heading": "h1.header__content__heading",
-    # Job search list: ``li.scaffold-layout__list-item[data-occludable-job-id]``; link may be
-    # ``/jobs/view/ID/`` (two-pane) or ``currentJobId=`` (search results URL).
+    # Job search list: prefer new ``div[role=button][componentkey^=job-card-component-ref-]`` cards;
+    # legacy: ``li.scaffold-layout__list-item[data-occludable-job-id]`` with ``/jobs/view/`` links.
     "job_card_title": '[class*="job-card-job-posting-card-wrapper__title"]',
     "job_card_company": '[class*="job-card-job-posting-card-wrapper__company-name"]',
     "job_card_company_alt": '[class*="job-card-job-posting-card-wrapper__primary-description"]',
@@ -213,8 +218,14 @@ SEL = {
     "job_card_company_row": ".artdeco-entity-lockup__subtitle span",
     "job_card_location": '[class*="job-card-job-posting-card-wrapper__location"]',
     "job_card_location_row": ".artdeco-entity-lockup__caption .job-card-container__metadata-wrapper li span",
+    "job_card_button": _JOB_CARD_BUTTON_CSS,
     "job_description": ".jobs-description__content",
-    "next_page": 'button[aria-label="View next page"]',
+    # LinkedIn SDUI: data-testid; legacy: aria-label on artdeco pagination.
+    "next_page": (
+        'button[data-testid="pagination-controls-next-button-visible"], '
+        'button[aria-label="View next page"], '
+        'button[aria-label*="next page"]'
+    ),
     # Company page — Jobs tab / See all jobs (filter-mode secondary scan).
     "company_jobs_tab": (
         "a.org-page-navigation__item[href*='/jobs'], "
@@ -250,6 +261,13 @@ SEL = {
     "easy_apply_filter_pill": (
         'button[aria-label="Easy Apply filter."], '
         'button[aria-label*="Easy Apply filter"]'
+    ),
+    # Newer LinkedIn filter bar: radio/checkbox chip (not a pill / not All-filters modal).
+    "easy_apply_filter_radio": (
+        'div[role="radio"][aria-label="Filter by Easy Apply"], '
+        'div[role="radio"][aria-label*="Easy Apply"], '
+        'div[role="checkbox"][aria-label="Filter by Easy Apply"], '
+        'div[role="checkbox"][aria-label*="Easy Apply"]'
     ),
     "easy_apply_filter_modal_toggle": ".search-reusables__advanced-filters-binary-toggle",
     "easy_apply_filter_modal_label": "label[for='f_LF-f_AL']",
@@ -746,7 +764,10 @@ class JobSearcher:
         return interruptible_sleep(self.job_cards_wait_seconds, driver)
 
     def _left_rail_job_links(self, driver):
-        """Primary selector: title links inside virtualized list rows (avoids right-pane duplicates)."""
+        """Primary selector: new role=button job cards, else legacy title links in list rows."""
+        cards = driver.find_elements(By.CSS_SELECTOR, _JOB_CARD_BUTTON_CSS)
+        if cards:
+            return cards
         return driver.find_elements(
             By.CSS_SELECTOR,
             'li[data-occludable-job-id] a[href*="/jobs/view/"]',
@@ -771,6 +792,7 @@ class JobSearcher:
                 '[class*="jobs-search-results-list"]',
                 '.scaffold-layout__list-container',
                 'div[class*="scaffold-layout__list"]',
+                'div[class*="jobs-search-two-pane__wrapper"]',
               ];
               for (const s of sels) {
                 const el = document.querySelector(s);
@@ -920,12 +942,13 @@ class JobSearcher:
 
     def _find_job_card_links(self, driver, *, expand: bool = True):
         """
-        Job rows are ``<li class="... scaffold-layout__list-item ... ember-view ..." data-occludable-job-id>``.
-        We target the job link inside each row, then read ``data-occludable-job-id`` when parsing.
+        Return clickable job-card elements in the left rail.
 
-        If ``expand`` is True, scroll the left rail first so virtualized rows mount (see
-        ``_expand_virtualized_job_list``). Pipeline callers usually pass ``expand=False`` after
-        a single expand per page.
+        Prefer LinkedIn's newer ``div[role=button][componentkey^=job-card-component-ref-]`` cards.
+        Fall back to legacy ``li[data-occludable-job-id] a[href*=/jobs/view/]`` rows.
+
+        Intentionally does **not** use a bare ``a[href*=/jobs/view/]`` last resort — that matches
+        detail-pane / related-job anchors and clicking them navigates off the search page.
         """
         if self._driver_stopped(driver):
             return []
@@ -933,8 +956,37 @@ class JobSearcher:
             self._expand_virtualized_job_list(driver)
             if self._driver_stopped(driver):
                 return []
+
+        # 1) New Voyager job cards (role=button). Deduplicate by job id.
+        try:
+            raw_cards = driver.find_elements(By.CSS_SELECTOR, _JOB_CARD_BUTTON_CSS)
+        except WebDriverException:
+            log_driver_session_closed()
+            return []
+        if raw_cards:
+            cards: list = []
+            seen: set[str] = set()
+            for el in raw_cards:
+                try:
+                    if not el.is_displayed():
+                        continue
+                except Exception:
+                    continue
+                jid = self._job_id_from_card_element(el)
+                if not jid or jid in seen:
+                    continue
+                seen.add(jid)
+                cards.append(el)
+            if cards:
+                log.info(
+                    "Matched %d job card(s) via css %r",
+                    len(cards),
+                    _JOB_CARD_BUTTON_CSS,
+                )
+                return cards
+
+        # 2) Legacy scaffold list links.
         attempts: list[tuple[str, str]] = [
-            # Two-pane jobs UI: relative ``/jobs/view/ID/`` (no currentJobId, no linkedin.com in href)
             ("css", 'li.scaffold-layout__list-item[data-occludable-job-id] a[href*="/jobs/view/"]'),
             ("css", 'li[data-occludable-job-id] a[href*="/jobs/view/"]'),
             (
@@ -942,7 +994,6 @@ class JobSearcher:
                 'li.scaffold-layout__list-item[data-occludable-job-id] a.job-card-container__link',
             ),
             ("css", 'li[data-occludable-job-id] a.job-card-container__link'),
-            # Search-results URL with currentJobId=…
             ("css", 'li.scaffold-layout__list-item[data-occludable-job-id] a[href*="currentJobId"]'),
             (
                 "css",
@@ -950,16 +1001,7 @@ class JobSearcher:
             ),
             ("css", 'li[data-occludable-job-id] a[href*="currentJobId"]'),
             ("css", 'li[data-occludable-job-id] a[href*="linkedin.com/jobs"]'),
-            ("css", 'a.ember-view[href*="currentJobId"]'),
-            ("css", 'a[class*="ember-view"][href*="currentJobId"]'),
-            ("css", 'div.ember-view a[href*="currentJobId"]'),
-            ("xpath", "//div[contains(@class,'ember-view')]//a[contains(@href,'currentJobId')]"),
             ("css", 'a[class*="job-card-job-posting-card-wrapper__card-link"]'),
-            ("xpath", "//a[contains(@class,'ember-view') and contains(@href,'currentJobId')]"),
-            ("xpath", "//a[contains(@class, 'job-card-job-posting-card-wrapper__card-link')]"),
-            # Last resort: any /jobs/view/ link (may include detail pane — prefer scoped selectors above)
-            ("css", 'a[href*="/jobs/view/"]'),
-            ("css", 'a[href*="currentJobId"]'),
         ]
         for kind, sel in attempts:
             try:
@@ -974,6 +1016,42 @@ class JobSearcher:
                 log.info("Matched %d job list link(s) via %s %r", len(links), kind, sel)
                 return links
         return []
+
+    @staticmethod
+    def _job_id_from_card_element(el) -> str:
+        """Extract numeric job id from a card element (componentkey or data-occludable-job-id)."""
+        try:
+            ck = (el.get_attribute("componentkey") or "").strip()
+        except Exception:
+            ck = ""
+        m = _JOB_CARD_REF_RE.search(ck)
+        if m:
+            return m.group(1)
+        try:
+            jid = (el.get_attribute("data-occludable-job-id") or "").strip()
+        except Exception:
+            jid = ""
+        if jid.isdigit():
+            return jid
+        try:
+            for xpath in (
+                "./ancestor-or-self::*[@data-occludable-job-id][1]",
+                "./ancestor-or-self::div[@role='button' and contains(@componentkey,'job-card-component-ref-')][1]",
+            ):
+                try:
+                    anc = el.find_element(By.XPATH, xpath)
+                except Exception:
+                    continue
+                ck2 = (anc.get_attribute("componentkey") or "").strip()
+                m2 = _JOB_CARD_REF_RE.search(ck2)
+                if m2:
+                    return m2.group(1)
+                j2 = (anc.get_attribute("data-occludable-job-id") or "").strip()
+                if j2.isdigit():
+                    return j2
+        except Exception:
+            pass
+        return ""
 
     def _has_next_page(self, driver) -> bool:
         """True when the Next control exists and is actionable (more search results pages)."""
@@ -1056,8 +1134,9 @@ class JobSearcher:
         return ""
 
     def _list_item_for_link(self, link):
-        """The job row ``li`` (has ``data-occludable-job-id`` when using scaffold list)."""
+        """The job card root: new role=button card, else legacy ``li`` row."""
         for xpath in (
+            "./ancestor-or-self::div[@role='button' and starts-with(@componentkey,'job-card-component-ref-')][1]",
             "./ancestor::li[contains(@class,'scaffold-layout__list-item')][1]",
             "./ancestor::li[@data-occludable-job-id][1]",
             "./ancestor::li[1]",
@@ -1142,34 +1221,92 @@ class JobSearcher:
             pass
         return None
 
-    def easy_apply_filter_active(self, driver) -> bool:
-        """True when Easy Apply filter is on (URL param and/or filter pill ``aria-checked``)."""
-        if self._url_has_easy_apply_filter(driver):
-            return True
-        pill = self._easy_apply_filter_pill(driver)
-        if pill is None:
+    def _easy_apply_filter_radio(self, driver):
+        """
+        Newer filter-bar control: ``div[role=radio][aria-label='Filter by Easy Apply']`` with an
+        inner checkbox + ``Easy Apply`` label (no All-filters modal).
+        """
+        el = self._find_visible_element(driver, (SEL["easy_apply_filter_radio"],))
+        if el is not None:
+            return el
+        try:
+            for cand in driver.find_elements(
+                By.XPATH,
+                "//div[@role='radio' or @role='checkbox']"
+                "[contains(@aria-label,'Easy Apply') or .//label[contains(normalize-space(.),'Easy Apply')]]",
+            ):
+                try:
+                    if cand.is_displayed():
+                        return cand
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    def _control_aria_on(self, el) -> bool:
+        if el is None:
             return False
-        checked = (pill.get_attribute("aria-checked") or "").strip().lower()
+        checked = (el.get_attribute("aria-checked") or "").strip().lower()
         if checked == "true":
             return True
-        pressed = (pill.get_attribute("aria-pressed") or "").strip().lower()
+        pressed = (el.get_attribute("aria-pressed") or "").strip().lower()
         if pressed == "true":
             return True
-        cls = (pill.get_attribute("class") or "").lower()
+        cls = (el.get_attribute("class") or "").lower()
         return "artdeco-pill--selected" in cls or "artdeco-pill--green" in cls
+
+    def easy_apply_filter_active(self, driver) -> bool:
+        """True when Easy Apply filter is on (URL param and/or filter chip ``aria-checked``)."""
+        if self._url_has_easy_apply_filter(driver):
+            return True
+        radio = self._easy_apply_filter_radio(driver)
+        if self._control_aria_on(radio):
+            return True
+        pill = self._easy_apply_filter_pill(driver)
+        return self._control_aria_on(pill)
 
     def _click_easy_apply_filter_pill(self, driver, *, only_if_off: bool = True) -> bool:
         pill = self._easy_apply_filter_pill(driver)
         if pill is None:
             return False
-        if only_if_off:
-            checked = (pill.get_attribute("aria-checked") or "").strip().lower()
-            if checked == "true":
-                return True
-            cls = (pill.get_attribute("class") or "").lower()
-            if "artdeco-pill--selected" in cls:
-                return True
+        if only_if_off and self._control_aria_on(pill):
+            return True
         return self._click_interactive_element(driver, pill)
+
+    def _click_easy_apply_filter_radio(self, driver, *, only_if_off: bool = True) -> bool:
+        """Click the inline ``Filter by Easy Apply`` radio/checkbox chip on the search filter bar."""
+        radio = self._easy_apply_filter_radio(driver)
+        if radio is None:
+            log.debug("Easy Apply recovery: Filter by Easy Apply radio/chip not found.")
+            return False
+        if only_if_off and self._control_aria_on(radio):
+            log.debug("Easy Apply recovery: Filter by Easy Apply radio already checked.")
+            return True
+        # Prefer the visible label / inner control so the click lands on the chip UI.
+        targets: list = []
+        try:
+            for css in ("label", "input[type='checkbox']", "[aria-label='Filter by Easy Apply']"):
+                for el in radio.find_elements(By.CSS_SELECTOR, css):
+                    try:
+                        if el.is_displayed() or (el.tag_name or "").lower() == "input":
+                            targets.append(el)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        targets.append(radio)
+        for target in targets:
+            if not self._click_interactive_element(driver, target):
+                continue
+            time.sleep(0.6)
+            if self._url_has_easy_apply_filter(driver) or self._control_aria_on(
+                self._easy_apply_filter_radio(driver)
+            ):
+                log.info("Easy Apply recovery: clicked Filter by Easy Apply radio/chip.")
+                return True
+        log.warning("Easy Apply recovery: clicked Filter by Easy Apply chip but filter still off.")
+        return False
 
     def _easy_apply_modal_toggle_container(self, driver):
         """``search-reusables__advanced-filters-binary-toggle`` row for Easy Apply in All filters."""
@@ -1368,7 +1505,12 @@ class JobSearcher:
         return self._click_filters_modal_show_results(driver)
 
     def _enable_easy_apply_filter_ui(self, driver) -> bool:
-        """Re-enable Easy Apply via All filters modal, then inline pill if needed."""
+        """
+        Re-enable Easy Apply:
+
+        1. All filters modal (legacy path), then classic Easy Apply pill.
+        2. If still off — inline ``Filter by Easy Apply`` radio/checkbox chip (newer LinkedIn UI).
+        """
         if self._driver_stopped(driver):
             return False
         if self.easy_apply_filter_active(driver):
@@ -1380,6 +1522,15 @@ class JobSearcher:
                 return True
 
         if self._click_easy_apply_filter_pill(driver, only_if_off=True):
+            time.sleep(0.8)
+            if self.easy_apply_filter_active(driver):
+                return True
+
+        log.info(
+            "Easy Apply recovery: modal/pill path did not activate filter — "
+            "trying Filter by Easy Apply radio/chip."
+        )
+        if self._click_easy_apply_filter_radio(driver, only_if_off=True):
             time.sleep(0.8)
 
         return self.easy_apply_filter_active(driver)
@@ -1459,67 +1610,98 @@ class JobSearcher:
         """
         Read job id, title, company, location, Easy Apply from a **list card** without opening the job pane.
 
-        LinkedIn often puts the company in the entity lockup (including ``span[dir='ltr']`` with obfuscated
-        classes); the title may live inside the same row's job link.
+        Supports newer ``role=button`` job cards (``componentkey=job-card-component-ref-{id}``) and
+        legacy scaffold ``li`` + title-link rows.
         """
         try:
-            href = (link.get_attribute("href") or "").strip()
+            card = self._list_item_for_link(link)
+            job_id = self._job_id_from_card_element(card) or self._job_id_from_card_element(link)
 
-            li_row = link
-            jid_attr = ""
+            href = ""
             try:
-                li_row = self._list_item_for_link(link)
-                jid_attr = (li_row.get_attribute("data-occludable-job-id") or "").strip()
+                href = (link.get_attribute("href") or "").strip()
             except Exception:
-                pass
+                href = ""
 
-            if not href and not jid_attr:
+            if not job_id and href:
+                job_id, _ = job_id_and_view_url_from_href(href)
+            if not job_id:
+                try:
+                    jid_attr = (card.get_attribute("data-occludable-job-id") or "").strip()
+                except Exception:
+                    jid_attr = ""
+                job_id = jid_attr if jid_attr.isdigit() else ""
+
+            if not job_id:
                 return None
+
+            full_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
 
             title = self._text_from_first_match(
-                link,
-                (SEL["job_card_title"], "strong"),
+                card,
+                (
+                    SEL["job_card_title"],
+                    "strong",
+                    "p span[aria-hidden='true']",
+                    "p span",
+                ),
             )
             company = self._text_from_first_match(
-                link,
-                (SEL["job_card_company"], SEL["job_card_company_alt"]),
+                card,
+                (
+                    SEL["job_card_company"],
+                    SEL["job_card_company_alt"],
+                    SEL["job_card_company_row"],
+                    ".artdeco-entity-lockup__subtitle span[dir='ltr']",
+                    ".artdeco-entity-lockup__subtitle span",
+                    ".artdeco-entity-lockup__subtitle",
+                ),
             )
-            if not company:
-                company = self._text_from_first_match(
-                    li_row,
-                    (
-                        SEL["job_card_company_row"],
-                        ".artdeco-entity-lockup__subtitle span[dir='ltr']",
-                        ".artdeco-entity-lockup__subtitle span",
-                        ".artdeco-entity-lockup__subtitle",
-                    ),
-                )
-            loc = self._text_from_first_match(link, (SEL["job_card_location"],))
-            if not loc:
-                loc = self._text_from_first_match(
-                    li_row,
-                    (SEL["job_card_location_row"],),
-                )
+            loc = self._text_from_first_match(
+                card,
+                (
+                    SEL["job_card_location"],
+                    SEL["job_card_location_row"],
+                ),
+            )
 
-            if not title:
-                title = (link.get_attribute("aria-label") or "").strip()
-            if not title:
-                parts = [p.strip() for p in (link.text or "").split("\n") if p.strip()]
-                if len(parts) >= 1:
-                    title = parts[0]
-                if len(parts) >= 2 and not company:
-                    company = parts[1]
-                if len(parts) >= 3 and not loc:
-                    loc = parts[2]
+            if not title or not company or not loc:
+                parts = [p.strip() for p in (card.text or "").split("\n") if p.strip()]
+                # Drop accessibility prefixes like "Selected, …"
+                cleaned: list[str] = []
+                for p in parts:
+                    if p.lower().startswith("selected,"):
+                        p = p.split(",", 1)[-1].strip() or p
+                    if p in cleaned:
+                        continue
+                    cleaned.append(p)
+                if not title and cleaned:
+                    title = cleaned[0]
+                # Company is usually the line after title; skip dismiss/meta noise.
+                skip = {"viewed", "promoted", "easy apply", "be an early applicant"}
+                meta_i = 1
+                while meta_i < len(cleaned) and cleaned[meta_i].lower() in skip:
+                    meta_i += 1
+                if not company and meta_i < len(cleaned):
+                    # Prefer a short company-like line (not "18 hours ago", not "·").
+                    for cand in cleaned[meta_i:]:
+                        cl = cand.lower()
+                        if cand in {".", "·"} or "ago" in cl or "alumni" in cl:
+                            continue
+                        if cl.startswith("dismiss "):
+                            continue
+                        company = cand
+                        break
+                if not loc:
+                    for cand in cleaned:
+                        if "," in cand and "ago" not in cand.lower() and cand != company and cand != title:
+                            loc = cand
+                            break
+
+            if title and title.lower().startswith("selected,"):
+                title = title.split(",", 1)[-1].strip() or title
 
             easy_apply = self._easy_apply_near_card_link(link)
-
-            job_id, full_url = job_id_and_view_url_from_href(href)
-            if jid_attr:
-                job_id = jid_attr
-                full_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
-            elif not job_id:
-                return None
 
             return {
                 "id": job_id,
@@ -1534,21 +1716,202 @@ class JobSearcher:
             log.debug("Error peeking job list link: %s", e)
             return None
 
-    def _complete_job_after_peek(self, driver, link, peek: dict) -> dict | None:
-        """Open the job card (detail pane), read description, and merge into ``peek``."""
+    def _jobs_search_shell_present(self, driver) -> bool:
+        """True when the two-pane search left rail is still mounted (not a lone /jobs/view/ page)."""
         try:
-            if self.highlight:
-                focus_element(driver, link, pause=self.step_delay)
-            link.click()
-            self._pause()
-            time.sleep(0.9)
+            if driver.find_elements(
+                By.CSS_SELECTOR,
+                f"{_JOB_CARD_BUTTON_CSS}, "
+                "li.scaffold-layout__list-item[data-occludable-job-id], "
+                "li[data-occludable-job-id], "
+                ".scaffold-layout__list, "
+                ".jobs-search-results-list",
+            ):
+                return True
+        except WebDriverException:
+            self._driver_stopped(driver)
+            return False
+        url = (driver.current_url or "").lower()
+        # Search SPA often keeps results in the URL even when the rail selector set changes.
+        return "jobs/search" in url or "search-results" in url or "currentjobid=" in url
 
+    def _click_job_list_card(self, driver, link) -> bool:
+        """
+        Select a listing by clicking the **job card** (``role=button`` / list row), never a
+        ``/jobs/view/`` title link — those navigate the primary window off search results.
+        """
+        card = self._list_item_for_link(link)
+        scroll_into_view(driver, card)
+
+        # New UI: the card itself is role=button — click it (avoid dismiss control).
+        try:
+            role = (card.get_attribute("role") or "").strip().lower()
+            ck = (card.get_attribute("componentkey") or "").strip()
+        except Exception:
+            role, ck = "", ""
+        if role == "button" and "job-card-component-ref-" in ck.lower():
+            try:
+                if self.highlight:
+                    focus_element(driver, card, pause=self.step_delay)
+                # Prefer a metadata line inside the card so we don't hit Dismiss.
+                inner = None
+                for css in ("p", "span[aria-hidden='true']", "figure"):
+                    try:
+                        for el in card.find_elements(By.CSS_SELECTOR, css):
+                            try:
+                                if not el.is_displayed():
+                                    continue
+                                # Skip text inside the dismiss control.
+                                if el.find_elements(
+                                    By.XPATH,
+                                    "./ancestor::button[contains(@aria-label,'Dismiss')][1]",
+                                ):
+                                    continue
+                            except Exception:
+                                continue
+                            inner = el
+                            break
+                    except Exception:
+                        continue
+                    if inner is not None:
+                        break
+                target = inner or card
+                try:
+                    target.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", card)
+                self._pause()
+                time.sleep(0.35)
+                return True
+            except Exception:
+                log.debug("New job-card role=button click failed", exc_info=True)
+
+        # Legacy UI: click non-link regions inside the list item.
+        candidates: list = []
+        for css in (
+            ".artdeco-entity-lockup__subtitle",
+            ".artdeco-entity-lockup__caption",
+            ".job-card-container__metadata-wrapper",
+            "[class*='job-card-job-posting-card-wrapper__primary-description']",
+            "[class*='job-card-container']",
+            "div.job-card-list__entity-lockup",
+        ):
+            try:
+                for el in card.find_elements(By.CSS_SELECTOR, css):
+                    try:
+                        tag = (el.tag_name or "").lower()
+                        href = (el.get_attribute("href") or "").strip()
+                    except Exception:
+                        continue
+                    if tag == "a" or "/jobs/view/" in href.lower():
+                        continue
+                    if el.is_displayed():
+                        candidates.append(el)
+                        break
+            except Exception:
+                continue
+            if candidates:
+                break
+        candidates.append(card)
+
+        for el in candidates:
+            try:
+                if self.highlight:
+                    focus_element(driver, el, pause=self.step_delay)
+                try:
+                    el.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", el)
+                self._pause()
+                time.sleep(0.35)
+                return True
+            except Exception:
+                log.debug("Job card click target failed; trying next", exc_info=True)
+                continue
+        return False
+
+    def _recover_jobs_search_if_navigated_away(self, driver, *, job_id: str = "") -> bool:
+        """
+        If a card click left the search shell for ``/jobs/view/…``, go back.
+
+        Returns True when the search shell is present afterward.
+        """
+        if self._jobs_search_shell_present(driver):
+            return True
+        url = (driver.current_url or "").strip()
+        log.warning(
+            "Job open left the search results UI (url=%s%s) — navigating back.",
+            url[:160],
+            f", job_id={job_id}" if job_id else "",
+        )
+        try:
+            driver.back()
+            time.sleep(1.0)
+        except WebDriverException:
+            self._driver_stopped(driver)
+            return False
+        if self._jobs_search_shell_present(driver):
+            return True
+        # One more attempt — LinkedIn sometimes needs a second back through history.
+        try:
+            driver.back()
+            time.sleep(1.0)
+        except WebDriverException:
+            self._driver_stopped(driver)
+            return False
+        return self._jobs_search_shell_present(driver)
+
+    def _complete_job_after_peek(self, driver, link, peek: dict) -> dict | None:
+        """Open the job **card** (detail pane on search), read description, and merge into ``peek``."""
+        jid = str((peek or {}).get("id") or "").strip()
+        try:
+            for attempt in range(2):
+                if not self._click_job_list_card(driver, link):
+                    log.debug("Could not click job list card for job_id=%s", jid or "n/a")
+                    return None
+
+                if self._jobs_search_shell_present(driver):
+                    break
+
+                if not self._recover_jobs_search_if_navigated_away(driver, job_id=jid):
+                    log.warning(
+                        "Still off the jobs search page after back() — skipping open for job_id=%s",
+                        jid or "n/a",
+                    )
+                    return None
+                if attempt == 0:
+                    log.warning(
+                        "Restored jobs search UI after accidental /jobs/view/ navigation "
+                        "(job_id=%s) — retrying card click.",
+                        jid or "n/a",
+                    )
+                    # List remounted; re-resolve this job's card by id when possible.
+                    if jid:
+                        for cand in self._find_job_card_links(driver, expand=False):
+                            p2 = self._peek_job_from_list_link(cand)
+                            if p2 and str(p2.get("id") or "").strip() == jid:
+                                link = cand
+                                break
+                    continue
+                log.warning(
+                    "Card click still left search UI (job_id=%s) — skipping this listing open.",
+                    jid or "n/a",
+                )
+                return None
+            else:
+                return None
+
+            time.sleep(0.55)
             time.sleep(self.job_description_wait_seconds)
             description = self._read_job_description_panel(driver)
 
             return {**peek, "description": description}
         except Exception as e:
             log.debug("Error completing job after peek: %s", e)
+            try:
+                self._recover_jobs_search_if_navigated_away(driver, job_id=jid)
+            except Exception:
+                pass
             return None
 
     def _parse_job_at_card_index(
@@ -1578,12 +1941,18 @@ class JobSearcher:
         if jid:
             selectors.extend(
                 (
+                    f'div[role="button"][componentkey="job-card-component-ref-{jid}"] '
+                    f'button[aria-label^="Dismiss "][aria-label$=" job"]',
+                    f'div[componentkey="job-card-component-ref-{jid}"] '
+                    f'button[aria-label^="Dismiss "][aria-label$=" job"]',
                     f'li[data-occludable-job-id="{jid}"] button[aria-label^="Dismiss "][aria-label$=" job"]',
                     f'li[data-occludable-job-id="{jid}"] button.job-card-container__action',
                 )
             )
         selectors.extend(
             (
+                'div[role="button"][componentkey^="job-card-component-ref-"] '
+                'button[aria-label^="Dismiss "][aria-label$=" job"]',
                 # Fallback to active/selected row when no explicit id match is available.
                 'li.scaffold-layout__list-item--active button[aria-label^="Dismiss "][aria-label$=" job"]',
                 'li.jobs-search-results__list-item--active button[aria-label^="Dismiss "][aria-label$=" job"]',
@@ -1591,6 +1960,7 @@ class JobSearcher:
                 # Last resort: any visible dismiss action button.
                 'button.job-card-container__action[aria-label^="Dismiss "][aria-label$=" job"]',
                 'button[class*="job-card-container__action"][aria-label*="Dismiss"][aria-label$=" job"]',
+                'button[aria-label^="Dismiss "][aria-label$=" job"]',
             )
         )
 
