@@ -83,8 +83,7 @@ SEL = {
     # Post-submit success / blocking overlay — must dismiss before the next job in the same session.
     "done_btn": (
         'button[aria-label="Done"], '
-        ".jobs-easy-apply-modal button[aria-label=\"Done\"], "
-        'button[data-test-modal-close-btn]'
+        ".jobs-easy-apply-modal button[aria-label=\"Done\"]"
     ),
     "upload_resume": 'input[name="file"]',
     "text_input": "input[type='text'], input[type='number'], input[type='tel']",
@@ -160,12 +159,43 @@ WORKDAY_SKIP_AUTOMATION_IDS: frozenset[str] = frozenset(
 )
 
 # Shown after **Dismiss** on an in-progress application — save draft vs discard.
-DRAFT_SAVE_ARIA = (
-    'button[aria-label="Save"]',
-    'button[aria-label="save"]',
-    'button[aria-label="Save application"]',
-    'button[aria-label*="Save application"]',
+DRAFT_SAVE_SELECTORS: tuple[str, ...] = (
+    'button[data-control-name="save_application_btn"]',
+    "button[data-test-dialog-primary-btn]",
+    "button.artdeco-modal__actionbar--confirm-dialog button.artdeco-button--primary",
 )
+DRAFT_DISCARD_SELECTORS: tuple[str, ...] = (
+    'button[data-control-name="discard_application_confirm_btn"]',
+    'button[data-control-name="discard_application_btn"]',
+    "button[data-test-dialog-secondary-btn]",
+    "button.artdeco-modal__actionbar--confirm-dialog button.artdeco-button--secondary",
+)
+DRAFT_CONFIRM_DIALOG_SELECTORS: tuple[str, ...] = (
+    '[role="alertdialog"].artdeco-modal--layer-confirmation',
+    '[role="alertdialog"][data-test-modal]',
+    '[role="alertdialog"]',
+    "h2[data-test-dialog-title]",
+)
+SAVE_APPLICATION_PROMPT_TITLE = "save this application"
+SAVE_APPLICATION_PROMPT_ROOT_CSS = (
+    '[role="alertdialog"].artdeco-modal--layer-confirmation, '
+    '[role="alertdialog"][data-test-modal]'
+)
+# Pierces open shadow roots — LinkedIn often mounts artdeco confirms outside light DOM.
+_SAVE_PROMPT_DEEP_QUERY_JS = """
+const queryAllDeep = (selector, root = document) => {
+  const out = [];
+  try {
+    out.push(...root.querySelectorAll(selector));
+  } catch (e) {}
+  for (const el of root.querySelectorAll('*')) {
+    if (el.shadowRoot) {
+      out.push(...queryAllDeep(selector, el.shadowRoot));
+    }
+  }
+  return out;
+};
+"""
 
 
 class EasyApplyFiller:
@@ -222,6 +252,10 @@ class EasyApplyFiller:
             driver.switch_to.default_content()
         except Exception:
             pass
+
+    def _ensure_top_document(self, driver: Any) -> None:
+        """Save/dismiss prompts live on the top document — not inside Workday/Greenhouse iframes."""
+        self._default_content(driver)
 
     def _workday_markers_present(self, driver: Any) -> bool:
         """True if any Workday-style marker exists in the **current** document context."""
@@ -1196,10 +1230,14 @@ class EasyApplyFiller:
         A Done / Dismiss / close control that sits in a dialog/modal shell (avoids unrelated Done buttons).
         LinkedIn may show these *outside* ``.jobs-easy-apply-modal`` after submit.
         """
+        if self._draft_save_confirm_open(driver):
+            return None
         for group in (SEL["done_btn"], SEL["close_btn"], ", ".join(POST_APPLY_DISMISS)):
             for btn in driver.find_elements(By.CSS_SELECTOR, group):
                 try:
                     if btn.is_displayed() and btn.is_enabled() and self._element_in_dialog_or_modal_shell(btn):
+                        if self._button_in_save_confirm_dialog(btn):
+                            continue
                         return btn
                 except Exception:
                     continue
@@ -1210,6 +1248,8 @@ class EasyApplyFiller:
         True when some overlay still blocks the next **Apply** — either the Easy Apply sheet or a
         follow-up success / confirmation dialog (often a different DOM subtree than ``.jobs-easy-apply-modal``).
         """
+        if self._draft_save_confirm_open(driver):
+            return True
         if self._easy_apply_modal_is_open(driver):
             return True
         if self._visible_post_apply_control(driver) is not None:
@@ -1298,33 +1338,55 @@ class EasyApplyFiller:
         """Try Done (post-submit), Dismiss, then other post-apply controls. Returns True if something was clicked."""
         if self._stop_dismiss_if_driver_closed(driver):
             return False
+        self._ensure_top_document(driver)
+        if self._save_application_prompt_if_open(driver):
+            return True
         extra = self._visible_post_apply_control(driver)
         if extra:
             try:
+                if self._skip_dismiss_click_for_save_prompt(driver, extra):
+                    return True
                 scroll_into_view(driver, extra)
                 if self.highlight:
                     focus_element(driver, extra, pause=0.2)
                 extra.click()
                 self._after_ui_click()
-                if self._button_is_dismiss(extra):
-                    self._click_save_on_dismiss_followup(driver)
+                if self._button_is_dismiss(extra) and not self._button_in_save_confirm_dialog(extra):
+                    self._wait_for_save_application_prompt(driver, timeout_s=2.5)
+                    self._save_application_prompt_if_open(driver)
                 return True
             except Exception:
                 pass
-        for sel in (SEL["done_btn"], SEL["close_btn"], ", ".join(POST_APPLY_DISMISS)):
+        for sel in (SEL["done_btn"], ", ".join(POST_APPLY_DISMISS)):
             for btn in driver.find_elements(By.CSS_SELECTOR, sel):
                 try:
                     if btn.is_displayed() and btn.is_enabled():
+                        if self._skip_dismiss_click_for_save_prompt(driver, btn):
+                            return True
                         scroll_into_view(driver, btn)
                         if self.highlight:
                             focus_element(driver, btn, pause=0.2)
                         btn.click()
                         self._after_ui_click()
-                        if sel == SEL["close_btn"]:
-                            self._click_save_on_dismiss_followup(driver)
                         return True
                 except Exception:
                     continue
+        for btn in driver.find_elements(By.CSS_SELECTOR, SEL["close_btn"]):
+            try:
+                if not btn.is_displayed() or not btn.is_enabled():
+                    continue
+                if self._skip_dismiss_click_for_save_prompt(driver, btn):
+                    return True
+                scroll_into_view(driver, btn)
+                if self.highlight:
+                    focus_element(driver, btn, pause=0.2)
+                btn.click()
+                self._after_ui_click()
+                self._wait_for_save_application_prompt(driver, timeout_s=2.5)
+                self._save_application_prompt_if_open(driver)
+                return True
+            except Exception:
+                continue
         try:
             modal = self._find_easy_apply_modal(driver)
             if modal is not None:
@@ -1371,10 +1433,17 @@ class EasyApplyFiller:
             self._close_extra_browser_windows(driver)
             if not self._blocking_apply_ui_open(driver):
                 return
+            if self._save_application_prompt_if_open(driver):
+                continue
             if not self._click_done_or_close_in_modal(driver):
-                self._click_dismiss_header(driver)
+                if self._draft_save_confirm_open(driver):
+                    self._log_save_prompt_probe(driver, context or "dismiss loop")
+                    self._save_application_prompt_if_open(driver)
+                    continue
+                self._click_easy_apply_sheet_dismiss(driver)
             if not interruptible_sleep(0.35, driver):
                 return
+            self._wait_for_apply_overlays_closed(driver, timeout_s=1.5)
         if self._blocking_apply_ui_open(driver):
             log.warning(
                 "Apply-blocking UI may still be visible after dismiss attempts%s — next apply may fail",
@@ -1502,143 +1571,707 @@ class EasyApplyFiller:
         al = (btn.get_attribute("aria-label") or "").lower()
         return "dismiss" in al
 
-    def _click_dismiss_followup(self, driver: Any, *, discard: bool) -> None:
-        """
-        After **Dismiss**, LinkedIn often opens a second dialog: save the application draft or discard.
-        Choose **Save** (default abandon) or **Discard** when a form rule rejects the job.
-        """
-        if self._stop_dismiss_if_driver_closed(driver):
-            return
-        time.sleep(0.45)
-        want = "discard" if discard else "save"
-        for dialog in driver.find_elements(By.CSS_SELECTOR, '[role="dialog"], .artdeco-modal'):
+    @staticmethod
+    def _save_prompt_title_matches(text: str) -> bool:
+        return SAVE_APPLICATION_PROMPT_TITLE in (text or "").strip().lower()
+
+    @staticmethod
+    def _element_visible_js(driver: Any, el: Any) -> bool:
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const el = arguments[0];
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 2 || r.height < 2) return false;
+                    const st = window.getComputedStyle(el);
+                    return st.visibility !== 'hidden'
+                      && st.display !== 'none'
+                      && Number(st.opacity || '1') > 0.05;
+                    """,
+                    el,
+                )
+            )
+        except Exception:
+            return False
+
+    def _save_application_btn_visible_js(self, driver: Any) -> bool:
+        """Most reliable signal: visible ``button[data-control-name="save_application_btn"]``."""
+        self._ensure_top_document(driver)
+        try:
+            return bool(
+                driver.execute_script(
+                    _SAVE_PROMPT_DEEP_QUERY_JS
+                    + """
+                    const isVisible = (el) => {
+                      if (!el) return false;
+                      const r = el.getBoundingClientRect();
+                      if (r.width < 2 || r.height < 2) return false;
+                      const st = window.getComputedStyle(el);
+                      return st.visibility !== 'hidden'
+                        && st.display !== 'none'
+                        && Number(st.opacity || '1') > 0.05;
+                    };
+                    for (const btn of queryAllDeep(
+                      'button[data-control-name="save_application_btn"]'
+                    )) {
+                      if (isVisible(btn)) return true;
+                    }
+                    return false;
+                    """
+                )
+            )
+        except Exception:
+            return False
+
+    def _find_save_prompt_in_shadow_hosts(self, driver: Any):
+        """Selenium-side search inside ``interop-shadowdom`` and nested open shadow roots."""
+        self._ensure_top_document(driver)
+        try:
+            hosts = driver.find_elements(By.CSS_SELECTOR, SEL["sdui_shadow_host"])
+        except Exception:
+            hosts = []
+        for host in hosts:
             try:
-                if not dialog.is_displayed():
-                    continue
+                shadow = host.shadow_root
             except Exception:
                 continue
-            blob = (dialog.text or "").lower()
-            if blob and "discard" not in blob and "draft" not in blob and "save" not in blob:
+            if shadow is None:
                 continue
-            if discard:
-                for sel in (
-                    'button[aria-label="Discard"]',
-                    'button[aria-label="discard"]',
-                    'button[aria-label*="Discard application"]',
+            try:
+                for btn in shadow.find_elements(
+                    By.CSS_SELECTOR, 'button[data-control-name="save_application_btn"]'
                 ):
-                    for btn in dialog.find_elements(By.CSS_SELECTOR, sel):
+                    if self._element_visible_js(driver, btn):
+                        return btn
+            except Exception:
+                continue
+            try:
+                for title_el in shadow.find_elements(
+                    By.CSS_SELECTOR, "h2[data-test-dialog-title]"
+                ):
+                    title = (title_el.text or title_el.get_attribute("textContent") or "").strip()
+                    if self._save_prompt_title_matches(title) and self._element_visible_js(
+                        driver, title_el
+                    ):
+                        return title_el
+            except Exception:
+                continue
+        return None
+
+    def _find_save_application_confirm_dialog(self, driver: Any):
+        """
+        The ``Save this application?`` layer (``role="alertdialog"``) above the Easy Apply sheet.
+
+        Markup (Aug 2026):
+        ``div[role="alertdialog"][data-test-modal].artdeco-modal--layer-confirmation``
+        with ``h2[data-test-dialog-title]`` → "Save this application?"
+        """
+        self._ensure_top_document(driver)
+        shadow_hit = self._find_save_prompt_in_shadow_hosts(driver)
+        if shadow_hit is not None:
+            return shadow_hit
+        try:
+            for btn in driver.find_elements(
+                By.CSS_SELECTOR, 'button[data-control-name="save_application_btn"]'
+            ):
+                try:
+                    if not self._element_visible_js(driver, btn):
+                        continue
+                    return btn.find_element(
+                        By.XPATH,
+                        './ancestor::*[@role="alertdialog"][1]',
+                    )
+                except Exception:
+                    try:
+                        if self._element_visible_js(driver, btn):
+                            return btn
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        try:
+            for title_el in driver.find_elements(By.CSS_SELECTOR, "h2[data-test-dialog-title]"):
+                try:
+                    title = (title_el.text or title_el.get_attribute("textContent") or "").strip()
+                    if not self._save_prompt_title_matches(title):
+                        continue
+                    if not self._element_visible_js(driver, title_el):
+                        continue
+                    return title_el.find_element(
+                        By.XPATH,
+                        './ancestor::*[@role="alertdialog"][1]',
+                    )
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        try:
+            for dlg in driver.find_elements(By.CSS_SELECTOR, SAVE_APPLICATION_PROMPT_ROOT_CSS):
+                try:
+                    if dlg.find_elements(
+                        By.CSS_SELECTOR, 'button[data-control-name="save_application_btn"]'
+                    ):
+                        return dlg
+                    title = (dlg.text or dlg.get_attribute("textContent") or "").lower()
+                    if SAVE_APPLICATION_PROMPT_TITLE in title:
+                        return dlg
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    def _save_confirm_present_js(self, driver: Any) -> bool:
+        """Detect the save-vs-discard confirm by title / alertdialog (not the job-page Save control)."""
+        self._ensure_top_document(driver)
+        if self._save_application_btn_visible_js(driver):
+            return True
+        try:
+            return bool(
+                driver.execute_script(
+                    _SAVE_PROMPT_DEEP_QUERY_JS
+                    + """
+                    const titleNeedle = arguments[0];
+                    const isVisible = (el) => {
+                      if (!el) return false;
+                      const r = el.getBoundingClientRect();
+                      if (r.width < 2 || r.height < 2) return false;
+                      const st = window.getComputedStyle(el);
+                      return st.visibility !== 'hidden'
+                        && st.display !== 'none'
+                        && Number(st.opacity || '1') > 0.05;
+                    };
+                    for (const btn of queryAllDeep(
+                      'button[data-control-name="save_application_btn"]'
+                    )) {
+                      if (isVisible(btn)) return true;
+                    }
+                    for (const h2 of queryAllDeep('h2[data-test-dialog-title]')) {
+                      const t = (h2.textContent || h2.innerText || '').trim().toLowerCase();
+                      if (!t.includes(titleNeedle)) continue;
+                      if (isVisible(h2)) return true;
+                      const dlg = h2.closest('[role="alertdialog"]');
+                      if (dlg && isVisible(dlg)) return true;
+                    }
+                    for (const dlg of queryAllDeep(
+                      '[role="alertdialog"].artdeco-modal--layer-confirmation, [role="alertdialog"][data-test-modal]'
+                    )) {
+                      const t = (dlg.textContent || dlg.innerText || '').toLowerCase();
+                      if (t.includes(titleNeedle) && isVisible(dlg)) return true;
+                    }
+                    return false;
+                    """,
+                    SAVE_APPLICATION_PROMPT_TITLE,
+                )
+            )
+        except Exception:
+            return False
+
+    def _draft_save_confirm_open(self, driver: Any) -> bool:
+        """True when LinkedIn's save-vs-discard confirm is on screen after closing Easy Apply."""
+        self._ensure_top_document(driver)
+        if self._save_application_btn_visible_js(driver):
+            return True
+        if self._find_save_application_confirm_dialog(driver) is not None:
+            return True
+        if self._save_confirm_dialog_roots(driver):
+            return True
+        if self._save_confirm_present_js(driver):
+            return True
+        return False
+
+    def _log_save_prompt_probe(self, driver: Any, context: str = "") -> None:
+        """One-line diagnostic when dismiss logic runs but save prompt handling is unclear."""
+        self._ensure_top_document(driver)
+        try:
+            btn_count = len(
+                driver.find_elements(
+                    By.CSS_SELECTOR, 'button[data-control-name="save_application_btn"]'
+                )
+            )
+            title_count = len(driver.find_elements(By.CSS_SELECTOR, "h2[data-test-dialog-title]"))
+            alert_count = len(driver.find_elements(By.CSS_SELECTOR, SAVE_APPLICATION_PROMPT_ROOT_CSS))
+            deep_btn_count = driver.execute_script(
+                _SAVE_PROMPT_DEEP_QUERY_JS
+                + "return queryAllDeep('button[data-control-name=\"save_application_btn\"]').length;"
+            )
+            deep_title_count = driver.execute_script(
+                _SAVE_PROMPT_DEEP_QUERY_JS
+                + "return queryAllDeep('h2[data-test-dialog-title]').length;"
+            )
+        except Exception:
+            btn_count = title_count = alert_count = -1
+            deep_btn_count = deep_title_count = -1
+        log.info(
+            "Save-prompt probe%s: open=%s save_btn_js=%s light(save_btns=%d titles=%d alertdialogs=%d) "
+            "deep(save_btns=%s titles=%s)",
+            f" ({context})" if context else "",
+            self._draft_save_confirm_open(driver),
+            self._save_application_btn_visible_js(driver),
+            btn_count,
+            title_count,
+            alert_count,
+            deep_btn_count,
+            deep_title_count,
+        )
+
+    def _wait_for_save_application_prompt(self, driver: Any, timeout_s: float = 2.5) -> bool:
+        """Poll briefly after Easy Apply X — the confirm mounts a moment later."""
+        deadline = time.monotonic() + max(0.25, float(timeout_s))
+        while time.monotonic() < deadline:
+            if self._draft_save_confirm_open(driver):
+                return True
+            if not interruptible_sleep(0.15, driver):
+                return False
+        return self._draft_save_confirm_open(driver)
+
+    def _click_save_confirm_js(self, driver: Any, *, discard: bool) -> bool:
+        """Click Save/Discard only inside the save-application ``alertdialog`` prompt."""
+        self._ensure_top_document(driver)
+        try:
+            return bool(
+                driver.execute_script(
+                    _SAVE_PROMPT_DEEP_QUERY_JS
+                    + """
+                    const discard = arguments[0];
+                    const titleNeedle = arguments[1];
+                    const isVisible = (el) => {
+                      if (!el) return false;
+                      const r = el.getBoundingClientRect();
+                      if (r.width < 2 || r.height < 2) return false;
+                      const st = window.getComputedStyle(el);
+                      return st.visibility !== 'hidden'
+                        && st.display !== 'none'
+                        && Number(st.opacity || '1') > 0.05;
+                    };
+                    const roots = [];
+                    for (const h2 of queryAllDeep('h2[data-test-dialog-title]')) {
+                      const t = (h2.textContent || h2.innerText || '').trim().toLowerCase();
+                      if (!t.includes(titleNeedle)) continue;
+                      const dlg = h2.closest('[role="alertdialog"]') || h2.parentElement;
+                      if (dlg) roots.push(dlg);
+                    }
+                    for (const dlg of queryAllDeep(
+                      '[role="alertdialog"].artdeco-modal--layer-confirmation, [role="alertdialog"][data-test-modal]'
+                    )) {
+                      const t = (dlg.textContent || dlg.innerText || '').toLowerCase();
+                      if (t.includes(titleNeedle)
+                          || dlg.querySelector('button[data-control-name="save_application_btn"]')) {
+                        roots.push(dlg);
+                      }
+                    }
+                    const unique = [...new Set(roots)];
+                    const selectors = discard
+                      ? [
+                          'button[data-control-name="discard_application_confirm_btn"]',
+                          'button[data-test-dialog-secondary-btn]',
+                          '.artdeco-modal__actionbar--confirm-dialog button.artdeco-button--secondary',
+                        ]
+                      : [
+                          'button[data-control-name="save_application_btn"]',
+                          'button[data-test-dialog-primary-btn]',
+                          '.artdeco-modal__actionbar--confirm-dialog button.artdeco-button--primary',
+                        ];
+                    for (const root of unique) {
+                      for (const sel of selectors) {
+                        for (const btn of root.querySelectorAll(sel)) {
+                          if (!isVisible(btn)) continue;
+                          btn.click();
+                          return true;
+                        }
+                      }
+                      for (const btn of root.querySelectorAll('button')) {
+                        const t = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+                        if (t !== (discard ? 'discard' : 'save')) continue;
+                        if (btn.classList.contains('artdeco-modal__dismiss')) continue;
+                        if (!isVisible(btn)) continue;
+                        btn.click();
+                        return true;
+                      }
+                    }
+                    for (const sel of selectors) {
+                      for (const btn of queryAllDeep(sel)) {
+                        if (!isVisible(btn)) continue;
+                        btn.click();
+                        return true;
+                      }
+                    }
+                    return false;
+                    """,
+                    discard,
+                    SAVE_APPLICATION_PROMPT_TITLE,
+                )
+            )
+        except Exception:
+            return False
+
+    def _resolve_save_application_confirm(
+        self, driver: Any, *, discard: bool, timeout_s: float = 8.0
+    ) -> bool:
+        """Poll until the save/discard confirm appears, then click the right action."""
+        self._ensure_top_document(driver)
+        deadline = time.monotonic() + max(1.0, float(timeout_s))
+        while time.monotonic() < deadline:
+            if self._stop_dismiss_if_driver_closed(driver):
+                return False
+            if not self._draft_save_confirm_open(driver):
+                if not interruptible_sleep(0.25, driver):
+                    return False
+                continue
+            if self._click_draft_confirm_button(driver, discard=discard):
+                return True
+            if self._click_save_confirm_js(driver, discard=discard):
+                want = "Discard" if discard else "Save"
+                log.info("Clicked %s on save-application confirm (JS)", want)
+                self._after_ui_click()
+                time.sleep(0.35)
+                return True
+            if not interruptible_sleep(0.25, driver):
+                return False
+        return False
+
+    def _save_application_prompt_if_open(self, driver: Any, *, discard: bool = False) -> bool:
+        """
+        If the save/discard confirm (``Save this application?``) is visible, click Save or Discard.
+        Always call this **before** clicking an Easy Apply sheet X — never click X while this prompt is up.
+
+        Returns True whenever the prompt is detected (even if the click fails) so callers skip X.
+        """
+        if not self._draft_save_confirm_open(driver):
+            return False
+        want = "Discard" if discard else "Save"
+        log.info("Save-application prompt open — clicking %s (skipping dismiss X)", want)
+        if self._resolve_save_application_confirm(driver, discard=discard, timeout_s=4.0):
+            self._wait_for_apply_overlays_closed(driver, timeout_s=4.0)
+        else:
+            log.warning(
+                "Save-application prompt visible but %s could not be clicked — will not click Easy Apply X",
+                want,
+            )
+        return True
+
+    def _click_easy_apply_sheet_dismiss(self, driver: Any, *, discard_draft: bool = False) -> bool:
+        """
+        Close the Easy Apply sheet via its header X.
+
+        Checks for the save/discard confirm **before** clicking X; if the prompt is already up, clicks
+        Save (or Discard) instead.
+        """
+        self._ensure_top_document(driver)
+        if self._save_application_prompt_if_open(driver, discard=discard_draft):
+            return True
+        modal = self._find_easy_apply_modal(driver)
+        if modal is None:
+            return False
+        clicked = False
+        for sel in (
+            'button[data-test-modal-close-btn]',
+            "button.artdeco-modal__dismiss",
+            'button[aria-label="Dismiss"]',
+            'button[aria-label="dismiss"]',
+        ):
+            try:
+                for btn in modal.find_elements(By.CSS_SELECTOR, sel):
+                    try:
+                        if not btn.is_displayed() or not btn.is_enabled():
+                            continue
+                        if self._skip_dismiss_click_for_save_prompt(
+                            driver, btn, discard=discard_draft
+                        ):
+                            return True
+                        if self.highlight:
+                            focus_element(driver, btn, pause=0.2)
+                        log.info(
+                            "Clicking Easy Apply sheet dismiss (save prompt open=%s)",
+                            self._draft_save_confirm_open(driver),
+                        )
+                        self._click_element(driver, btn)
+                        self._after_ui_click()
+                        clicked = True
+                        break
+                    except Exception:
+                        continue
+                if clicked:
+                    break
+            except Exception:
+                continue
+        if clicked:
+            self._wait_for_save_application_prompt(driver, timeout_s=3.0)
+            self._save_application_prompt_if_open(driver, discard=discard_draft)
+        return clicked
+
+    def _wait_for_apply_overlays_closed(self, driver: Any, timeout_s: float = 8.0) -> bool:
+        deadline = time.monotonic() + max(0.5, float(timeout_s))
+        while time.monotonic() < deadline:
+            if self._stop_dismiss_if_driver_closed(driver):
+                return False
+            self._ensure_top_document(driver)
+            if self._draft_save_confirm_open(driver):
+                self._save_application_prompt_if_open(driver)
+            if not self._easy_apply_modal_is_open(driver) and not self._draft_save_confirm_open(
+                driver
+            ):
+                return True
+            if not interruptible_sleep(0.25, driver):
+                return False
+        return not self._easy_apply_modal_is_open(driver) and not self._draft_save_confirm_open(
+            driver
+        )
+
+    def _draft_save_confirm_dialogs(self, driver: Any) -> list:
+        """Confirm layers after closing an in-progress Easy Apply (save vs discard)."""
+        out: list = []
+        primary = self._find_save_application_confirm_dialog(driver)
+        if primary is not None:
+            out.append(primary)
+        seen: set[str] = {getattr(primary, "id", "") or ""}
+        for sel in DRAFT_CONFIRM_DIALOG_SELECTORS:
+            try:
+                els = driver.find_elements(By.CSS_SELECTOR, sel)
+            except Exception:
+                continue
+            for el in els:
+                try:
+                    if not el.is_displayed():
+                        continue
+                    role = (el.get_attribute("role") or "").lower()
+                    if role == "dialog" and "jobs-easy-apply-modal" in (
+                        el.get_attribute("class") or ""
+                    ):
+                        continue
+                    key = el.id or str(id(el))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    blob = (el.text or "").lower()
+                    if role == "alertdialog" or "save this application" in blob:
+                        out.append(el)
+                except Exception:
+                    continue
+        return out
+
+    @staticmethod
+    def _button_visible_text_is(btn: Any, want: str) -> bool:
+        raw = (btn.text or "").strip().lower()
+        if raw == want:
+            return True
+        try:
+            span = btn.find_element(By.CSS_SELECTOR, ".artdeco-button__text")
+            return (span.text or "").strip().lower() == want
+        except Exception:
+            return False
+
+    @staticmethod
+    def _button_in_save_confirm_dialog(btn: Any) -> bool:
+        """True when ``btn`` lives inside the save-vs-discard ``alertdialog`` prompt."""
+        try:
+            btn.find_element(
+                By.XPATH,
+                './ancestor::*[@role="alertdialog"][1]',
+            )
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _button_in_easy_apply_modal(btn: Any) -> bool:
+        """True when ``btn`` is the Easy Apply sheet header X (not the save confirm layer)."""
+        try:
+            btn.find_element(
+                By.XPATH,
+                './ancestor::*[contains(@class,"jobs-easy-apply-modal")][1]',
+            )
+            return True
+        except Exception:
+            return False
+
+    def _skip_dismiss_click_for_save_prompt(self, driver: Any, btn: Any, *, discard: bool = False) -> bool:
+        """
+        Return True when ``btn`` must not be clicked because the save/discard confirm is up.
+        Handles Save/Discard and blocks Easy Apply X spam.
+        """
+        if self._button_in_save_confirm_dialog(btn):
+            return True
+        if self._button_in_easy_apply_modal(btn) and self._draft_save_confirm_open(driver):
+            self._save_application_prompt_if_open(driver, discard=discard)
+            return True
+        if self._draft_save_confirm_open(driver):
+            self._save_application_prompt_if_open(driver, discard=discard)
+            return True
+        return False
+
+    @staticmethod
+    def _save_confirm_dialog_roots(driver: Any) -> list:
+        """Return save/discard confirm ``alertdialog`` elements (never the job-page Save control)."""
+        roots: list = []
+        seen: set[str] = set()
+
+        def _add(dlg) -> None:
+            try:
+                key = dlg.id or str(id(dlg))
+                if key in seen:
+                    return
+                seen.add(key)
+                roots.append(dlg)
+            except Exception:
+                pass
+
+        try:
+            for btn in driver.find_elements(
+                By.CSS_SELECTOR, 'button[data-control-name="save_application_btn"]'
+            ):
+                try:
+                    dlg = btn.find_element(
+                        By.XPATH,
+                        './ancestor::*[@role="alertdialog"][1]',
+                    )
+                    _add(dlg)
+                except Exception:
+                    _add(btn)
+        except Exception:
+            pass
+        try:
+            for title_el in driver.find_elements(By.CSS_SELECTOR, "h2[data-test-dialog-title]"):
+                try:
+                    title = (title_el.text or title_el.get_attribute("textContent") or "").strip()
+                    if SAVE_APPLICATION_PROMPT_TITLE not in title.lower():
+                        continue
+                    dlg = title_el.find_element(
+                        By.XPATH,
+                        './ancestor::*[@role="alertdialog"][1]',
+                    )
+                    _add(dlg)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        try:
+            for dlg in driver.find_elements(By.CSS_SELECTOR, SAVE_APPLICATION_PROMPT_ROOT_CSS):
+                try:
+                    has_save_btn = bool(
+                        dlg.find_elements(
+                            By.CSS_SELECTOR,
+                            'button[data-control-name="save_application_btn"]',
+                        )
+                    )
+                    title = (dlg.text or dlg.get_attribute("textContent") or "").lower()
+                    if SAVE_APPLICATION_PROMPT_TITLE not in title and not has_save_btn:
+                        continue
+                    _add(dlg)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return roots
+
+    @staticmethod
+    def _click_element(driver: Any, btn: Any) -> None:
+        try:
+            scroll_into_view(driver, btn)
+            btn.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", btn)
+
+    def _click_draft_confirm_button(self, driver: Any, *, discard: bool) -> bool:
+        """
+        Click **Save** or **Discard** inside the save-application ``alertdialog`` only.
+        Returns True when a control was clicked.
+        """
+        want = "discard" if discard else "save"
+        scopes = self._save_confirm_dialog_roots(driver)
+        if not scopes:
+            return False
+
+        selectors = DRAFT_DISCARD_SELECTORS if discard else DRAFT_SAVE_SELECTORS
+        for scope in scopes:
+            search_roots: list[Any] = []
+            try:
+                bars = scope.find_elements(
+                    By.CSS_SELECTOR, ".artdeco-modal__actionbar--confirm-dialog"
+                )
+                search_roots.extend(bars)
+            except Exception:
+                pass
+            search_roots.append(scope)
+            for root in search_roots:
+                for sel in selectors:
+                    try:
+                        buttons = root.find_elements(By.CSS_SELECTOR, sel)
+                    except Exception:
+                        continue
+                    for btn in buttons:
                         try:
-                            if not btn.is_displayed() or not btn.is_enabled():
-                                continue
-                            al = (btn.get_attribute("aria-label") or "").lower()
-                            if "discard" not in al:
+                            if not self._button_in_save_confirm_dialog(btn):
                                 continue
                             if self.highlight:
                                 focus_element(driver, btn, pause=0.15)
-                            btn.click()
+                            self._click_element(driver, btn)
                             self._after_ui_click()
-                            log.info("Clicked Discard on dismiss follow-up (save vs discard)")
+                            log.info("Clicked %s on save-application confirm", want.capitalize())
                             time.sleep(0.35)
-                            return
+                            return True
                         except Exception:
                             continue
-                for btn in dialog.find_elements(By.TAG_NAME, "button"):
-                    try:
-                        if not btn.is_displayed() or not btn.is_enabled():
-                            continue
-                        if (btn.text or "").strip().lower() != "discard":
-                            continue
-                        if self.highlight:
-                            focus_element(driver, btn, pause=0.15)
-                        btn.click()
-                        self._after_ui_click()
-                        log.info("Clicked Discard (visible text) on dismiss follow-up")
-                        time.sleep(0.35)
-                        return
-                    except Exception:
-                        continue
-                continue
-            for sel in DRAFT_SAVE_ARIA:
-                for btn in dialog.find_elements(By.CSS_SELECTOR, sel):
-                    try:
-                        if not btn.is_displayed() or not btn.is_enabled():
-                            continue
-                        al = (btn.get_attribute("aria-label") or "").lower()
-                        if "save" not in al and (btn.text or "").strip().lower() != "save":
-                            continue
-                        if self.highlight:
-                            focus_element(driver, btn, pause=0.15)
-                        btn.click()
-                        self._after_ui_click()
-                        log.info("Clicked Save on dismiss follow-up (save vs discard)")
-                        time.sleep(0.35)
-                        return
-                    except Exception:
-                        continue
-            for btn in dialog.find_elements(By.TAG_NAME, "button"):
                 try:
-                    if not btn.is_displayed() or not btn.is_enabled():
-                        continue
-                    if (btn.text or "").strip().lower() != want:
-                        continue
-                    if self.highlight:
-                        focus_element(driver, btn, pause=0.15)
-                    btn.click()
-                    self._after_ui_click()
-                    log.info("Clicked %s (visible text) on dismiss follow-up", want.capitalize())
-                    time.sleep(0.35)
-                    return
+                    for btn in root.find_elements(By.TAG_NAME, "button"):
+                        try:
+                            if not self._button_in_save_confirm_dialog(btn):
+                                continue
+                            if not self._button_visible_text_is(btn, want):
+                                continue
+                            cls = (btn.get_attribute("class") or "").lower()
+                            if "artdeco-modal__dismiss" in cls:
+                                continue
+                            if self.highlight:
+                                focus_element(driver, btn, pause=0.15)
+                            self._click_element(driver, btn)
+                            self._after_ui_click()
+                            log.info(
+                                "Clicked %s (visible text) on save-application confirm",
+                                want.capitalize(),
+                            )
+                            time.sleep(0.35)
+                            return True
+                        except Exception:
+                            continue
                 except Exception:
                     continue
+        return False
 
-    def _click_save_on_dismiss_followup(self, driver: Any) -> None:
-        """After **Dismiss**, choose **Save** on the draft follow-up dialog."""
-        self._click_dismiss_followup(driver, discard=False)
-
-    def _click_dismiss_header(self, driver: Any, *, discard_draft: bool = False) -> bool:
-        """Close the flow via the header **Dismiss** control (``aria-label`` Dismiss / dismiss)."""
+    def _click_dismiss_followup(self, driver: Any, *, discard: bool) -> bool:
+        """
+        After **Dismiss**, LinkedIn opens a save-vs-discard confirm (``role="alertdialog"``).
+        Returns True when Save/Discard was clicked.
+        """
         if self._stop_dismiss_if_driver_closed(driver):
             return False
-        modal = self._find_easy_apply_modal(driver)
-        scopes = [s for s in (modal, driver) if s is not None]
-        for sel in (
-            'button[aria-label="Dismiss"]',
-            'button[aria-label="dismiss"]',
-            'button[data-test-modal-close-btn]',
-            "button.artdeco-modal__dismiss",
-        ):
-            for scope in scopes:
-                try:
-                    buttons = scope.find_elements(By.CSS_SELECTOR, sel)
-                except Exception:
-                    continue
-                for btn in buttons:
-                    try:
-                        if btn.is_displayed() and btn.is_enabled():
-                            if self.highlight:
-                                focus_element(driver, btn, pause=0.2)
-                            btn.click()
-                            self._after_ui_click()
-                            time.sleep(0.45)
-                            self._click_dismiss_followup(driver, discard=discard_draft)
-                            return True
-                    except Exception:
-                        continue
-        return False
+        return self._resolve_save_application_confirm(driver, discard=discard, timeout_s=8.0)
+
+    def _click_save_on_dismiss_followup(self, driver: Any) -> bool:
+        """After **Dismiss**, choose **Save** on the draft follow-up dialog."""
+        return self._click_dismiss_followup(driver, discard=False)
+
+    def _click_dismiss_header(self, driver: Any, *, discard_draft: bool = False) -> bool:
+        """Close the Easy Apply sheet (checks save prompt before any X click)."""
+        if self._stop_dismiss_if_driver_closed(driver):
+            return False
+        return self._click_easy_apply_sheet_dismiss(driver, discard_draft=discard_draft)
 
     def _abandon_apply_and_dismiss(self, driver: Any, job: dict, reason: str) -> bool:
         """
-        Leave the application without submitting: click **Dismiss** so the same session can apply elsewhere.
+        Leave the application without submitting: dismiss sheet, save draft, continue scanning.
         Always returns False (apply did not complete).
         """
         if self._stop_dismiss_if_driver_closed(driver):
             return False
         log.warning("Abandoning Easy Apply for %s — %s", job.get("id"), reason)
-        if self._click_dismiss_header(driver, discard_draft=False):
-            self._dismiss_easy_apply_modal_if_open(driver, "after abandon dismiss")
-            return False
-        log.warning("Dismiss button not found; trying generic modal cleanup")
-        self._dismiss_easy_apply_modal_if_open(driver, "abandon fallback")
+        self._log_save_prompt_probe(driver, "before abandon dismiss")
+        self._click_easy_apply_sheet_dismiss(driver, discard_draft=False)
+        self._log_save_prompt_probe(driver, "after abandon dismiss click")
+        self._wait_for_apply_overlays_closed(driver, timeout_s=6.0)
+        self._dismiss_easy_apply_modal_if_open(driver, "after abandon dismiss")
         return False
 
     def _abandon_apply_and_discard(self, driver: Any, job: dict, reason: str) -> bool:
@@ -1649,11 +2282,9 @@ class EasyApplyFiller:
         if self._stop_dismiss_if_driver_closed(driver):
             return False
         log.warning("Discarding Easy Apply for %s — %s", job.get("id"), reason)
-        if self._click_dismiss_header(driver, discard_draft=True):
-            self._dismiss_easy_apply_modal_if_open(driver, "after discard dismiss")
-            return False
-        log.warning("Dismiss button not found; trying generic modal cleanup")
-        self._dismiss_easy_apply_modal_if_open(driver, "discard fallback")
+        self._click_easy_apply_sheet_dismiss(driver, discard_draft=True)
+        self._wait_for_apply_overlays_closed(driver, timeout_s=6.0)
+        self._dismiss_easy_apply_modal_if_open(driver, "after discard dismiss")
         return False
 
     def _handle_screening_discard(self, driver: Any, job: dict, ans: str | None, *, assist: bool) -> bool:
