@@ -27,11 +27,11 @@ from utils.output_paths import FORM_FILL_RULES_DIR
 AUTO_RULES_FILENAME = "auto_rules.json"
 RULE_CATEGORIES = ("screening_yes_no", "text_inputs", "textareas", "selects")
 
-_QUESTION_ALIASES = (
+QUESTION_EXPORT_ALIASES = (
     "saved_jobs_application_questions.txt",
     "saved_job_application_questions.txt",
 )
-SAVED_JOBS_QUESTIONS_FILENAME = _QUESTION_ALIASES[0]
+SAVED_JOBS_QUESTIONS_FILENAME = QUESTION_EXPORT_ALIASES[0]
 
 
 @dataclass
@@ -209,11 +209,11 @@ def parse_saved_questions_file(path: Path) -> tuple[list[ExtensionQuestion], lis
 
 
 def resolve_questions_file_path(downloads_dir: Path) -> Path | None:
-    for name in _QUESTION_ALIASES:
+    for name in QUESTION_EXPORT_ALIASES:
         candidate = downloads_dir / name
         if candidate.is_file():
             return candidate
-    return downloads_dir / _QUESTION_ALIASES[0]
+    return downloads_dir / QUESTION_EXPORT_ALIASES[0]
 
 
 def _load_resume_for_rule_resolution() -> dict[str, Any]:

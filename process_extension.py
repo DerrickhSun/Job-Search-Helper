@@ -4,6 +4,10 @@ Read job data exported by the browser extension from the user's Downloads folder
 Imports saved jobs into ``output/assisted_applications.csv`` and merges screening answers into
 ``output/form_fill_rules/auto_rules.json`` (with interactive conflict resolution).
 
+After a successful non-dry-run import, clears the Downloads notepad export files so the next
+extension export starts fresh (skipped when ``--dry-run``, ``--print-only``, or when
+questions still need interactive resolution).
+
 The extension writes:
   - saved_jobs.txt — one job per line: ``company, title, url`` or ``company, YYYY-MM-DD, title, url``
   - saved_jobs_application_questions.txt (or saved_job_application_questions.txt)
@@ -33,6 +37,7 @@ from dotenv import load_dotenv
 from utils.apply_sheets import applied_sheet_row
 from utils.cover_letter import delete_cover_letter_for_job
 from utils.extension_rules import (
+    QUESTION_EXPORT_ALIASES,
     SAVED_JOBS_QUESTIONS_FILENAME,
     migrate_extension_auto_rules_to_exact,
     process_extension_questions,
@@ -62,6 +67,18 @@ SAVED_JOBS_FILENAME = "saved_jobs.txt"
 _LINE_URL_RE = re.compile(r"(https?://\S+)\s*$")
 _LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)", re.IGNORECASE)
 _EXTENSION_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _clear_notepad_file(path: Path) -> bool:
+    """Empty an extension export notepad file. Returns True if cleared."""
+    if not path.is_file():
+        return False
+    try:
+        path.write_text("", encoding="utf-8")
+        return True
+    except OSError as e:
+        print(f"Could not clear {path.name}: {e}", file=sys.stderr)
+        return False
 
 
 def _default_downloads_dir() -> Path:
@@ -357,6 +374,8 @@ def main() -> int:
         return 1
 
     exit_code = 0
+    clear_jobs_file = False
+    clear_questions_files = False
 
     if not args.skip_jobs and found_jobs_file:
         parsed, invalid = parse_saved_jobs_file(saved_jobs_path)
@@ -382,6 +401,7 @@ def main() -> int:
                 print(f"Deleted {deleted_cls} cover letter(s) for applied jobs.")
             else:
                 print("No matching cover letters found to delete.")
+            clear_jobs_file = not args.dry_run
     elif not args.skip_jobs:
         print(f"=== {SAVED_JOBS_FILENAME} ===")
         print(f"Not found: {saved_jobs_path.resolve()}")
@@ -403,6 +423,8 @@ def main() -> int:
                     "Re-run without --no-interactive (and without --dry-run) "
                     "to resolve conflicts / blank-answer prompts."
                 )
+            else:
+                clear_questions_files = not args.dry_run
         else:
             print(f"=== {SAVED_JOBS_QUESTIONS_FILENAME} ===")
             print(f"Not found: {questions_path.resolve()}")
@@ -411,6 +433,17 @@ def main() -> int:
     if not args.print_only and not args.dry_run:
         prune_cover_letters_for_sync()
         sync_upload_output()
+
+        cleared: list[str] = []
+        if clear_jobs_file and _clear_notepad_file(saved_jobs_path):
+            cleared.append(saved_jobs_path.name)
+        if clear_questions_files:
+            for name in QUESTION_EXPORT_ALIASES:
+                path = downloads / name
+                if _clear_notepad_file(path):
+                    cleared.append(path.name)
+        if cleared:
+            print(f"Cleared extension export file(s): {', '.join(cleared)}")
 
     return exit_code
 

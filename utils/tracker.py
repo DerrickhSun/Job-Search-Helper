@@ -116,6 +116,20 @@ class ApplicationTracker:
             return True
         return jid in self._linkedin_applied_ids_from_sheet_exports()
 
+    def already_saved(self, job_id: str) -> bool:
+        """True when this job was previously applied, or saved for later (filter mode)."""
+        jid = (job_id or "").strip()
+        if not jid:
+            return False
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM applications WHERE id = ? AND status IN ('applied', 'saved')",
+                (jid,),
+            ).fetchone()
+        if row is not None:
+            return True
+        return jid in self._linkedin_applied_ids_from_sheet_exports()
+
     def recorded_greenhouse_job_url_keys(
         self, *, statuses: tuple[str, ...] = ("applied", "apply_opened")
     ) -> frozenset[str]:

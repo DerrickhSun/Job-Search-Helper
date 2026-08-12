@@ -407,9 +407,9 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             if company:
                 company_display = company
 
-            if tracker.already_applied(jid):
+            if tracker.already_saved(jid):
                 log.info(
-                    "Company jobs: skipping already-applied %s at %s",
+                    "Company jobs: skipping already-applied/saved %s at %s",
                     title or jid,
                     company or "(no company)",
                 )
@@ -559,8 +559,8 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             log.info("Skipping filter candidate — successful-save cap already reached: %s", jid)
             return
 
-        if tracker.already_applied(job["id"]):
-            log.info("Skipping (already applied): %s at %s", job["title"], job["company"])
+        if tracker.already_saved(job["id"]):
+            log.info("Skipping (already applied/saved): %s at %s", job["title"], job["company"])
             return
         if is_company_blacklisted(job.get("company") or "", company_blacklist):
             log.info("Skipping (company blacklisted): %s at %s", job["title"], job["company"])
@@ -757,6 +757,8 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             log.warning("  → Could not write cover letter docx: %s", e)
         log.info("  → Saving on LinkedIn (filter mode)...")
         success = searcher.save_current_job(driver, job_id=jid)
+        if success:
+            _tracker_log(job, status="saved", score=fit, cover_letter=str(docx_path))
         if success and _record_successful_save():
             log.info(
                 "  ✓ Saved on LinkedIn (apply later via extension). [%d%s]",
@@ -784,9 +786,9 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
         jid = str(peek.get("id") or "").strip()
         if not jid:
             return False
-        if tracker.already_applied(jid):
+        if tracker.already_saved(jid):
             log.info(
-                "Skipping from list card (already applied, no job click): %s at %s",
+                "Skipping from list card (already applied/saved, no job click): %s at %s",
                 peek.get("title"),
                 peek.get("company"),
             )

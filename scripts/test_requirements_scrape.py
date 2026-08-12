@@ -46,10 +46,11 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 DEFAULT_JOB_ID = "4430237392"
+# No f_C (company) filter here — it must work for any --job-id, not just one company's postings.
 SEARCH_URL = (
     "https://www.linkedin.com/jobs/search/"
-    "?currentJobId=4430237392&f_C=105053560&f_TPR=r604800"
-    "&geoId=92000000&origin=JOB_SEARCH_PAGE_JOB_FILTER&start=25"
+    "?currentJobId=4430237392&f_TPR=r604800"
+    "&geoId=92000000&origin=JOB_SEARCH_PAGE_JOB_FILTER"
 )
 MARKER = "Requirements added by the job poster"
 
@@ -149,7 +150,7 @@ def main() -> int:
         lookup_driver.get(dedicated_url)
         import time as _time; _time.sleep(3.0)
         panel_text = searcher._read_job_description_panel(lookup_driver)
-        _print_section("DEDICATED PAGE — panel reader (.jobs-description__content)", panel_text)
+        _print_section("DEDICATED PAGE — panel reader (SEL['job_description'])", panel_text)
         if MARKER in panel_text:
             ok("Panel reader already captures the requirements section (no XPath fallback needed).")
         else:
