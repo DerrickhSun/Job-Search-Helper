@@ -28,6 +28,14 @@
       "answer": "Yes"
     },
     {
+      "id": "authorized_to_work_in_us_abbreviated",
+      "comment": "Same as authorized_to_work_in_united_states but the question says 'US' instead of spelling out 'United States' (word-boundary regex so it doesn't match inside words like 'status' or 'focus')",
+      "match": {
+        "regex": "\\bauthoriz\\w*\\b.{0,80}\\bwork\\b.{0,40}\\bin\\s+the\\s+us\\b"
+      },
+      "answer": "Yes"
+    },
+    {
       "id": "us_work_authorization_status",
       "comment": "Coded work-authorization status field where the label itself lists options like (1 OPT/CPT, 2 H1-B, 3 Green Card, 4 U.S. Citizen). Answer 4 only when that legend is present.",
       "match": {

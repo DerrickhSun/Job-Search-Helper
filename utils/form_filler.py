@@ -1030,9 +1030,14 @@ class EasyApplyFiller:
                 pre_url = (driver.current_url or "")
             except WebDriverException:
                 pre_url = ""
+            # Read tag once, up front — scroll_into_view()/focus_element() below can trigger a
+            # lazy-load/intersection-observer re-render that detaches apply_btn from the DOM, and
+            # a second .tag_name read afterward would raise StaleElementReferenceException with
+            # no guard around it (this is what caused the apply flow to crash uncaught).
+            tag = (apply_btn.tag_name or "").lower()
             log.info(
                 "Clicking Easy Apply control: tag=%s aria-label=%r href=%r",
-                (apply_btn.tag_name or "").lower(),
+                tag,
                 (apply_btn.get_attribute("aria-label") or apply_btn.text or "")[:120],
                 (apply_btn.get_attribute("href") or "")[:180],
             )
@@ -1043,7 +1048,6 @@ class EasyApplyFiller:
             # handler can open the modal without a full navigation. A native Selenium click on
             # the anchor can fall through to the href and leave the jobs search shell
             # (sometimes landing on unrelated pages such as /feed/update/…).
-            tag = (apply_btn.tag_name or "").lower()
             clicked = False
             if tag == "a":
                 try:
@@ -2662,12 +2666,43 @@ class EasyApplyFiller:
         return (w in yes and o in yes) or (w in no and o in no)
 
     def _click_radio_target(self, driver: Any, el: Any) -> None:
+        """
+        Click a radio option. ``focus_element``'s scroll can trigger a re-render that detaches
+        ``el`` — if that happens mid-click, do not retry with this same now-stale handle (the
+        JS fallback would raise the identical ``StaleElementReferenceException``, uncaught);
+        the click likely already landed, so just let the caller's selection-state check decide.
+        """
         if self.highlight:
             focus_element(driver, el, pause=0.2)
         try:
             el.click()
+        except StaleElementReferenceException:
+            return
         except Exception:
-            driver.execute_script("arguments[0].click();", el)
+            try:
+                driver.execute_script("arguments[0].click();", el)
+            except StaleElementReferenceException:
+                return
+
+    @staticmethod
+    def _dedupe_repeated_label_text(text: str) -> str:
+        """
+        Collapse LinkedIn's aria-hidden + visually-hidden duplicate-text accessibility pattern.
+
+        Newer ``fb-dash-form-element`` labels/legends render the question text twice — once in an
+        ``aria-hidden="true"`` span (visible copy) and once in a ``visually-hidden`` span (screen-reader
+        copy, taken out of flow via ``position: absolute``). Because that second span is out-of-flow,
+        Selenium's ``.text`` (which mirrors Chrome's rendered-text serialization) inserts a line break
+        around it, yielding ``"Question?\\nQuestion?"`` instead of one copy. Collapse that back down so
+        label matching (especially ``exact`` rules) and logs see the question once.
+        """
+        t = (text or "").strip()
+        if not t:
+            return t
+        lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+        if len(lines) >= 2 and len(set(lines)) == 1:
+            return lines[0]
+        return t
 
     def _legend_for_linkedin_radio_fieldset(self, fieldset: Any) -> str:
         """Question text from LinkedIn ``data-test-form-builder-radio-button-form-component`` fieldsets."""
@@ -2679,7 +2714,7 @@ class EasyApplyFiller:
             try:
                 els = fieldset.find_elements(By.CSS_SELECTOR, sel)
                 if els:
-                    t = (els[0].text or "").strip()
+                    t = self._dedupe_repeated_label_text(els[0].text or "")
                     if t:
                         return t
             except Exception:
@@ -2883,12 +2918,18 @@ class EasyApplyFiller:
         return True, processed_names
 
     def _click_checkbox_target(self, driver: Any, el: Any) -> None:
+        """Same stale-handle hardening as ``_click_radio_target`` — see its docstring."""
         if self.highlight:
             focus_element(driver, el, pause=0.2)
         try:
             el.click()
+        except StaleElementReferenceException:
+            return
         except Exception:
-            driver.execute_script("arguments[0].click();", el)
+            try:
+                driver.execute_script("arguments[0].click();", el)
+            except StaleElementReferenceException:
+                return
 
     def _legend_for_linkedin_checkbox_fieldset(self, fieldset: Any) -> str:
         """Question text for a LinkedIn checkbox fieldset (single toggle or multi-option group)."""
@@ -2901,7 +2942,7 @@ class EasyApplyFiller:
             try:
                 els = fieldset.find_elements(By.CSS_SELECTOR, sel)
                 if els:
-                    t = (els[0].text or "").strip()
+                    t = self._dedupe_repeated_label_text(els[0].text or "")
                     if t:
                         return t
             except Exception:
@@ -3715,7 +3756,7 @@ class EasyApplyFiller:
             if el_id:
                 labels = driver.find_elements(By.CSS_SELECTOR, f'label[for="{el_id}"]')
                 if labels:
-                    t = (labels[0].text or "").strip()
+                    t = self._dedupe_repeated_label_text(labels[0].text or "")
                     t = re.sub(r"\s*\*+\s*$", "", t).strip()
                     if t:
                         return t
