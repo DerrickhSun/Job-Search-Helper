@@ -973,6 +973,128 @@ class EasyApplyFiller:
         self._apply_abort_reason = APPLY_ABORT_JOB_TRUST_SAFETY
         return True
 
+    def _attempt_easy_apply_click(self, driver: Any, job: dict) -> bool | None:
+        """
+        Find the Apply control, click it once, and wait for the sheet to open.
+
+        Returns ``True`` when the modal opened (caller proceeds to fill), ``False`` when a
+        definitive stop condition fired — daily limit, trust/safety modal, or an
+        invalid-looking control (already logged; caller must not retry) — or ``None`` when the
+        click produced no modal and nothing else explains why (caller may click again; observed
+        live where a manual click on the same job worked fine, so this is a real, retryable race
+        rather than a permanently broken control).
+        """
+        if self._abort_apply_for_daily_limit(driver, job, when="Apply button replaced by limit message"):
+            return False
+
+        apply_btn = self._find_apply_button(driver)
+        if not apply_btn:
+            if self._abort_apply_for_daily_limit(
+                driver, job, when="no Apply button — limit message shown"
+            ):
+                return False
+            raise RuntimeError(
+                "Apply button not found: expected Easy Apply link "
+                "(aria-label Easy Apply to this job / openSDUIApplyFlow) "
+                "or legacy #jobs-apply-button-id / button.jobs-apply-button"
+            )
+        if not self._apply_control_looks_valid(apply_btn):
+            href = (apply_btn.get_attribute("href") or "")[:180]
+            label = (apply_btn.get_attribute("aria-label") or apply_btn.text or "")[:120]
+            log.warning(
+                "Refusing to click Apply-looking control that is not a jobs Easy Apply "
+                "target (tag=%s aria-label=%r href=%r)",
+                (apply_btn.tag_name or "").lower(),
+                label,
+                href,
+            )
+            return False
+        try:
+            pre_url = (driver.current_url or "")
+        except WebDriverException:
+            pre_url = ""
+        # Read tag once, up front — scroll_into_view()/focus_element() below can trigger a
+        # lazy-load/intersection-observer re-render that detaches apply_btn from the DOM, and
+        # a second .tag_name read afterward would raise StaleElementReferenceException with
+        # no guard around it (this is what caused the apply flow to crash uncaught).
+        tag = (apply_btn.tag_name or "").lower()
+        log.info(
+            "Clicking Easy Apply control: tag=%s aria-label=%r href=%r",
+            tag,
+            (apply_btn.get_attribute("aria-label") or apply_btn.text or "")[:120],
+            (apply_btn.get_attribute("href") or "")[:180],
+        )
+        scroll_into_view(driver, apply_btn)
+        if self.highlight:
+            focus_element(driver, apply_btn, pause=self.step_delay)
+        # Native click first — a JS-dispatched click (execute_script) produces an untrusted
+        # DOM event, and LinkedIn's apply-flow handler appears to silently reject those
+        # (observed as the click landing on the search-results URL with an eBP=NOT_ELIGIBLE_
+        # FOR_CHARGING query param instead of opening the modal). A native Selenium click can
+        # occasionally fall through to the <a>'s literal href and leave the jobs search shell
+        # (e.g. landing on /feed/update/…) — _recover_if_left_jobs_context below is the safety
+        # net for that, so we no longer need to prefer JS click to avoid it.
+        clicked = False
+        try:
+            apply_btn.click()
+            clicked = True
+        except StaleElementReferenceException:
+            # LinkedIn's SDUI apply flow can mutate the DOM synchronously on click (e.g.
+            # swapping in the daily-limit popup) — the click itself already landed even
+            # though Selenium's call raises stale. Do NOT retry with this same handle.
+            log.debug("Apply button went stale right after click (likely UI mutated on click).")
+            clicked = True
+        except Exception:
+            clicked = False
+        if not clicked:
+            try:
+                driver.execute_script("arguments[0].click();", apply_btn)
+            except StaleElementReferenceException:
+                log.debug(
+                    "Apply button went stale on JS click fallback (likely UI mutated on click)."
+                )
+        self._after_ui_click()
+
+        # Navigation away from jobs can be async — poll briefly instead of checking once. This
+        # already navigates back on our behalf, so a click that fell through to the href is
+        # itself a retryable case, not a hard abort.
+        if self._recover_if_left_jobs_context(
+            driver, job, pre_url=pre_url, context="after Easy Apply click"
+        ):
+            return None
+
+        if self._abort_apply_for_job_trust_safety(driver, job):
+            return False
+
+        if self._abort_apply_for_daily_limit(driver, job, when="after clicking Apply"):
+            return False
+
+        # The new Easy Apply control is an <a href="…/apply/?openSDUIApplyFlow=true…">.
+        # The sheet (still ``.jobs-easy-apply-modal`` in current UI) can take a moment to mount
+        # after that click — do not start filling until it is visible. A longer wait here used
+        # to be needed on the theory that fresh "Easy Apply" clicks are just slower to load than
+        # "Continue" (resuming a draft); that turned out to be wrong — the real failure mode is
+        # a click that silently doesn't register at all (confirmed live: a manual click on the
+        # same job worked immediately), which no amount of waiting fixes. The caller now retries
+        # the click itself on a timeout, so a shorter wait here means failing fast into that
+        # retry instead of stalling on a click that was never going to open anything.
+        modal = self._wait_for_easy_apply_modal(driver, timeout_s=8.0)
+        if modal is None:
+            try:
+                fail_url = (driver.current_url or "")
+            except WebDriverException:
+                fail_url = ""
+            log.warning(
+                "Easy Apply sheet did not open after clicking Apply "
+                "(expected .jobs-easy-apply-modal or SDUI shadow dialog; url=%s)",
+                fail_url[:200],
+            )
+            self._recover_if_left_jobs_context(
+                driver, job, pre_url=pre_url, context="after Easy Apply modal wait"
+            )
+            return None
+        return True
+
     def apply(self, job: dict, resume: dict, cover_letter: str, driver: Any | None = None) -> bool:
         """
         Clicks Easy Apply and submits the form.
@@ -999,113 +1121,29 @@ class EasyApplyFiller:
             if self._stop_dismiss_if_driver_closed(driver):
                 return False
 
-            # When the daily submission cap is hit, LinkedIn replaces the Apply button with the limit
-            # message, so check before the (slow) apply-button poll.
-            if self._abort_apply_for_daily_limit(driver, job, when="Apply button replaced by limit message"):
-                return False
-
-            apply_btn = self._find_apply_button(driver)
-            if not apply_btn:
-                if self._abort_apply_for_daily_limit(
-                    driver, job, when="no Apply button — limit message shown"
-                ):
+            # Click Apply and wait for the sheet — retry once if the click produced no modal and
+            # nothing else explains why (observed live: a manual click on the same job worked
+            # fine right after an automated click silently didn't, so this is a real race worth
+            # retrying, not a permanently broken control).
+            max_click_attempts = 2
+            opened = False
+            for attempt in range(max_click_attempts):
+                if attempt:
+                    log.info(
+                        "Easy Apply sheet did not open — retrying click (attempt %d/%d) for %s",
+                        attempt + 1,
+                        max_click_attempts,
+                        job.get("id"),
+                    )
+                    time.sleep(1.5)
+                result = self._attempt_easy_apply_click(driver, job)
+                if result is True:
+                    opened = True
+                    break
+                if result is False:
                     return False
-                raise RuntimeError(
-                    "Apply button not found: expected Easy Apply link "
-                    "(aria-label Easy Apply to this job / openSDUIApplyFlow) "
-                    "or legacy #jobs-apply-button-id / button.jobs-apply-button"
-                )
-            if not self._apply_control_looks_valid(apply_btn):
-                href = (apply_btn.get_attribute("href") or "")[:180]
-                label = (apply_btn.get_attribute("aria-label") or apply_btn.text or "")[:120]
-                log.warning(
-                    "Refusing to click Apply-looking control that is not a jobs Easy Apply "
-                    "target (tag=%s aria-label=%r href=%r)",
-                    (apply_btn.tag_name or "").lower(),
-                    label,
-                    href,
-                )
-                return False
-            try:
-                pre_url = (driver.current_url or "")
-            except WebDriverException:
-                pre_url = ""
-            # Read tag once, up front — scroll_into_view()/focus_element() below can trigger a
-            # lazy-load/intersection-observer re-render that detaches apply_btn from the DOM, and
-            # a second .tag_name read afterward would raise StaleElementReferenceException with
-            # no guard around it (this is what caused the apply flow to crash uncaught).
-            tag = (apply_btn.tag_name or "").lower()
-            log.info(
-                "Clicking Easy Apply control: tag=%s aria-label=%r href=%r",
-                tag,
-                (apply_btn.get_attribute("aria-label") or apply_btn.text or "")[:120],
-                (apply_btn.get_attribute("href") or "")[:180],
-            )
-            scroll_into_view(driver, apply_btn)
-            if self.highlight:
-                focus_element(driver, apply_btn, pause=self.step_delay)
-            # Prefer a JS click for <a href="…/apply/?openSDUIApplyFlow…"> so LinkedIn's SPA
-            # handler can open the modal without a full navigation. A native Selenium click on
-            # the anchor can fall through to the href and leave the jobs search shell
-            # (sometimes landing on unrelated pages such as /feed/update/…).
-            clicked = False
-            if tag == "a":
-                try:
-                    driver.execute_script("arguments[0].click();", apply_btn)
-                    clicked = True
-                except StaleElementReferenceException:
-                    log.debug("Apply link went stale on JS click (likely UI mutated on click).")
-                    clicked = True  # click may still have landed
-                except Exception:
-                    clicked = False
-            if not clicked:
-                try:
-                    apply_btn.click()
-                except StaleElementReferenceException:
-                    # LinkedIn's SDUI apply flow can mutate the DOM synchronously on click (e.g.
-                    # swapping in the daily-limit popup) — the click itself already landed even
-                    # though Selenium's call raises stale. Do NOT retry with this same handle.
-                    log.debug("Apply button went stale right after click (likely UI mutated on click).")
-                except Exception:
-                    try:
-                        driver.execute_script("arguments[0].click();", apply_btn)
-                    except StaleElementReferenceException:
-                        log.debug(
-                            "Apply button went stale on JS click fallback (likely UI mutated on click)."
-                        )
-            self._after_ui_click()
-
-            # Navigation away from jobs can be async — poll briefly instead of checking once.
-            if self._recover_if_left_jobs_context(
-                driver, job, pre_url=pre_url, context="after Easy Apply click"
-            ):
-                # If we had to recover, the modal almost certainly did not open.
-                return False
-
-            if self._abort_apply_for_job_trust_safety(driver, job):
-                return False
-
-            if self._abort_apply_for_daily_limit(driver, job, when="after clicking Apply"):
-                return False
-
-            # The new Easy Apply control is an <a href="…/apply/?openSDUIApplyFlow=true…">.
-            # The sheet (still ``.jobs-easy-apply-modal`` in current UI) can take several seconds
-            # to mount after that click — do not start filling until it is visible.
-            modal = self._wait_for_easy_apply_modal(driver, timeout_s=12.0)
-            if modal is None:
-                try:
-                    fail_url = (driver.current_url or "")
-                except WebDriverException:
-                    fail_url = ""
-                log.warning(
-                    "Easy Apply sheet did not open after clicking Apply "
-                    "(expected .jobs-easy-apply-modal or SDUI shadow dialog; url=%s)",
-                    fail_url[:200],
-                )
-                if self._recover_if_left_jobs_context(
-                    driver, job, pre_url=pre_url, context="after Easy Apply modal wait"
-                ):
-                    pass
+                # result is None — retryable; loop continues (or exits if out of attempts)
+            if not opened:
                 try:
                     path = self.screenshot_dir / f"error_{job['id']}.png"
                     driver.save_screenshot(str(path))
@@ -1254,6 +1292,41 @@ class EasyApplyFiller:
                 break
         return roots
 
+    def _element_is_genuinely_clickable(self, driver: Any, el: Any) -> bool:
+        """
+        Stronger check than Selenium's ``is_displayed()``.
+
+        LinkedIn's SDUI system duplicates content for accessibility (e.g. the aria-hidden +
+        visually-hidden label pattern found elsewhere in this file) — it's plausible the same
+        applies to interactive elements: a "ghost" instance that is technically displayed
+        (non-zero size, display != none) but invisible/non-interactive (opacity: 0, or a
+        duplicate mid-transition), which ``is_displayed()`` alone would accept. Verify real
+        on-screen opacity/position, and that this element (not some other overlay) is actually
+        what ``elementFromPoint`` returns at its own center — matching the observed symptom of
+        a click producing no visible focus-highlight outline and no effect.
+        """
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const el = arguments[0];
+                    const style = getComputedStyle(el);
+                    if (parseFloat(style.opacity) === 0) return false;
+                    if (style.pointerEvents === 'none') return false;
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) return false;
+                    const cx = rect.left + rect.width / 2;
+                    const cy = rect.top + rect.height / 2;
+                    if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return false;
+                    const top = document.elementFromPoint(cx, cy);
+                    return !!(top && (top === el || el.contains(top) || top.contains(el)));
+                    """,
+                    el,
+                )
+            )
+        except Exception:
+            return True  # don't block on a check we couldn't run
+
     def _find_apply_button(self, driver: Any):
         """
         Find the job-pane Easy Apply control.
@@ -1291,6 +1364,8 @@ class EasyApplyFiller:
                         if disabled in ("true", "1"):
                             continue
                         if not self._apply_control_looks_valid(el):
+                            continue
+                        if not self._element_is_genuinely_clickable(driver, el):
                             continue
                         label = (el.get_attribute("aria-label") or el.text or "").lower()
                         href = (el.get_attribute("href") or "").lower()
