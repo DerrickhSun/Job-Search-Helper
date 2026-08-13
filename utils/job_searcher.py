@@ -223,13 +223,20 @@ SEL = {
     # stable data-testid / componentkey attributes; ``.jobs-description__content`` is legacy fallback.
     # ``expandable-text-box`` is a *sibling* of the "…more" toggle button, not its ancestor, so
     # selecting it directly avoids picking up that button's text.
+    # IMPORTANT: ``expandable-text-box`` also appears in "Trending employee content" feed cards
+    # below the job — those must not be treated as the job description.
+    "job_description_root": (
+        'div[componentkey^="JobDetails_AboutTheJob_"]',
+        ".jobs-description__content",
+        ".jobs-description-content",
+        ".jobs-box__html-content",
+        "#job-details",
+    ),
     "job_description": (
         'span[data-testid="expandable-text-box"]',
         'div[componentkey^="JobDetails_AboutTheJob_"]',
         ".jobs-description__content",
     ),
-    # "…more" toggle that visually clamps the description text above; click before reading.
-    "job_description_more_button": 'button[data-testid="expandable-text-button"]',
     # LinkedIn SDUI: data-testid; legacy: aria-label on artdeco pagination.
     "next_page": (
         'button[data-testid="pagination-controls-next-button-visible"], '
@@ -1579,36 +1586,113 @@ class JobSearcher:
             log.warning("Easy Apply filter recovery #%d did not confirm filter is active.", n)
         return ok
 
-    def _find_job_description_element(self, driver):
-        """First element matching any ``job_description`` selector, tried in priority order."""
-        for css in SEL["job_description"]:
-            els = driver.find_elements(By.CSS_SELECTOR, css)
-            if els:
-                return els[0]
-        return None
-
-    def _expand_job_description(self, driver) -> None:
-        """
-        Click the "…more" toggle(s) that visually clamp the description text, if present.
-
-        Uses a JS click since the toggle can carry ``pointer-events: none`` once expanded —
-        that CSS only blocks real pointer hit-testing, not a programmatic ``.click()``.
-        """
-        try:
-            btns = driver.find_elements(By.CSS_SELECTOR, SEL["job_description_more_button"])
-        except Exception:
-            return
-        for btn in btns:
+    def _job_description_roots(self, driver) -> list:
+        """Containers that hold the real job description (not trending employee feed cards)."""
+        roots: list = []
+        seen: set[int] = set()
+        for css in SEL["job_description_root"]:
             try:
-                driver.execute_script("arguments[0].click();", btn)
+                els = driver.find_elements(By.CSS_SELECTOR, css)
             except Exception:
                 continue
+            for el in els:
+                try:
+                    key = id(el)
+                    if key in seen:
+                        continue
+                    if not el.is_displayed():
+                        continue
+                except Exception:
+                    continue
+                seen.add(key)
+                roots.append(el)
+        return roots
+
+    @staticmethod
+    def _element_inside_feed_or_profile_link(el) -> bool:
+        """True when ``el`` sits under a feed post / profile ``<a>`` (trending employee content)."""
+        try:
+            el.find_element(
+                By.XPATH,
+                "./ancestor::a[contains(@href,'/feed/') or contains(@href,'/feed/update') "
+                "or contains(@href,'urn:li:activity') or contains(@href,'/in/')][1]",
+            )
+            return True
+        except Exception:
+            return False
+
+    def _find_job_description_element(self, driver):
+        """First job-description text node, preferring About-the-job containers over feed cards."""
+        roots = self._job_description_roots(driver)
+        search_spaces = roots if roots else [driver]
+        for root in search_spaces:
+            for css in SEL["job_description"]:
+                try:
+                    if root is driver:
+                        els = driver.find_elements(By.CSS_SELECTOR, css)
+                    else:
+                        els = root.find_elements(By.CSS_SELECTOR, css)
+                except Exception:
+                    continue
+                for el in els:
+                    try:
+                        if not el.is_displayed():
+                            continue
+                        if self._element_inside_feed_or_profile_link(el):
+                            continue
+                        return el
+                    except Exception:
+                        continue
+        # Last resort: page-wide expandable text, still skipping feed/profile wrappers.
+        for css in SEL["job_description"]:
+            try:
+                els = driver.find_elements(By.CSS_SELECTOR, css)
+            except Exception:
+                continue
+            for el in els:
+                try:
+                    if not el.is_displayed():
+                        continue
+                    if self._element_inside_feed_or_profile_link(el):
+                        continue
+                    return el
+                except Exception:
+                    continue
+        return None
+
+    @staticmethod
+    def _dom_text(driver, el) -> str:
+        """
+        Full text from the DOM (not just the CSS-clamped visible slice).
+
+        Selenium ``el.text`` follows rendered visibility, so LinkedIn's "…more" line-clamp can
+        hide the rest. ``textContent`` still has the full string without clicking expand.
+        """
+        try:
+            raw = driver.execute_script(
+                """
+                const el = arguments[0];
+                if (!el) return '';
+                return (el.innerText || el.textContent || '').trim();
+                """,
+                el,
+            )
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        except Exception:
+            pass
+        try:
+            return (el.get_attribute("textContent") or el.text or "").strip()
+        except Exception:
+            return ""
 
     def _read_job_description_panel(self, driver) -> str:
         """
-        Read the job description panel after scrolling it — LinkedIn often lazy-loads sections
-        (e.g. \"Requirements added by the job poster\") below the first viewport, and visually
-        clamps the text behind a "…more" toggle that must be clicked to read the full text.
+        Read the job description from the DOM.
+
+        Scrolls the panel so LinkedIn can lazy-mount lower sections, then reads ``textContent`` /
+        ``innerText`` — no "…more" click. Expand toggles are unnecessary for scraping and unsafe
+        when trending employee cards reuse the same ``expandable-text-*`` test ids.
         """
         out = ""
         for attempt in range(2):
@@ -1616,31 +1700,38 @@ class JobSearcher:
                 time.sleep(1.0)
             el = self._find_job_description_element(driver)
             if el is None:
+                # Prefer a whole About-the-job root if the inner text node has not mounted yet.
+                roots = self._job_description_roots(driver)
+                el = roots[0] if roots else None
+            if el is None:
                 continue
             try:
                 driver.execute_script("arguments[0].scrollIntoView({block: 'end'});", el)
                 time.sleep(0.55)
             except Exception:
                 pass
-            self._expand_job_description(driver)
-            # The expand click can replace the description node (React re-render) — re-find it.
             el = self._find_job_description_element(driver) or el
-            try:
-                out = (el.text or "").strip()
-            except Exception:
-                out = ""
+            if el is None:
+                roots = self._job_description_roots(driver)
+                el = roots[0] if roots else None
+            if el is None:
+                continue
+            out = self._dom_text(driver, el)
             if out:
                 break
         if not out:
             return ""
+        # Second scroll pass for lazy-loaded "requirements" blocks below the fold.
         el = self._find_job_description_element(driver)
+        if el is None:
+            roots = self._job_description_roots(driver)
+            el = roots[0] if roots else None
         if el is not None:
             try:
                 driver.execute_script("arguments[0].scrollIntoView({block: 'end'});", el)
-                time.sleep(0.65)
-                self._expand_job_description(driver)
+                time.sleep(0.45)
                 el = self._find_job_description_element(driver) or el
-                out = (el.text or "").strip() or out
+                out = self._dom_text(driver, el) or out
             except Exception:
                 pass
         return out

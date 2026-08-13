@@ -1015,46 +1015,68 @@ class EasyApplyFiller:
                     "(aria-label Easy Apply to this job / openSDUIApplyFlow) "
                     "or legacy #jobs-apply-button-id / button.jobs-apply-button"
                 )
+            if not self._apply_control_looks_valid(apply_btn):
+                href = (apply_btn.get_attribute("href") or "")[:180]
+                label = (apply_btn.get_attribute("aria-label") or apply_btn.text or "")[:120]
+                log.warning(
+                    "Refusing to click Apply-looking control that is not a jobs Easy Apply "
+                    "target (tag=%s aria-label=%r href=%r)",
+                    (apply_btn.tag_name or "").lower(),
+                    label,
+                    href,
+                )
+                return False
+            try:
+                pre_url = (driver.current_url or "")
+            except WebDriverException:
+                pre_url = ""
+            log.info(
+                "Clicking Easy Apply control: tag=%s aria-label=%r href=%r",
+                (apply_btn.tag_name or "").lower(),
+                (apply_btn.get_attribute("aria-label") or apply_btn.text or "")[:120],
+                (apply_btn.get_attribute("href") or "")[:180],
+            )
             scroll_into_view(driver, apply_btn)
             if self.highlight:
                 focus_element(driver, apply_btn, pause=self.step_delay)
-            try:
-                apply_btn.click()
-            except StaleElementReferenceException:
-                # LinkedIn's SDUI apply flow can mutate the DOM synchronously on click (e.g.
-                # swapping in the daily-limit popup) — the click itself already landed even
-                # though Selenium's call raises stale. Do NOT retry with this same handle (the
-                # JS fallback below would raise the identical exception, uncaught, and skip
-                # the limit/trust-safety checks that follow). Fall through to those checks.
-                log.debug("Apply button went stale right after click (likely UI mutated on click).")
-            except Exception:
+            # Prefer a JS click for <a href="…/apply/?openSDUIApplyFlow…"> so LinkedIn's SPA
+            # handler can open the modal without a full navigation. A native Selenium click on
+            # the anchor can fall through to the href and leave the jobs search shell
+            # (sometimes landing on unrelated pages such as /feed/update/…).
+            tag = (apply_btn.tag_name or "").lower()
+            clicked = False
+            if tag == "a":
                 try:
                     driver.execute_script("arguments[0].click();", apply_btn)
+                    clicked = True
                 except StaleElementReferenceException:
-                    log.debug("Apply button went stale on JS click fallback (likely UI mutated on click).")
+                    log.debug("Apply link went stale on JS click (likely UI mutated on click).")
+                    clicked = True  # click may still have landed
+                except Exception:
+                    clicked = False
+            if not clicked:
+                try:
+                    apply_btn.click()
+                except StaleElementReferenceException:
+                    # LinkedIn's SDUI apply flow can mutate the DOM synchronously on click (e.g.
+                    # swapping in the daily-limit popup) — the click itself already landed even
+                    # though Selenium's call raises stale. Do NOT retry with this same handle.
+                    log.debug("Apply button went stale right after click (likely UI mutated on click).")
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].click();", apply_btn)
+                    except StaleElementReferenceException:
+                        log.debug(
+                            "Apply button went stale on JS click fallback (likely UI mutated on click)."
+                        )
             self._after_ui_click()
 
-            # The Apply control is an <a href="…/apply/?openSDUIApplyFlow=true…"> whose click handler
-            # is expected to intercept navigation and open the modal in place. If that handler doesn't
-            # fire in time, the browser can fall through to the anchor's literal href and leave the
-            # jobs context entirely (observed once landing on an unrelated /feed/update/ post) — recover
-            # and log the URL so a recurrence is diagnosable instead of silently stuck off-page.
-            try:
-                cur_url = (driver.current_url or "")
-            except WebDriverException:
-                cur_url = ""
-            if cur_url and "linkedin.com/jobs" not in cur_url.lower():
-                log.warning(
-                    "Clicking Apply left the jobs context (url=%s) for %s at %s — navigating back.",
-                    cur_url[:200],
-                    job.get("title"),
-                    job.get("company"),
-                )
-                try:
-                    driver.back()
-                    time.sleep(1.0)
-                except WebDriverException:
-                    pass
+            # Navigation away from jobs can be async — poll briefly instead of checking once.
+            if self._recover_if_left_jobs_context(
+                driver, job, pre_url=pre_url, context="after Easy Apply click"
+            ):
+                # If we had to recover, the modal almost certainly did not open.
+                return False
 
             if self._abort_apply_for_job_trust_safety(driver, job):
                 return False
@@ -1067,10 +1089,19 @@ class EasyApplyFiller:
             # to mount after that click — do not start filling until it is visible.
             modal = self._wait_for_easy_apply_modal(driver, timeout_s=12.0)
             if modal is None:
+                try:
+                    fail_url = (driver.current_url or "")
+                except WebDriverException:
+                    fail_url = ""
                 log.warning(
                     "Easy Apply sheet did not open after clicking Apply "
-                    "(expected .jobs-easy-apply-modal or SDUI shadow dialog)"
+                    "(expected .jobs-easy-apply-modal or SDUI shadow dialog; url=%s)",
+                    fail_url[:200],
                 )
+                if self._recover_if_left_jobs_context(
+                    driver, job, pre_url=pre_url, context="after Easy Apply modal wait"
+                ):
+                    pass
                 try:
                     path = self.screenshot_dir / f"error_{job['id']}.png"
                     driver.save_screenshot(str(path))
@@ -1098,6 +1129,127 @@ class EasyApplyFiller:
             if own_driver and driver:
                 quit_chrome(driver)
 
+    def _apply_control_looks_valid(self, el: Any) -> bool:
+        """
+        True when ``el`` looks like the job-pane Easy Apply control — not a feed/post link.
+
+        Rejects ``/feed/``, ``/posts/``, and ``urn:li:activity`` hrefs that have been observed
+        when a click lands on the wrong overlay/promo instead of Easy Apply.
+        """
+        try:
+            tag = (el.tag_name or "").lower()
+            href = (el.get_attribute("href") or "").strip().lower()
+            label = (el.get_attribute("aria-label") or el.text or "").strip().lower()
+            cls = (el.get_attribute("class") or "").lower()
+        except Exception:
+            return False
+        bad_bits = ("/feed/", "/posts/", "urn:li:activity", "/feed/update")
+        if href and any(b in href for b in bad_bits):
+            return False
+        if tag == "a":
+            if "opensduiapplyflow" in href:
+                return True
+            if "/jobs/" in href and "/apply" in href:
+                return True
+            if "easy apply" in label and "/apply" in href:
+                return True
+            return False
+        if tag == "button":
+            if "jobs-apply-button" in cls or "easy apply" in label or "linkedin apply" in label:
+                return True
+            aid = (el.get_attribute("id") or "").strip()
+            return aid == SEL["apply_button_id"]
+        return False
+
+    def _url_looks_like_jobs_context(self, url: str) -> bool:
+        u = (url or "").lower()
+        if not u:
+            return True
+        if any(b in u for b in ("/feed/", "/posts/", "urn:li:activity", "/feed/update")):
+            return False
+        return "linkedin.com/jobs" in u or "/jobs/" in u
+
+    def _recover_if_left_jobs_context(
+        self,
+        driver: Any,
+        job: dict,
+        *,
+        pre_url: str = "",
+        context: str = "",
+        timeout_s: float = 2.5,
+    ) -> bool:
+        """
+        If the browser left the LinkedIn jobs UI (e.g. landed on ``/feed/update/…``), go back.
+
+        Returns True when a recovery navigation was performed.
+        """
+        deadline = time.monotonic() + max(0.3, float(timeout_s))
+        left_url = ""
+        while time.monotonic() < deadline:
+            try:
+                cur = (driver.current_url or "")
+            except WebDriverException:
+                return False
+            if cur and not self._url_looks_like_jobs_context(cur):
+                left_url = cur
+                break
+            if not interruptible_sleep(0.2, driver):
+                return False
+        else:
+            try:
+                cur = (driver.current_url or "")
+            except WebDriverException:
+                return False
+            if not cur or self._url_looks_like_jobs_context(cur):
+                return False
+            left_url = cur
+
+        log.warning(
+            "Left jobs context%s (url=%s) for %s at %s — recovering (pre_url=%s).",
+            f" ({context})" if context else "",
+            left_url[:220],
+            job.get("title"),
+            job.get("company"),
+            (pre_url or "")[:180],
+        )
+        try:
+            if pre_url and self._url_looks_like_jobs_context(pre_url):
+                driver.get(pre_url)
+            else:
+                driver.back()
+            time.sleep(1.0)
+        except WebDriverException:
+            try:
+                driver.back()
+                time.sleep(1.0)
+            except WebDriverException:
+                pass
+        return True
+
+    def _job_details_roots(self, driver: Any) -> list:
+        """Prefer searching Easy Apply inside the right-hand job details pane."""
+        roots: list = []
+        for sel in (
+            ".jobs-search__job-details--container",
+            ".jobs-search__job-details",
+            ".job-details-jobs-unified-top-card",
+            ".jobs-details",
+            "#job-details",
+            "div.scaffold-layout__detail",
+        ):
+            try:
+                for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                    try:
+                        if el.is_displayed():
+                            roots.append(el)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+            if roots:
+                break
+        return roots
+
     def _find_apply_button(self, driver: Any):
         """
         Find the job-pane Easy Apply control.
@@ -1110,36 +1262,43 @@ class EasyApplyFiller:
         pause = max(0.25, min(0.6, self.step_delay))
 
         def _visible_easy_apply():
-            try:
-                els = driver.find_elements(By.CSS_SELECTOR, SEL["easy_apply_btn"])
-            except Exception:
-                return None
-            for el in els:
+            detail_roots = self._job_details_roots(driver)
+            root_passes: list = list(detail_roots) if detail_roots else []
+            root_passes.append(driver)  # whole document last
+
+            seen: set[int] = set()
+            for root in root_passes:
                 try:
-                    if not el.is_displayed():
-                        continue
-                    disabled = (el.get_attribute("aria-disabled") or "").strip().lower()
-                    if disabled in ("true", "1"):
-                        continue
-                    label = (el.get_attribute("aria-label") or el.text or "").lower()
-                    href = (el.get_attribute("href") or "").lower()
-                    # Prefer Easy Apply over a plain external "Apply" link when both match broadly.
-                    if "easy apply" in label or "opensduiapplyflow" in href or "/apply" in href:
-                        return el
-                    tag = (el.tag_name or "").lower()
-                    if tag == "button" and "jobs-apply-button" in (
-                        (el.get_attribute("class") or "").lower()
-                    ):
-                        return el
+                    if root is driver:
+                        els = driver.find_elements(By.CSS_SELECTOR, SEL["easy_apply_btn"])
+                    else:
+                        els = root.find_elements(By.CSS_SELECTOR, SEL["easy_apply_btn"])
                 except Exception:
                     continue
-            # Fallback: first displayed match from the selector list.
-            for el in els:
-                try:
-                    if el.is_displayed():
-                        return el
-                except Exception:
-                    continue
+                for el in els:
+                    try:
+                        key = id(el)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        if not el.is_displayed():
+                            continue
+                        disabled = (el.get_attribute("aria-disabled") or "").strip().lower()
+                        if disabled in ("true", "1"):
+                            continue
+                        if not self._apply_control_looks_valid(el):
+                            continue
+                        label = (el.get_attribute("aria-label") or el.text or "").lower()
+                        href = (el.get_attribute("href") or "").lower()
+                        if "easy apply" in label or "opensduiapplyflow" in href or "/apply" in href:
+                            return el
+                        tag = (el.tag_name or "").lower()
+                        if tag == "button" and "jobs-apply-button" in (
+                            (el.get_attribute("class") or "").lower()
+                        ):
+                            return el
+                    except Exception:
+                        continue
             return None
 
         for _ in range(24):
