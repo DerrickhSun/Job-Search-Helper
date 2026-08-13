@@ -26,6 +26,7 @@ Run from repo root::
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from datetime import date, datetime
@@ -39,10 +40,12 @@ from utils.cover_letter import delete_cover_letter_for_job
 from utils.extension_rules import (
     QUESTION_EXPORT_ALIASES,
     SAVED_JOBS_QUESTIONS_FILENAME,
+    list_recycled_rules,
     migrate_extension_auto_rules_to_exact,
     process_extension_questions,
     print_questions_summary,
     resolve_questions_file_path,
+    restore_recycled_rule,
 )
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
@@ -338,7 +341,51 @@ def main() -> int:
         action="store_true",
         help="Do not prompt for conflict resolution; list conflicts only.",
     )
+    parser.add_argument(
+        "--list-recycle-bin",
+        action="store_true",
+        help="List rules deleted by conflict resolution (recycle bin) and exit.",
+    )
+    parser.add_argument(
+        "--restore-recycled",
+        type=int,
+        default=None,
+        metavar="ID",
+        help="Restore recycle-bin entry ID (from --list-recycle-bin) into auto_rules.json and exit. "
+        "Hand-edit the entry's rule.match in the recycle-bin JSON file first to fix whatever "
+        "caused the conflict.",
+    )
     args = parser.parse_args()
+
+    if args.list_recycle_bin:
+        entries = list_recycled_rules()
+        if not entries:
+            print("Recycle bin is empty.")
+            return 0
+        for entry in entries:
+            ctx = entry.get("context") or {}
+            print(f"[{entry['id']}] {entry.get('reason', '')} — {entry.get('source_file', '')} "
+                  f"({entry.get('category', '')})")
+            print(f"    deleted_at: {entry.get('deleted_at', '')}")
+            if ctx.get("question"):
+                print(f"    question: {ctx['question']}")
+            if ctx.get("extension_answer") is not None:
+                print(f"    extension answer: {ctx['extension_answer']!r}")
+            if ctx.get("rule_answer") is not None:
+                print(f"    rule answer: {ctx['rule_answer']!r}")
+            print(f"    rule: {json.dumps(entry.get('rule', {}), ensure_ascii=False)}")
+            print()
+        return 0
+
+    if args.restore_recycled is not None:
+        restored = restore_recycled_rule(args.restore_recycled, dry_run=args.dry_run)
+        if restored is None:
+            print(f"No recycle-bin entry with id {args.restore_recycled}.")
+            return 1
+        verb = "Would restore" if args.dry_run else "Restored"
+        print(f"{verb} rule {restored.get('rule', {}).get('id') or ''} "
+              f"into auto_rules.json ({restored.get('category', '')}).")
+        return 0
 
     load_dotenv()
     sync_download_output()

@@ -16,6 +16,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,13 @@ from utils.output_paths import FORM_FILL_RULES_DIR
 
 AUTO_RULES_FILENAME = "auto_rules.json"
 RULE_CATEGORIES = ("screening_yes_no", "text_inputs", "textareas", "selects")
+
+# Deleted rules are moved here instead of discarded outright, so a rule dropped for conflicting
+# with an extension answer can still be reviewed, fixed, and restored. Deliberately a sibling
+# *file* of FORM_FILL_RULES_DIR (not a file inside it) — FormFillRulesEngine/RuleIndex only glob
+# *.json directly inside that directory, so recycled rules can never accidentally get loaded and
+# used to fill fields.
+RECYCLE_BIN_FILENAME_SUFFIX = "_recycle_bin.json"
 
 QUESTION_EXPORT_ALIASES = (
     "saved_jobs_application_questions.txt",
@@ -135,6 +143,84 @@ def _read_json_object(path: Path) -> dict[str, Any]:
 def _write_json_object(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _read_json_array(path: Path) -> list[Any]:
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _write_json_array(path: Path, data: list[Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def recycle_bin_path(rules_dir: Path | None = None) -> Path:
+    base = Path(rules_dir or FORM_FILL_RULES_DIR)
+    return base.parent / (base.name + RECYCLE_BIN_FILENAME_SUFFIX)
+
+
+def list_recycled_rules(*, rules_dir: Path | None = None) -> list[dict[str, Any]]:
+    """All recycled entries, oldest first — each has ``id`` (its position, stable for one session)."""
+    entries = _read_json_array(recycle_bin_path(rules_dir))
+    out = []
+    for i, entry in enumerate(entries):
+        if isinstance(entry, dict):
+            out.append({"id": i, **entry})
+    return out
+
+
+def _recycle_rule(
+    ref: RuleRef,
+    *,
+    reason: str,
+    context: dict[str, Any] | None = None,
+    rules_dir: Path | None = None,
+) -> None:
+    """Append ``ref``'s rule to the recycle bin. Does not touch the rule's source file."""
+    entry: dict[str, Any] = {
+        "deleted_at": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "category": ref.category,
+        "source_file": ref.file.name,
+        "rule": ref.rule,
+    }
+    if context:
+        entry["context"] = context
+    path = recycle_bin_path(rules_dir)
+    bin_entries = _read_json_array(path)
+    bin_entries.append(entry)
+    _write_json_array(path, bin_entries)
+
+
+def restore_recycled_rule(
+    entry_id: int, *, rules_dir: Path | None = None, dry_run: bool = False
+) -> dict[str, Any] | None:
+    """
+    Move recycle-bin entry ``entry_id`` (see :func:`list_recycled_rules`) back into
+    ``auto_rules.json`` under its original category, and remove it from the bin.
+
+    Intended for after hand-editing the entry's ``rule.match`` in the recycle-bin JSON file to
+    fix whatever caused the conflict. Returns the restored entry, or ``None`` if ``entry_id``
+    does not exist.
+    """
+    path = recycle_bin_path(rules_dir)
+    entries = _read_json_array(path)
+    if entry_id < 0 or entry_id >= len(entries):
+        return None
+    entry = entries[entry_id]
+    if not isinstance(entry, dict) or not isinstance(entry.get("rule"), dict):
+        return None
+    if not dry_run:
+        remaining = entries[:entry_id] + entries[entry_id + 1 :]
+        _write_json_array(path, remaining)
+        append_rule_to_auto_rules(entry.get("category") or "screening_yes_no", entry["rule"], rules_dir=rules_dir)
+    return entry
 
 
 def _dedupe_repeated_question(question: str) -> str:
@@ -485,11 +571,21 @@ def append_rule_to_auto_rules(
     return path
 
 
-def delete_rule(ref: RuleRef, *, dry_run: bool = False) -> None:
+def delete_rule(
+    ref: RuleRef,
+    *,
+    reason: str = "deleted",
+    context: dict[str, Any] | None = None,
+    rules_dir: Path | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Move ``ref``'s rule to the recycle bin (see :func:`_recycle_rule`), then remove it."""
     data = _read_json_object(ref.file)
     rules = data.get(ref.category)
     if not isinstance(rules, list) or ref.index >= len(rules):
         return
+    if not dry_run:
+        _recycle_rule(ref, reason=reason, context=context, rules_dir=rules_dir)
     del rules[ref.index]
     data[ref.category] = rules
     if not dry_run:
@@ -594,6 +690,15 @@ def resolve_conflicts_interactively(
     for conflict in conflicts:
         q = conflict.question
         can_combine = conflict.rule_ref.category != "textareas"
+        # Attached to any recycle-bin entry created below, so a recycled rule shows why it
+        # conflicted (the question/answers involved) — useful context for refining it by hand.
+        recycle_context = {
+            "question": q.question,
+            "extension_answer": q.answer,
+            "rule_answer": conflict.rule_answer,
+            "job": q.company_title,
+            "url": q.url,
+        }
         print()
         print("Conflict — existing rule disagrees with extension answer")
         print(f"  Question: {q.question}")
@@ -629,7 +734,12 @@ def resolve_conflicts_interactively(
                 break
             if choice in ("2", "replace", "r", "extension"):
                 if not dry_run:
-                    delete_rule(conflict.rule_ref)
+                    delete_rule(
+                        conflict.rule_ref,
+                        reason="conflict_replaced",
+                        context=recycle_context,
+                        rules_dir=rules_dir,
+                    )
                     index.reload()
                     category, rule = new_rule_for_question(q.question, q.answer)
                     append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
@@ -646,7 +756,12 @@ def resolve_conflicts_interactively(
                     continue
                 category, rule = result
                 if not dry_run:
-                    delete_rule(conflict.rule_ref)
+                    delete_rule(
+                        conflict.rule_ref,
+                        reason="conflict_combined_existing_priority",
+                        context=recycle_context,
+                        rules_dir=rules_dir,
+                    )
                     index.reload()
                     append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
                     index.reload()
@@ -662,7 +777,12 @@ def resolve_conflicts_interactively(
                     continue
                 category, rule = result
                 if not dry_run:
-                    delete_rule(conflict.rule_ref)
+                    delete_rule(
+                        conflict.rule_ref,
+                        reason="conflict_combined_extension_priority",
+                        context=recycle_context,
+                        rules_dir=rules_dir,
+                    )
                     index.reload()
                     append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
                     index.reload()
