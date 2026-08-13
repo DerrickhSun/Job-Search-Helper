@@ -292,12 +292,34 @@ function getJobForSave() {
     };
 }
 
-// Selector aligned with job_searcher.py's SEL["job_description"]. Unlike the
-// Python scraper we don't scroll+wait for lazy-loaded sections — by the time
-// someone clicks "Generate Cover Letter" they've already been looking at the
-// page, so it's normally already rendered.
+// Selectors aligned with job_searcher.py's SEL["job_description"]. Newer SDUI markup uses
+// hashed/atomic class names (no stable class to hook), so prefer the stable data-testid /
+// componentkey attributes; .jobs-description__content is legacy fallback. Unlike the Python
+// scraper we don't scroll+wait for lazy-loaded sections — by the time someone clicks "Generate
+// Cover Letter" they've already been looking at the page, so it's normally already rendered.
+const LINKEDIN_JOB_DESCRIPTION_SELECTORS = [
+    'span[data-testid="expandable-text-box"]',
+    'div[componentkey^="JobDetails_AboutTheJob_"]',
+    ".jobs-description__content",
+];
+
+function findLinkedInJobDescriptionElement() {
+    for (const selector of LINKEDIN_JOB_DESCRIPTION_SELECTORS) {
+        const el = document.querySelector(selector);
+        if (el) return el;
+    }
+    return null;
+}
+
 function getLinkedInJobDescription() {
-    const el = document.querySelector(".jobs-description__content");
+    // Click the "…more" toggle that visually clamps the description text, if present — a JS
+    // click bypasses its pointer-events:none (that CSS only blocks real pointer hit-testing,
+    // not a programmatic .click()). Mirrors job_searcher._expand_job_description.
+    document
+        .querySelectorAll('button[data-testid="expandable-text-button"]')
+        .forEach((btn) => btn.click());
+
+    const el = findLinkedInJobDescriptionElement();
     if (!el) return "";
     return (el.innerText || el.textContent || "").trim();
 }
@@ -348,12 +370,26 @@ function trimLinkedInFieldLabel(text) {
     return (text || "").trim().replace(/\s*\*+\s*$/, "").trim();
 }
 
+// Collapse LinkedIn's aria-hidden + visually-hidden duplicate-text accessibility pattern:
+// newer fb-dash-form-element labels/legends render the question text twice — once in an
+// aria-hidden="true" span (visible copy) and once in a visually-hidden span (screen-reader
+// copy, taken out of flow via position:absolute). Because that second span is out-of-flow,
+// innerText inserts a line break around it, yielding "Question?\nQuestion?" instead of one
+// copy. Collapse that back down. Mirrors form_filler._dedupe_repeated_label_text.
+function dedupeRepeatedLabelText(text) {
+    const t = (text || "").trim();
+    if (!t) return t;
+    const lines = t.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (lines.length >= 2 && new Set(lines).size === 1) return lines[0];
+    return t;
+}
+
 // Prefer innerText (rendered spacing) over textContent — LinkedIn often splits
 // question copy across sibling nodes with no whitespace between them.
 function getLinkedInElementText(el) {
     if (!el) return "";
     const raw = typeof el.innerText === "string" ? el.innerText : (el.textContent || "");
-    return raw.replace(/\s+/g, " ").trim();
+    return dedupeRepeatedLabelText(raw).replace(/\s+/g, " ").trim();
 }
 
 function trimLinkedInFieldLabelFromElement(el) {
