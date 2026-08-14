@@ -62,11 +62,22 @@ def build_chrome(headless: bool = False) -> webdriver.Chrome:
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
 
+    # Windows broadcasts Ctrl+C to every process in the console's process group by default,
+    # which includes chromedriver (a plain subprocess.Popen child) unless it's isolated into its
+    # own group. Without this, Ctrl+C can kill chromedriver at the same instant it interrupts
+    # Python — quit_chrome() then can't reach it (connection refused) to ask it to shut Chrome
+    # down cleanly, and Chrome itself (chromedriver's child, never signaled directly) survives as
+    # an orphan. Isolating chromedriver here means only our own quit_chrome()/taskkill path ever
+    # controls its shutdown.
+    service_kwargs: dict = {}
+    if os.name == "nt":
+        service_kwargs["popen_kw"] = {"creation_flags": subprocess.CREATE_NEW_PROCESS_GROUP}
+
     chromedriver_path = (os.environ.get("CHROMEDRIVER_PATH") or "").strip()
     if chromedriver_path:
-        service = Service(chromedriver_path)
+        service = Service(chromedriver_path, **service_kwargs)
     else:
-        service = Service(ChromeDriverManager().install())
+        service = Service(ChromeDriverManager().install(), **service_kwargs)
     driver = webdriver.Chrome(service=service, options=opts)
     try:
         driver.command_executor.set_timeout(_DRIVER_COMMAND_TIMEOUT)
@@ -77,7 +88,40 @@ def build_chrome(headless: bool = False) -> webdriver.Chrome:
             driver.maximize_window()
         except Exception:
             driver.set_window_size(1400, 900)
+
+    # Backstop for any other reason chromedriver might die before quit_chrome() gets to it:
+    # capture Chrome's own PID (chromedriver's child) now, while both are known to be alive, so
+    # quit_chrome() can target it directly even if chromedriver's PID is no longer traceable by
+    # the time cleanup runs (taskkill /PID <dead pid> /T can't walk a tree that's already gone).
+    if os.name == "nt":
+        try:
+            chromedriver_pid = service.process.pid
+            children = _child_pids_windows(chromedriver_pid)
+            if children:
+                driver._jobapplyer_browser_pid = children[0]  # noqa: SLF001
+        except Exception:
+            log.debug("Could not capture Chrome's own PID for quit_chrome backstop", exc_info=True)
+
     return driver
+
+
+def _child_pids_windows(parent_pid: int) -> list[int]:
+    """Direct child process IDs of ``parent_pid`` on Windows. Best-effort — empty list on any failure."""
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f'(Get-CimInstance Win32_Process -Filter "ParentProcessId={int(parent_pid)}").ProcessId',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return []
+    return [int(line.strip()) for line in result.stdout.splitlines() if line.strip().isdigit()]
 
 
 def _force_kill_process_tree(pid: int) -> None:
@@ -116,6 +160,11 @@ def quit_chrome(driver: webdriver.Chrome | None) -> None:
     cascade to its child chrome.exe — the browser is silently orphaned. Capture chromedriver's PID
     up front, bound ``quit()`` with a timeout, and force-kill the process tree as a backstop so this
     can't leave Chrome running.
+
+    If chromedriver has already died by the time we get here (e.g. it received the same Ctrl+C
+    that interrupted this script), ``driver.quit()`` can't reach it at all (connection refused)
+    and killing its now-stale PID's "tree" is a no-op — so we also separately target Chrome's own
+    PID, captured by ``build_chrome`` at launch time while it was still traceable.
     """
     if driver is None:
         return
@@ -124,6 +173,7 @@ def quit_chrome(driver: webdriver.Chrome | None) -> None:
         pid = driver.service.process.pid
     except Exception:
         pass
+    browser_pid = getattr(driver, "_jobapplyer_browser_pid", None)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(driver.quit)
@@ -137,6 +187,8 @@ def quit_chrome(driver: webdriver.Chrome | None) -> None:
         log.debug("quit_chrome: driver.quit() raised", exc_info=True)
     if pid:
         _force_kill_process_tree(int(pid))
+    if browser_pid and browser_pid != pid:
+        _force_kill_process_tree(int(browser_pid))
 
 
 def _probe_driver_session_alive(driver: webdriver.Chrome) -> bool:
