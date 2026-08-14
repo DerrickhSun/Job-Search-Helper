@@ -126,6 +126,7 @@ from utils.cover_letter import (
     delete_cover_letter_for_job,
     write_cover_letter_docx,
 )
+from utils.display_utils import print_job_fit_debug, print_job_outcome, print_job_separator
 from utils.dspy_lm import configure_dspy
 from utils.form_filler import (
     APPLY_ABORT_DAILY_LIMIT,
@@ -137,7 +138,6 @@ from utils.job_records import append_listing_record, warn_if_listings_log_sideca
 from utils.job_searcher import JobSearcher, StopApplyPipeline
 from utils.eval_utils.matcher import (
     JobMatcher,
-    print_job_fit_debug,
     title_has_overqualified_role_level,
     title_shares_search_keyword_token,
 )
@@ -485,6 +485,7 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             except Exception:
                 log.debug("Company jobs: listings log append failed", exc_info=True)
             else:
+                print_job_separator()
                 log.info(
                     "Company jobs: recorded listing %s — %s at %s",
                     job.get("id"),
@@ -560,41 +561,38 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             return
 
         if tracker.already_saved(job["id"]):
-            log.info("Skipping (already applied/saved): %s at %s", job["title"], job["company"])
+            print_job_outcome(job["title"], job["company"], outcome="skipped", reason="already applied/saved", job_id=jid)
             return
         if is_company_blacklisted(job.get("company") or "", company_blacklist):
-            log.info("Skipping (company blacklisted): %s at %s", job["title"], job["company"])
             _tracker_log(job, status="blacklisted", score=0.0)
+            print_job_outcome(job["title"], job["company"], outcome="blacklisted", job_id=jid)
             return
 
         if job.get("easy_apply"):
-            log.info(
-                "Skipping (Easy Apply — filter mode targets external apply only): %s at %s",
-                job["title"],
-                job["company"],
-            )
             _tracker_log(job, status="skipped", score=0.0)
-            if searcher.dismiss_current_job(driver, reason="easy-apply", job_id=jid):
-                log.info("  → Dismissed on LinkedIn.")
+            dismissed = searcher.dismiss_current_job(driver, reason="easy-apply", job_id=jid)
+            print_job_outcome(
+                job["title"], job["company"], outcome="skipped",
+                reason="Easy Apply — filter mode targets external apply only",
+                job_id=jid, dismissed=dismissed,
+            )
             return
 
         with llm_lock:
             if not matcher.gates_pass(resume, job):
-                log.info(
-                    "Skipping (education or experience requirements not met): %s at %s",
-                    job["title"],
-                    job["company"],
-                )
                 print_job_fit_debug(job.get("company"), job.get("title"), None, note="gates_failed")
                 _tracker_log(job, status="skipped", score=0.0)
-                if searcher.dismiss_current_job(
+                dismissed = searcher.dismiss_current_job(
                     driver, reason="gates-failed", job_id=str(job.get("id") or "")
-                ):
-                    log.info("  → Dismissed on LinkedIn to avoid revisiting this non-qualifying listing.")
+                )
+                print_job_outcome(
+                    job["title"], job["company"], outcome="skipped",
+                    reason="education or experience requirements not met",
+                    job_id=jid, dismissed=dismissed,
+                )
                 return
 
             fit = matcher.fit_score(resume, job)
-        log.info("Fit score %.0f%%: %s at %s", fit * 100, job["title"], job["company"])
         print_job_fit_debug(
             job.get("company"),
             job.get("title"),
@@ -602,33 +600,36 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             note=f"min_score={float(args.min_score):.3f}",
         )
         if fit < args.min_score:
-            log.info("  → Below fit threshold (%.0f%%), skipping apply", args.min_score * 100)
             _tracker_log(job, status="skipped", score=fit)
+            print_job_outcome(
+                job["title"], job["company"], outcome="skipped",
+                reason=f"below fit threshold ({args.min_score * 100:.0f}%, scored {fit * 100:.0f}%)",
+                job_id=jid,
+            )
             return
+        log.info("Fit score %.0f%%: %s at %s", fit * 100, job["title"], job["company"])
 
         if behavior["skip_consulting"] and is_consulting_listing_from_job_posting_text_only(job):
-            log.info(
-                "Skipping (consulting / staffing signals in job title or description): %s at %s",
-                job["title"],
-                job["company"],
-            )
             _tracker_log(job, status="consulting", score=0.0)
-            if searcher.dismiss_current_job(
+            dismissed = searcher.dismiss_current_job(
                 driver, reason="consulting-signals", job_id=str(job.get("id") or "")
-            ):
-                log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+            )
+            print_job_outcome(
+                job["title"], job["company"], outcome="consulting",
+                reason="consulting/staffing signals in job title or description",
+                job_id=jid, dismissed=dismissed,
+            )
             return
         if behavior["skip_consulting"] and is_consulting_listing_from_listing_company_line_only(job):
-            log.info(
-                "Skipping (consulting / staffing on listing company or title line): %s at %s",
-                job["title"],
-                job["company"],
-            )
             _tracker_log(job, status="consulting", score=0.0)
-            if searcher.dismiss_current_job(
+            dismissed = searcher.dismiss_current_job(
                 driver, reason="consulting-signals", job_id=str(job.get("id") or "")
-            ):
-                log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+            )
+            print_job_outcome(
+                job["title"], job["company"], outcome="consulting",
+                reason="consulting/staffing on listing company or title line",
+                job_id=jid, dismissed=dismissed,
+            )
             return
 
         company_link_li = ""
@@ -638,16 +639,15 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                     slug=None,
                     company_display=str(job.get("company") or ""),
                 ):
-                    log.info(
-                        "Skipping (remembered consulting company — no LinkedIn company page fetch): %s at %s",
-                        job["title"],
-                        job.get("company"),
-                    )
                     _tracker_log(job, status="consulting", score=0.0)
-                    if searcher.dismiss_current_job(
+                    dismissed = searcher.dismiss_current_job(
                         driver, reason="consulting-remembered", job_id=str(job.get("id") or "")
-                    ):
-                        log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+                    )
+                    print_job_outcome(
+                        job["title"], job.get("company"), outcome="consulting",
+                        reason="remembered consulting company (no company page fetch)",
+                        job_id=jid, dismissed=dismissed,
+                    )
                     return
 
             company_link_li = searcher.selected_job_company_link(driver)
@@ -657,18 +657,15 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                     slug=slug_only,
                     company_display=str(job.get("company") or ""),
                 ):
-                    log.info(
-                        "Skipping (remembered consulting company by LinkedIn slug — no company page fetch): %s at %s",
-                        job["title"],
-                        job.get("company"),
-                    )
                     _tracker_log(job, status="consulting", score=0.0)
-                    if searcher.dismiss_current_job(
+                    dismissed = searcher.dismiss_current_job(
                         driver, reason="consulting-remembered", job_id=str(job.get("id") or "")
-                    ):
-                        log.info(
-                            "  → Dismissed on LinkedIn to avoid revisiting this consulting listing."
-                        )
+                    )
+                    print_job_outcome(
+                        job["title"], job.get("company"), outcome="consulting",
+                        reason="remembered consulting company by LinkedIn slug (no company page fetch)",
+                        job_id=jid, dismissed=dismissed,
+                    )
                     return
 
             if behavior["skip_consulting"] and company_link_li:
@@ -683,24 +680,20 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                     log.exception("Company-page consulting check failed — continuing without it.")
                     is_consulting = False
                 if is_consulting:
-                    log.info(
-                        "Skipping (company page indicates consulting/recruiting): %s at %s",
-                        job["title"],
-                        job["company"],
-                    )
                     _tracker_log(job, status="consulting", score=0.0)
                     if consulting_memory is not None:
                         consulting_memory.remember(
                             slug=linkedin_company_slug_from_url(company_link_li),
                             company_display=str(job.get("company") or ""),
                         )
-                        log.info(
-                            "  → Recorded company in consulting memory (%s).", consulting_memory.path
-                        )
-                    if searcher.dismiss_current_job(
+                    dismissed = searcher.dismiss_current_job(
                         driver, reason="company-page-signals", job_id=str(job.get("id") or "")
-                    ):
-                        log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+                    )
+                    print_job_outcome(
+                        job["title"], job["company"], outcome="consulting",
+                        reason="company page indicates consulting/recruiting (remembered)",
+                        job_id=jid, dismissed=dismissed,
+                    )
                     return
 
             # Dedicated-page requirements (primary path only).
@@ -716,19 +709,18 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                 with llm_lock:
                     gates_ok = matcher.gates_pass(resume, job)
                 if not gates_ok:
-                    log.info(
-                        "Skipping (dedicated page requirements not met): %s at %s",
-                        job["title"],
-                        job.get("company"),
-                    )
                     print_job_fit_debug(
                         job.get("company"), job.get("title"), None, note="gates_failed_dedicated_page"
                     )
                     _tracker_log(job, status="skipped", score=0.0)
-                    if searcher.dismiss_current_job(
+                    dismissed = searcher.dismiss_current_job(
                         driver, reason="gates-failed", job_id=str(job.get("id") or "")
-                    ):
-                        log.info("  → Dismissed on LinkedIn to avoid revisiting this listing.")
+                    )
+                    print_job_outcome(
+                        job["title"], job.get("company"), outcome="skipped",
+                        reason="dedicated page requirements not met",
+                        job_id=jid, dismissed=dismissed,
+                    )
                     return
 
         if _apply_cap_reached():
@@ -786,74 +778,64 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
         jid = str(peek.get("id") or "").strip()
         if not jid:
             return False
-        if tracker.already_saved(jid):
-            log.info(
-                "Skipping from list card (already applied/saved, no job click): %s at %s",
-                peek.get("title"),
-                peek.get("company"),
-            )
-            return True
-
         company = str(peek.get("company") or "").strip()
         title = str(peek.get("title") or "").strip()
 
+        if tracker.already_saved(jid):
+            print_job_outcome(title, company, outcome="skipped", reason="already applied/saved (list card)", job_id=jid)
+            return True
+
         if is_company_blacklisted(company, company_blacklist):
-            log.info(
-                "Skipping from list card (blacklisted company, no job click): %s at %s",
-                title or "(no title)",
-                company or "(no company)",
-            )
             _tracker_log(peek, status="blacklisted", score=0.0)
-            if searcher.dismiss_current_job(driver, reason="blacklisted-list-card", job_id=jid):
-                log.info("  → Dismissed on LinkedIn from list card.")
+            dismissed = searcher.dismiss_current_job(driver, reason="blacklisted-list-card", job_id=jid)
+            print_job_outcome(
+                title, company, outcome="blacklisted", reason="list card (no job click)",
+                job_id=jid, dismissed=dismissed,
+            )
             return True
 
         if behavior["skip_consulting"] and consulting_memory is not None:
             if consulting_memory.matches(slug=None, company_display=company):
-                log.info(
-                    "Skipping from list card (remembered consulting company, no job click): %s at %s",
-                    title or "(no title)",
-                    company or "(no company)",
-                )
                 _tracker_log(peek, status="consulting", score=0.0)
-                if searcher.dismiss_current_job(
+                dismissed = searcher.dismiss_current_job(
                     driver, reason="consulting-remembered-list-card", job_id=jid
-                ):
-                    log.info("  → Dismissed on LinkedIn from list card.")
+                )
+                print_job_outcome(
+                    title, company, outcome="consulting",
+                    reason="remembered consulting company (list card, no job click)",
+                    job_id=jid, dismissed=dismissed,
+                )
                 return True
 
         if behavior["skip_consulting"] and is_consulting_listing_from_listing_company_line_only(peek):
-            log.info(
-                "Skipping from list card (listing company / title consulting heuristics, no job click): %s at %s",
-                title,
-                company,
-            )
             _tracker_log(peek, status="consulting", score=0.0)
-            if searcher.dismiss_current_job(driver, reason="consulting-list-card", job_id=jid):
-                log.info("  → Dismissed on LinkedIn from list card.")
+            dismissed = searcher.dismiss_current_job(driver, reason="consulting-list-card", job_id=jid)
+            print_job_outcome(
+                title, company, outcome="consulting",
+                reason="listing company/title consulting heuristics (list card, no job click)",
+                job_id=jid, dismissed=dismissed,
+            )
             return True
 
         if filter_mode and peek.get("easy_apply"):
-            log.info(
-                "Skipping from list card (Easy Apply — filter mode targets external apply only): %s at %s",
-                title or "(no title)",
-                company or "(no company)",
-            )
             _tracker_log(peek, status="skipped", score=0.0)
-            if searcher.dismiss_current_job(driver, reason="easy-apply-list-card", job_id=jid):
-                log.info("  → Dismissed on LinkedIn from list card.")
+            dismissed = searcher.dismiss_current_job(driver, reason="easy-apply-list-card", job_id=jid)
+            print_job_outcome(
+                title, company, outcome="skipped",
+                reason="Easy Apply — filter mode targets external apply only (list card)",
+                job_id=jid, dismissed=dismissed,
+            )
             return True
 
         if not filter_mode and not peek.get("easy_apply"):
-            log.info(
-                "Non-Easy Apply listing on card (Easy Apply filter may have dropped): %s at %s",
-                title or "(no title)",
-                company or "(no company)",
-            )
             searcher.recover_easy_apply_filter(driver)
             _tracker_log(peek, status="skipped", score=0.0)
-            if searcher.dismiss_current_job(driver, reason="non-easy-apply-list-card", job_id=jid):
-                log.info("  → Dismissed on LinkedIn from list card.")
+            dismissed = searcher.dismiss_current_job(driver, reason="non-easy-apply-list-card", job_id=jid)
+            print_job_outcome(
+                title, company, outcome="skipped",
+                reason="non-Easy Apply listing on card (Easy Apply filter may have dropped)",
+                job_id=jid, dismissed=dismissed,
+            )
             return True
 
         return False
@@ -873,43 +855,40 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
         jid = str(job.get("id") or "").strip()
 
         if tracker.already_applied(job["id"]):
-            log.info("Skipping (already applied): %s at %s", job["title"], job["company"])
+            print_job_outcome(job["title"], job["company"], outcome="skipped", reason="already applied", job_id=jid)
             return
         if is_company_blacklisted(job.get("company") or "", company_blacklist):
-            log.info("Skipping (company blacklisted): %s at %s", job["title"], job["company"])
             _tracker_log(job, status="blacklisted", score=0.0)
+            print_job_outcome(job["title"], job["company"], outcome="blacklisted", job_id=jid)
             return
 
         if not job.get("easy_apply"):
-            log.info(
-                "Non-Easy Apply job opened (Easy Apply filter may have dropped): %s at %s",
-                job["title"],
-                job["company"],
-            )
             searcher.recover_easy_apply_filter(driver)
             _tracker_log(job, status="skipped", score=0.0)
-            if searcher.dismiss_current_job(driver, reason="non-easy-apply", job_id=jid):
-                log.info("  → Dismissed on LinkedIn.")
+            dismissed = searcher.dismiss_current_job(driver, reason="non-easy-apply", job_id=jid)
+            print_job_outcome(
+                job["title"], job["company"], outcome="skipped",
+                reason="non-Easy Apply listing opened (Easy Apply filter may have dropped)",
+                job_id=jid, dismissed=dismissed,
+            )
             return
 
         with llm_lock:
             if not matcher.gates_pass(resume, job):
-                log.info(
-                    "Skipping (education or experience requirements not met): %s at %s",
-                    job["title"],
-                    job["company"],
-                )
                 print_job_fit_debug(job.get("company"), job.get("title"), None, note="gates_failed")
                 _tracker_log(job, status="skipped", score=0.0)
                 _require_browser_session(driver)
-                if searcher.dismiss_current_job(
+                dismissed = searcher.dismiss_current_job(
                     driver, reason="gates-failed", job_id=str(job.get("id") or "")
-                ):
-                    log.info("  → Dismissed on LinkedIn to avoid revisiting this non-qualifying listing.")
+                )
+                print_job_outcome(
+                    job["title"], job["company"], outcome="skipped",
+                    reason="education or experience requirements not met",
+                    job_id=jid, dismissed=dismissed,
+                )
                 return
 
             fit = matcher.fit_score(resume, job)
-        log.info("Fit score %.0f%%: %s at %s", fit * 100, job["title"], job["company"])
         print_job_fit_debug(
             job.get("company"),
             job.get("title"),
@@ -918,36 +897,39 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
         )
 
         if fit < args.min_score:
-            log.info("  → Below fit threshold (%.0f%%), skipping apply", args.min_score * 100)
             _tracker_log(job, status="skipped", score=fit)
+            print_job_outcome(
+                job["title"], job["company"], outcome="skipped",
+                reason=f"below fit threshold ({args.min_score * 100:.0f}%, scored {fit * 100:.0f}%)",
+                job_id=jid,
+            )
             return
+        log.info("Fit score %.0f%%: %s at %s", fit * 100, job["title"], job["company"])
 
         _require_browser_session(driver)
 
         # Company-based consulting checks come last so requirement/fit disqualifications short-circuit first.
         if behavior["skip_consulting"] and is_consulting_listing_from_job_posting_text_only(job):
-            log.info(
-                "Skipping (consulting / staffing signals in job title or description): %s at %s",
-                job["title"],
-                job["company"],
-            )
             _tracker_log(job, status="consulting", score=0.0)
-            if searcher.dismiss_current_job(
+            dismissed = searcher.dismiss_current_job(
                 driver, reason="consulting-signals", job_id=str(job.get("id") or "")
-            ):
-                log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+            )
+            print_job_outcome(
+                job["title"], job["company"], outcome="consulting",
+                reason="consulting/staffing signals in job title or description",
+                job_id=jid, dismissed=dismissed,
+            )
             return
         if behavior["skip_consulting"] and is_consulting_listing_from_listing_company_line_only(job):
-            log.info(
-                "Skipping (consulting / staffing on listing company or title line): %s at %s",
-                job["title"],
-                job["company"],
-            )
             _tracker_log(job, status="consulting", score=0.0)
-            if searcher.dismiss_current_job(
+            dismissed = searcher.dismiss_current_job(
                 driver, reason="consulting-signals", job_id=str(job.get("id") or "")
-            ):
-                log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+            )
+            print_job_outcome(
+                job["title"], job["company"], outcome="consulting",
+                reason="consulting/staffing on listing company or title line",
+                job_id=jid, dismissed=dismissed,
+            )
             return
 
         company_link_li = None
@@ -956,16 +938,15 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                 slug=None,
                 company_display=str(job.get("company") or ""),
             ):
-                log.info(
-                    "Skipping (remembered consulting company — no LinkedIn company page fetch): %s at %s",
-                    job["title"],
-                    job.get("company"),
-                )
                 _tracker_log(job, status="consulting", score=0.0)
-                if searcher.dismiss_current_job(
+                dismissed = searcher.dismiss_current_job(
                     driver, reason="consulting-remembered", job_id=str(job.get("id") or "")
-                ):
-                    log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+                )
+                print_job_outcome(
+                    job["title"], job.get("company"), outcome="consulting",
+                    reason="remembered consulting company (no company page fetch)",
+                    job_id=jid, dismissed=dismissed,
+                )
                 return
 
         if behavior["skip_consulting"]:
@@ -977,16 +958,15 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                     slug=slug_only,
                     company_display=str(job.get("company") or ""),
                 ):
-                    log.info(
-                        "Skipping (remembered consulting company by LinkedIn slug — no company page fetch): %s at %s",
-                        job["title"],
-                        job.get("company"),
-                    )
                     _tracker_log(job, status="consulting", score=0.0)
-                    if searcher.dismiss_current_job(
+                    dismissed = searcher.dismiss_current_job(
                         driver, reason="consulting-remembered", job_id=str(job.get("id") or "")
-                    ):
-                        log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+                    )
+                    print_job_outcome(
+                        job["title"], job.get("company"), outcome="consulting",
+                        reason="remembered consulting company by LinkedIn slug (no company page fetch)",
+                        job_id=jid, dismissed=dismissed,
+                    )
                     return
 
         if behavior["skip_consulting"] and company_link_li:
@@ -1001,22 +981,20 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                 log.exception("Company-page consulting check failed — continuing without it.")
                 is_consulting = False
             if is_consulting:
-                log.info(
-                    "Skipping (company page indicates consulting/recruiting): %s at %s",
-                    job["title"],
-                    job["company"],
-                )
                 _tracker_log(job, status="consulting", score=0.0)
                 if consulting_memory is not None:
                     consulting_memory.remember(
                         slug=linkedin_company_slug_from_url(company_link_li),
                         company_display=str(job.get("company") or ""),
                     )
-                    log.info("  → Recorded company in consulting memory (%s).", consulting_memory.path)
-                if searcher.dismiss_current_job(
+                dismissed = searcher.dismiss_current_job(
                     driver, reason="company-page-signals", job_id=str(job.get("id") or "")
-                ):
-                    log.info("  → Dismissed on LinkedIn to avoid revisiting this consulting listing.")
+                )
+                print_job_outcome(
+                    job["title"], job["company"], outcome="consulting",
+                    reason="company page indicates consulting/recruiting (remembered)",
+                    job_id=jid, dismissed=dismissed,
+                )
                 return
 
         # Fetch the job's dedicated page to capture "Requirements added by the job poster".
@@ -1032,19 +1010,18 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             with llm_lock:
                 gates_ok = matcher.gates_pass(resume, job)
             if not gates_ok:
-                log.info(
-                    "Skipping (dedicated page requirements not met): %s at %s",
-                    job["title"],
-                    job.get("company"),
-                )
                 print_job_fit_debug(
                     job.get("company"), job.get("title"), None, note="gates_failed_dedicated_page"
                 )
                 _tracker_log(job, status="skipped", score=0.0)
-                if searcher.dismiss_current_job(
+                dismissed = searcher.dismiss_current_job(
                     driver, reason="gates-failed", job_id=str(job.get("id") or "")
-                ):
-                    log.info("  → Dismissed on LinkedIn to avoid revisiting this listing.")
+                )
+                print_job_outcome(
+                    job["title"], job.get("company"), outcome="skipped",
+                    reason="dedicated page requirements not met",
+                    job_id=jid, dismissed=dismissed,
+                )
                 return
 
         with llm_lock:
@@ -1060,12 +1037,13 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             raise StopApplyPipeline("LinkedIn daily application limit reached")
         if not success and abort_reason == APPLY_ABORT_JOB_TRUST_SAFETY:
             _tracker_log(job, status="skipped", score=fit)
-            if searcher.dismiss_current_job(
+            dismissed = searcher.dismiss_current_job(
                 driver, reason="job-trust-safety", job_id=str(job.get("id") or "")
-            ):
-                log.info("  → Dismissed job card (LinkedIn trust/safety warning).")
-            else:
-                log.warning("  → Trust/safety warning seen but job card dismiss button not found.")
+            )
+            print_job_outcome(
+                job["title"], job["company"], outcome="skipped",
+                reason="LinkedIn trust/safety warning", job_id=jid, dismissed=dismissed,
+            )
             return
 
         status = "applied" if success else "failed"

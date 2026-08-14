@@ -37,6 +37,7 @@ from dotenv import load_dotenv
 
 from utils.apply_sheets import applied_sheet_row
 from utils.cover_letter import delete_cover_letter_for_job
+from utils.display_utils import print_saved_jobs_summary
 from utils.extension_rules import (
     QUESTION_EXPORT_ALIASES,
     SAVED_JOBS_QUESTIONS_FILENAME,
@@ -278,33 +279,6 @@ def _print_file(path: Path, *, label: str) -> bool:
     return True
 
 
-def _print_jobs_import_summary(
-    *,
-    parsed: list[dict[str, Any]],
-    invalid: list[str],
-    added: int,
-    skipped: int,
-    skipped_jobs: list[dict[str, Any]],
-    dry_run: bool,
-) -> None:
-    print("=== Jobs import summary ===")
-    print(f"Parsed {len(parsed)} job(s) from {SAVED_JOBS_FILENAME}")
-    if invalid:
-        print(f"Skipped {len(invalid)} unparseable line(s):")
-        for line in invalid:
-            print(f"  • {line}")
-    if dry_run:
-        print("Dry run — no CSV changes written.")
-    print(f"Added {added} row(s) to {ASSISTED_APPLICATIONS_CSV.as_posix()}")
-    print(f"Skipped {skipped} duplicate(s) already in assisted CSV or archive")
-    if skipped_jobs:
-        for job in skipped_jobs:
-            print(f"  • {job.get('title')} at {job.get('company')} ({job.get('url')})")
-    if added and not dry_run:
-        print(f"Wrote: {ASSISTED_APPLICATIONS_CSV.resolve()}")
-    print()
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Import extension exports: assisted applications CSV and form fill rules."
@@ -435,13 +409,16 @@ def main() -> int:
             exit_code = 1
         else:
             added, skipped, skipped_jobs = import_saved_jobs_to_assisted(parsed, dry_run=args.dry_run)
-            _print_jobs_import_summary(
-                parsed=parsed,
+            print_saved_jobs_summary(
+                source_label=SAVED_JOBS_FILENAME,
+                total_parsed=len(parsed),
                 invalid=invalid,
+                dest_label=ASSISTED_APPLICATIONS_CSV.as_posix(),
                 added=added,
                 skipped=skipped,
                 skipped_jobs=skipped_jobs,
                 dry_run=args.dry_run,
+                wrote_path=str(ASSISTED_APPLICATIONS_CSV.resolve()),
             )
             deleted_cls = delete_cover_letters_for_applied_jobs(parsed, dry_run=args.dry_run)
             if deleted_cls:

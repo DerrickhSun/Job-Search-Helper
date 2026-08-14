@@ -37,6 +37,7 @@ from .chrome_driver import (
     quit_chrome,
 )
 from .cover_letter import cover_letter_docx_path_unique, write_cover_letter_docx
+from .display_utils import waiting_message
 from .form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
 from .output_paths import LINKEDIN_COVERLETTERS_DIR
 
@@ -798,12 +799,11 @@ class EasyApplyFiller:
         if pause <= 0:
             return
         hint = f" ({label[:100]})" if label else ""
-        log.info(
-            "Pausing %.1fs for manual fill — first empty field after Continue/Review%s",
-            pause,
-            hint,
+        text = (
+            f"Pausing {pause:.1f}s for manual fill — first empty field after Continue/Review{hint}"
         )
-        time.sleep(pause)
+        with waiting_message(text):
+            time.sleep(pause)
         self._user_pause_consumed_this_step = True
 
     def consume_apply_abort_reason(self) -> str | None:

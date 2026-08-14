@@ -15,6 +15,7 @@ import mimetypes
 import os
 from pathlib import Path
 
+from .display_utils import print_s3_progress
 from .output_paths import (
     APPLICATIONS_ARCHIVE_CSV,
     APPLICATIONS_CSV,
@@ -301,7 +302,7 @@ def sync_download_output(
             dest = root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             # Log before the transfer so a stall names the current object.
-            _sync_progress("S3: download %d/%d (%s %s)", i, total, action, rel)
+            print_s3_progress("download", i, total, rel, action=action)
             if action == "merging":
                 # Merge instead of overwrite: union local + S3 records.
                 _merge_s3_csv(s3, bucket, key, dest)
@@ -429,7 +430,7 @@ def sync_upload_output(
         for i, (path, rel) in enumerate(to_upload, 1):
             key = s3_key_for_file(root, path)
             # Log before the transfer so a stall names the current object.
-            _sync_progress("S3: upload %d/%d (%s)", i, total, rel)
+            print_s3_progress("upload", i, total, rel)
             ctype, _ = mimetypes.guess_type(path.name)
             extra = {"ContentType": ctype} if ctype else {}
             if extra:

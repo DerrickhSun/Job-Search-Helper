@@ -33,10 +33,11 @@ from .chrome_driver import (
     save_cookies,
 )
 from .cover_letter import CoverLetterGenerator, cover_letter_docx_path_unique, delete_cover_letter_for_job, write_cover_letter_docx
+from .display_utils import print_job_fit_debug, waiting_message
 from .dspy_lm import configure_dspy
 from .form_fill_rules import DEFAULT_RULES_PATH, FormFillRulesEngine
 from .job_searcher import DEFAULT_JOB_SEARCH_KEYWORDS
-from .eval_utils.matcher import JobMatcher, print_job_fit_debug
+from .eval_utils.matcher import JobMatcher
 from .output_paths import (
     ASSISTED_APPLICATIONS_CSV as ASSISTED_GREENHOUSE_CSV,
     ASSISTED_APPLICATIONS_HISTORY_CSV as ASSISTED_GREENHOUSE_HISTORY_CSV,
@@ -2467,13 +2468,13 @@ def run_greenhouse_sign_in_flow(args) -> None:
                     "No usable email in %s — enter email manually in the browser if prompted.",
                     cache_path,
                 )
-            log.info(
+            wait_text = (
                 "Complete any remaining sign-in steps in the browser (e.g. Google SSO or email link). "
-                "Waiting up to %.0fs for URL %s …",
-                max_wait,
-                GREENHOUSE_DASHBOARD_URL,
+                f"Waiting up to {max_wait:.0f}s for URL {GREENHOUSE_DASHBOARD_URL} …"
             )
-            if not _wait_for_my_greenhouse_dashboard(driver, max_seconds=max_wait):
+            with waiting_message(wait_text):
+                dashboard_reached = _wait_for_my_greenhouse_dashboard(driver, max_seconds=max_wait)
+            if not dashboard_reached:
                 log.warning(
                     "Timed out waiting for dashboard — saving cookies anyway, then exiting. "
                     "Try a visible window (--no-headless) or increase --greenhouse-login-max-seconds.",

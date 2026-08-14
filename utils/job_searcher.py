@@ -47,6 +47,7 @@ from .chrome_driver import (
     save_cookies,
     scroll_into_view,
 )
+from .display_utils import log_only, print_job_separator, waiting_message
 from .job_records import append_listing_record
 
 log = logging.getLogger(__name__)
@@ -533,7 +534,7 @@ class JobSearcher:
                         quota = remaining
 
                     cap_msg = "no limit" if max_listings is None else str(max_listings)
-                    log.info(
+                    log_only(
                         "Results page: has_next=%s, quota=%d job(s) on this page (%d already processed, cap %s)",
                         has_next,
                         quota,
@@ -554,7 +555,7 @@ class JobSearcher:
                         break
 
                     n = len(self._find_job_card_links(driver, expand=False))
-                    log.info("Found %d job list link(s) in the DOM after loading", n)
+                    log_only("Found %d job list link(s) in the DOM after loading", n)
                     if n == 0:
                         log.warning(
                             "No job list links found (tried /jobs/view/, job-card-container__link, "
@@ -607,7 +608,7 @@ class JobSearcher:
                             log.debug("Skipping job with no id at index %d", i - 1)
                             continue
                         if not _claim_job_id(jid):
-                            log.info("Skipping duplicate job id %s (already processed this session)", jid)
+                            log_only("Skipping duplicate job id %s (already processed this session)", jid)
                             continue
 
                         if maybe_skip_from_list_card is not None and maybe_skip_from_list_card(
@@ -651,6 +652,7 @@ class JobSearcher:
                             phase="parsed",
                             extra={"search_keyword": keyword},
                         )
+                        print_job_separator()
                         log.info(
                             "Recorded listing %s — %s at %s (log: %s)",
                             job.get("id"),
@@ -774,11 +776,8 @@ class JobSearcher:
         """Wait for the job list to render. Returns False if the driver session ended."""
         if self.job_cards_wait_seconds <= 0:
             return not self._driver_stopped(driver)
-        log.info(
-            "Waiting %.1fs for job list to render",
-            self.job_cards_wait_seconds,
-        )
-        return interruptible_sleep(self.job_cards_wait_seconds, driver)
+        with waiting_message(f"Waiting {self.job_cards_wait_seconds:.1f}s for job list to render"):
+            return interruptible_sleep(self.job_cards_wait_seconds, driver)
 
     def _left_rail_job_links(self, driver):
         """Primary selector: new role=button job cards, else legacy title links in list rows."""
@@ -889,7 +888,7 @@ class JobSearcher:
             if cur > best:
                 best = cur
         if best > before:
-            log.info(
+            log_only(
                 "Virtual job list: tail pass increased count %d → %d",
                 before,
                 best,
@@ -936,7 +935,7 @@ class JobSearcher:
                         stable = 0
                         last_n = grown
                         continue
-                    log.info(
+                    log_only(
                         "Virtual job list: done at %d left-rail link(s) (main + tail, %d rounds)",
                         n,
                         round_i + 1,
@@ -951,7 +950,7 @@ class JobSearcher:
                 return
             time.sleep(self.job_list_scroll_pause)
 
-        log.info(
+        log_only(
             "Virtual job list: hit max %d scroll rounds (last count %d link(s))",
             self.job_list_scroll_max_rounds,
             last_n,
@@ -995,7 +994,7 @@ class JobSearcher:
                 seen.add(jid)
                 cards.append(el)
             if cards:
-                log.info(
+                log_only(
                     "Matched %d job card(s) via css %r",
                     len(cards),
                     _JOB_CARD_BUTTON_CSS,
@@ -1030,7 +1029,7 @@ class JobSearcher:
                 log_driver_session_closed()
                 return []
             if links:
-                log.info("Matched %d job list link(s) via %s %r", len(links), kind, sel)
+                log_only("Matched %d job list link(s) via %s %r", len(links), kind, sel)
                 return links
         return []
 
@@ -2126,7 +2125,10 @@ class JobSearcher:
                 return False
 
         time.sleep(0.35)
-        log.info(
+        # DEBUG, not INFO — every caller already folds this result into its own single
+        # consolidated outcome line (utils.display_utils.print_job_outcome) rather than
+        # relying on this internal confirmation as a separate visible line.
+        log.debug(
             "Dismissed LinkedIn job card%s%s",
             f" ({reason})" if reason else "",
             f" [job_id={jid}]" if jid else "",
@@ -2615,7 +2617,7 @@ class JobSearcher:
             return
         self._scroll_job_list_to_top(driver)
         links = self._find_job_card_links(driver, expand=False)
-        log.info("Company jobs: found %d list link(s) to scan", len(links))
+        log_only("Company jobs: found %d list link(s) to scan", len(links))
         yielded = 0
         i = 0
         while i < len(links):
@@ -2637,7 +2639,7 @@ class JobSearcher:
             if not jid:
                 continue
             if claim_job_id is not None and not claim_job_id(jid):
-                log.info("Company jobs: skipping duplicate job id %s", jid)
+                log_only("Company jobs: skipping duplicate job id %s", jid)
                 continue
             yield link, peek
             yielded += 1

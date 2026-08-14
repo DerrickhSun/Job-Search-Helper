@@ -41,27 +41,6 @@ from ..resume_parser import experience_entry_description
 log = logging.getLogger(__name__)
 
 
-def print_job_fit_debug(
-    company: str | None,
-    title: str | None,
-    fit: float | None,
-    *,
-    note: str = "",
-) -> None:
-    """
-    Print one line to stdout (company, title, fit) for terminal debugging. Independent of log level.
-    Use ``fit=None`` when the job was not fit-scored (e.g. hard gates failed).
-    """
-    c = (company or "").replace("\r", " ").replace("\n", " ").strip() or "(no company)"
-    ti = (title or "").replace("\r", " ").replace("\n", " ").strip() or "(no title)"
-    if fit is None:
-        fs = "(not scored)"
-    else:
-        fs = f"{float(fit):.4f}"
-    suffix = f" | {note}" if note else ""
-    print(f"[job-fit] company={c!r} | title={ti!r} | fit={fs}{suffix}", flush=True)
-
-
 # Higher = more education. Compare with >= for "meets or exceeds".
 EDU_ORDER = ("none", "high_school", "associate", "bachelor", "master", "doctorate")
 EDU_RANK: dict[str, int] = {name: i for i, name in enumerate(EDU_ORDER)}
