@@ -33,6 +33,18 @@ _F_TPR_PAST_WEEK = "r604800"  # 7 * 86400
 # Newer LinkedIn jobs list: clickable cards (not ``<a href="/jobs/view/…">``).
 _JOB_CARD_BUTTON_CSS = 'div[role="button"][componentkey^="job-card-component-ref-"]'
 _JOB_CARD_REF_RE = re.compile(r"job-card-component-ref-(\d+)", re.IGNORECASE)
+
+# Newer LinkedIn has no hard stopping point for a search — once real matches run out, the list
+# continues with loosely-related suggestions past a divider with this text (lowercased substring
+# match; distinctive enough to not false-positive, short enough to tolerate minor wording tweaks).
+_MORE_RELATED_RESULTS_MARKER_TEXT = "found more results related to your search"
+
+# LinkedIn's classic/"raw" job search shows a button offering to switch into its newer AI-assisted
+# search experience (observed text: "Try AI job search"); only the "more related results" divider
+# above applies in AI-assisted mode. The reverse button's wording (AI-assisted -> classic) hasn't
+# been confirmed against live HTML yet, so it's a best guess pending correction.
+_TRY_AI_SEARCH_BUTTON_TEXT = "try ai job search"
+_TRY_CLASSIC_SEARCH_BUTTON_TEXT = "try classic job search"
 from selenium.webdriver.common.by import By
 
 from .chrome_driver import (
@@ -460,6 +472,7 @@ class JobSearcher:
         apply_goal_met = False
         driver_closed = False
         stop_requested = False
+        search_mode_logged = False
         kw_list = normalize_search_keywords(keywords)
 
         def _claim_job_id(jid: str) -> bool:
@@ -513,6 +526,23 @@ class JobSearcher:
                 if easy_apply_only:
                     self.ensure_easy_apply_filter_on(driver)
 
+                if not search_mode_logged:
+                    search_mode_logged = True
+                    mode = self._detect_job_search_mode(driver)
+                    if mode == "raw":
+                        log.warning(
+                            "LinkedIn search mode: raw/classic — no 'more related results' "
+                            "divider in this mode, so the divider-based stopping logic will not "
+                            "trigger this session. A 'Try AI job search' button is available on "
+                            "the page if you want to switch manually."
+                        )
+                    elif mode == "ai_assisted":
+                        log.info(
+                            "LinkedIn search mode: AI-assisted — divider-based stopping logic applies."
+                        )
+                    else:
+                        log.info("LinkedIn search mode: could not be determined from the page.")
+
                 while max_listings is None or processed < max_listings:
                     if driver_closed:
                         break
@@ -554,6 +584,14 @@ class JobSearcher:
                         driver_closed = True
                         break
 
+                    if has_next and self._more_related_results_marker_present(driver):
+                        log_only(
+                            "'More related results' divider already visible for keyword %r — "
+                            "treating as end of real results (no further pages).",
+                            keyword,
+                        )
+                        has_next = False
+
                     n = len(self._find_job_card_links(driver, expand=False))
                     log_only("Found %d job list link(s) in the DOM after loading", n)
                     if n == 0:
@@ -572,6 +610,18 @@ class JobSearcher:
                         if not driver_session_alive(driver):
                             log_driver_session_closed()
                             driver_closed = True
+                            break
+
+                        if self._more_related_results_marker_present(driver):
+                            log_only(
+                                "'More related results' divider reached at %d/%d job(s) for "
+                                "keyword %r — stopping this keyword instead of processing loosely-"
+                                "related suggestions.",
+                                page_done,
+                                quota,
+                                keyword,
+                            )
+                            has_next = False
                             break
 
                         links_now = self._find_job_card_links(driver, expand=False)
@@ -859,6 +909,76 @@ class JobSearcher:
             log_driver_session_closed()
             return False
 
+    def _more_related_results_marker_present(self, driver) -> bool:
+        """
+        True when LinkedIn's "We found more results related to your search that may not be exact
+        matches, but could still be a great fit." divider is present in the job list.
+
+        Newer LinkedIn has no hard stopping point for a search — once real matches run out, it
+        keeps the list going with loosely-related suggestions past this divider instead. Classes
+        are hashed/unstable (same SDUI pattern as elsewhere), so this matches by rendered text
+        within the job list container rather than any CSS selector.
+        """
+        if self._driver_stopped(driver):
+            return False
+        try:
+            return bool(
+                driver.execute_script(
+                    self._job_list_scroll_pick_js()
+                    + """
+                    const needle = arguments[0];
+                    const root = pick() || document;
+                    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+                    let node;
+                    while ((node = walker.nextNode())) {
+                      if (node.nodeValue && node.nodeValue.toLowerCase().includes(needle)) return true;
+                    }
+                    return false;
+                    """,
+                    _MORE_RELATED_RESULTS_MARKER_TEXT,
+                )
+            )
+        except WebDriverException:
+            log_driver_session_closed()
+            return False
+        except Exception:
+            return False
+
+    def _detect_job_search_mode(self, driver) -> str | None:
+        """
+        ``"raw"`` (classic search, offers a "Try AI job search" button), ``"ai_assisted"``
+        (LinkedIn's newer AI-powered search, presumed to offer a button back to classic search),
+        or ``None`` if neither switch button was found (mode could not be determined).
+
+        LinkedIn silently puts sessions into one or the other — nothing in our own navigation
+        selects it — so callers should just report whichever mode is detected rather than treat
+        either as unexpected. Only the "raw" side has been confirmed against live HTML so far.
+        """
+        if self._driver_stopped(driver):
+            return None
+        try:
+            return driver.execute_script(
+                """
+                const aiNeedle = arguments[0];
+                const classicNeedle = arguments[1];
+                const buttons = document.querySelectorAll('button, [role="button"]');
+                for (const el of buttons) {
+                  const text = (el.textContent || '').trim().toLowerCase();
+                  if (!text) continue;
+                  if (text.includes(aiNeedle)) return 'raw';
+                  if (text.includes(classicNeedle)) return 'ai_assisted';
+                }
+                return null;
+                """,
+                _TRY_AI_SEARCH_BUTTON_TEXT,
+                _TRY_CLASSIC_SEARCH_BUTTON_TEXT,
+            )
+        except WebDriverException:
+            log_driver_session_closed()
+            return None
+        except Exception:
+            return None
+
     def _scroll_job_list_to_top(self, driver) -> None:
         """After loading the list, scroll back to the first card so indices match top-to-bottom order."""
         if not self._apply_job_list_scroll(driver, "top"):
@@ -912,6 +1032,14 @@ class JobSearcher:
                 return
             n = self._count_left_rail_job_links(driver)
             if n is None:
+                return
+            if self._more_related_results_marker_present(driver):
+                log_only(
+                    "Virtual job list: 'more related results' divider seen after %d round(s) — "
+                    "stopping expand at %d link(s) (not loading loosely-related suggestions past it)",
+                    round_i,
+                    n,
+                )
                 return
             if n <= 0:
                 zero_streak += 1
