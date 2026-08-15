@@ -45,6 +45,7 @@ _PATHS_DEFAULTS = {
     "headshot": "data/selfInSuit.png",
     "form_fill_rules": None,
     "company_blacklist": "data/company_blacklist.json",
+    "temporary_company_blacklist": "data/company_blacklist_temporary.json",
     "consulting_companies_memory_path": "output/consulting_companies.json",
     "greenhouse_cookies": "data/selenium_greenhouse_cookies.json",
 }
@@ -111,7 +112,11 @@ from utils.chrome_driver import (
     log_driver_session_closed,
 )
 from utils.company_lookup_worker import CompanyLookupWorker
-from utils.eval_utils.company_blacklist import is_company_blacklisted, load_company_blacklist
+from utils.eval_utils.company_blacklist import (
+    is_company_blacklisted,
+    load_company_blacklist,
+    prune_and_load_temporary_blacklist,
+)
 from utils.eval_utils.consulting_company_memory import (
     load_consulting_company_memory,
     linkedin_company_slug_from_url,
@@ -304,6 +309,15 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
     matcher = JobMatcher()
     cover_gen = CoverLetterGenerator()
     company_blacklist = load_company_blacklist(paths["company_blacklist"])
+    temp_blacklisted = prune_and_load_temporary_blacklist(paths["temporary_company_blacklist"])
+    if temp_blacklisted:
+        log.info(
+            "Temporary company blacklist active: %d entr%s (%s)",
+            len(temp_blacklisted),
+            "y" if len(temp_blacklisted) == 1 else "ies",
+            ", ".join(temp_blacklisted),
+        )
+        company_blacklist = company_blacklist + temp_blacklisted
     if company_blacklist:
         log.info("Company blacklist active: %d entr%s", len(company_blacklist), "y" if len(company_blacklist) == 1 else "ies")
 
