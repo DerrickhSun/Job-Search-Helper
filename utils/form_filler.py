@@ -257,6 +257,9 @@ class EasyApplyFiller:
         self.headshot_image_path = (
             Path(headshot_image_path) if headshot_image_path is not None else DEFAULT_HEADSHOT_IMAGE
         )
+        # After clicking **Save** on "Save this application?", leftover Easy Apply chrome must not
+        # be closed with Dismiss/X — that re-opens the confirm or discards the draft we just saved.
+        self._saved_apply_draft_this_flow = False
 
     @staticmethod
     def _default_content(driver: Any) -> None:
@@ -1117,7 +1120,13 @@ class EasyApplyFiller:
                 return False
 
             # Leftover success / error modal blocks the next Apply on the same driver.
-            self._dismiss_easy_apply_modal_if_open(driver, "before apply")
+            # If the previous job saved an Easy Apply draft, do not Dismiss/X that leftover
+            # sheet — that can discard the draft. Soft-close (Escape / wait) instead.
+            if self._saved_apply_draft_this_flow:
+                self._soft_close_overlays_after_draft_save(driver)
+            else:
+                self._dismiss_easy_apply_modal_if_open(driver, "before apply")
+            self._saved_apply_draft_this_flow = False
             if self._stop_dismiss_if_driver_closed(driver):
                 return False
 
@@ -1636,7 +1645,7 @@ class EasyApplyFiller:
         self._ensure_top_document(driver)
         if self._save_application_prompt_if_open(driver):
             return True
-        extra = self._visible_post_apply_control(driver)
+        extra = None if self._saved_apply_draft_this_flow else self._visible_post_apply_control(driver)
         if extra:
             try:
                 if self._skip_dismiss_click_for_save_prompt(driver, extra):
@@ -1652,7 +1661,11 @@ class EasyApplyFiller:
                 return True
             except Exception:
                 pass
-        for sel in (SEL["done_btn"], ", ".join(POST_APPLY_DISMISS)):
+        done_only = (SEL["done_btn"],) if self._saved_apply_draft_this_flow else (
+            SEL["done_btn"],
+            ", ".join(POST_APPLY_DISMISS),
+        )
+        for sel in done_only:
             for btn in driver.find_elements(By.CSS_SELECTOR, sel):
                 try:
                     if btn.is_displayed() and btn.is_enabled():
@@ -1666,6 +1679,8 @@ class EasyApplyFiller:
                         return True
                 except Exception:
                     continue
+        if self._saved_apply_draft_this_flow:
+            return False
         for btn in driver.find_elements(By.CSS_SELECTOR, SEL["close_btn"]):
             try:
                 if not btn.is_displayed() or not btn.is_enabled():
@@ -1730,6 +1745,13 @@ class EasyApplyFiller:
                 return
             if self._save_application_prompt_if_open(driver):
                 continue
+            if self._saved_apply_draft_this_flow:
+                log.info(
+                    "Easy Apply draft was saved — not clicking Dismiss/X on leftover overlay%s",
+                    f" ({context})" if context else "",
+                )
+                self._soft_close_overlays_after_draft_save(driver)
+                return
             if not self._click_done_or_close_in_modal(driver):
                 if self._draft_save_confirm_open(driver):
                     self._log_save_prompt_probe(driver, context or "dismiss loop")
@@ -2216,12 +2238,16 @@ class EasyApplyFiller:
                     return False
                 continue
             if self._click_draft_confirm_button(driver, discard=discard):
+                if not discard:
+                    self._saved_apply_draft_this_flow = True
                 return True
             if self._click_save_confirm_js(driver, discard=discard):
                 want = "Discard" if discard else "Save"
                 log.info("Clicked %s on save-application confirm (JS)", want)
                 self._after_ui_click()
                 time.sleep(0.35)
+                if not discard:
+                    self._saved_apply_draft_this_flow = True
                 return True
             if not interruptible_sleep(0.25, driver):
                 return False
@@ -2314,6 +2340,29 @@ class EasyApplyFiller:
         return not self._easy_apply_modal_is_open(driver) and not self._draft_save_confirm_open(
             driver
         )
+
+    def _soft_close_overlays_after_draft_save(self, driver: Any, timeout_s: float = 5.0) -> None:
+        """
+        After **Save** on the draft confirm, wait for overlays to unmount.
+
+        Do **not** click Easy Apply Dismiss/X — LinkedIn often leaves the sheet in the DOM
+        briefly, and a second X can discard the draft we just saved. Escape is a one-shot
+        fallback that typically closes leftover chrome without a new save/discard prompt.
+        """
+        if self._stop_dismiss_if_driver_closed(driver):
+            return
+        # Give the Save request a beat before any further UI action / next-job click.
+        if not interruptible_sleep(0.8, driver):
+            return
+        if self._wait_for_apply_overlays_closed(driver, timeout_s=timeout_s):
+            return
+        try:
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            log.info("Sent Escape after Easy Apply draft save (leftover overlay still present)")
+        except Exception:
+            pass
+        interruptible_sleep(0.5, driver)
+        self._wait_for_apply_overlays_closed(driver, timeout_s=2.0)
 
     def _draft_save_confirm_dialogs(self, driver: Any) -> list:
         """Confirm layers after closing an in-progress Easy Apply (save vs discard)."""
@@ -2506,6 +2555,8 @@ class EasyApplyFiller:
                             self._after_ui_click()
                             log.info("Clicked %s on save-application confirm", want.capitalize())
                             time.sleep(0.35)
+                            if not discard:
+                                self._saved_apply_draft_this_flow = True
                             return True
                         except Exception:
                             continue
@@ -2528,6 +2579,8 @@ class EasyApplyFiller:
                                 want.capitalize(),
                             )
                             time.sleep(0.35)
+                            if not discard:
+                                self._saved_apply_draft_this_flow = True
                             return True
                         except Exception:
                             continue
@@ -2562,9 +2615,17 @@ class EasyApplyFiller:
         if self._stop_dismiss_if_driver_closed(driver):
             return False
         log.warning("Abandoning Easy Apply for %s — %s", job.get("id"), reason)
+        self._saved_apply_draft_this_flow = False
         self._log_save_prompt_probe(driver, "before abandon dismiss")
         self._click_easy_apply_sheet_dismiss(driver, discard_draft=False)
         self._log_save_prompt_probe(driver, "after abandon dismiss click")
+        if self._saved_apply_draft_this_flow:
+            log.info(
+                "Easy Apply draft saved for %s — waiting for overlays without clicking Dismiss/X",
+                job.get("id"),
+            )
+            self._soft_close_overlays_after_draft_save(driver)
+            return False
         self._wait_for_apply_overlays_closed(driver, timeout_s=6.0)
         self._dismiss_easy_apply_modal_if_open(driver, "after abandon dismiss")
         return False
