@@ -131,7 +131,13 @@ from utils.cover_letter import (
     delete_cover_letter_for_job,
     write_cover_letter_docx,
 )
-from utils.display_utils import print_job_fit_debug, print_job_outcome, print_job_separator
+from utils.display_utils import (
+    StatusAwareStreamHandler,
+    clear_status_line,
+    print_job_fit_debug,
+    print_job_outcome,
+    print_job_separator,
+)
 from utils.dspy_lm import configure_dspy
 from utils.form_filler import (
     APPLY_ABORT_DAILY_LIMIT,
@@ -163,7 +169,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.StreamHandler(),
+        StatusAwareStreamHandler(),
         logging.FileHandler("data/bot.log", encoding="utf-8"),
     ],
 )
@@ -1306,6 +1312,7 @@ def main():
     except KeyboardInterrupt:
         log.info("Stopped.")
     finally:
+        clear_status_line()
         try:
             cover_modes = _cover_letter_modes_for_run(site=args.site, filter_mode=args.filter)
             prune_cover_letters_for_sync(cover_letter_modes=cover_modes)

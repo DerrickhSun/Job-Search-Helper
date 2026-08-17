@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -18,6 +19,14 @@ log = logging.getLogger(__name__)
 _S3_BAR_WIDTH = 24
 _S3_DETAIL_MAX_LEN = 40
 _S3_LINE_PAD = 100  # wide enough to blank out any shorter previous line when overwritten
+
+# Persistent "where we are" status line pinned to the bottom of an interactive console (see
+# set_status_line). Guarded by an RLock (not a plain Lock) because redrawing it happens from
+# inside _status_paused(), which every other console-output function in this module also enters —
+# a plain Lock would deadlock the first time one of those functions triggered a nested call.
+_status_lock = threading.RLock()
+_status_text = ""
+_status_drawn = False
 
 
 def _safe_print(text: str, *, end: str = "\n") -> None:
@@ -69,7 +78,8 @@ def print_job_separator() -> None:
     the log file. Written to stdout and directly to any file handler's underlying stream
     (bypassing the log Formatter, which would otherwise stamp even an empty message).
     """
-    print()
+    with _status_paused():
+        print()
     for handler in logging.root.handlers:
         if isinstance(handler, logging.FileHandler):
             try:
@@ -79,12 +89,103 @@ def print_job_separator() -> None:
                 pass
 
 
+def _erase_lines(n: int) -> None:
+    """
+    Move the cursor up ``n`` lines and clear from there to the end of the screen.
+
+    ``\\r`` alone (used for the single-line case) can only return to the start of the *current*
+    line — it can't reach lines already scrolled past. Multi-line erase needs the ANSI cursor-up
+    (``\\033[{n}A``) and erase-to-end-of-screen (``\\033[0J``) sequences instead, which require an
+    ANSI-capable terminal (Windows Terminal, VS Code's integrated terminal, and modern
+    conhost/PowerShell all qualify; legacy cmd.exe without VT processing enabled would print the
+    raw escape codes instead of erasing — a display glitch, not a crash).
+    """
+    if n <= 0:
+        return
+    _safe_print(f"\033[{n}A\033[0J", end="")
+
+
+def _status_erase_locked() -> None:
+    """Erase the status line from the screen if currently drawn. Caller must hold ``_status_lock``."""
+    global _status_drawn
+    if _status_drawn and _status_text:
+        _erase_lines(_status_text.count("\n") + 1)
+    _status_drawn = False
+
+
+def _status_draw_locked() -> None:
+    """(Re)draw the status line, if any, on an interactive console. Caller must hold ``_status_lock``."""
+    global _status_drawn
+    if _status_text and sys.stdout.isatty():
+        _safe_print(_status_text, end="\n")
+        _status_drawn = True
+
+
+@contextmanager
+def _status_paused() -> Iterator[None]:
+    """
+    Erase the persistent status line (:func:`set_status_line`) for the duration of the block,
+    then redraw it — so whatever the block prints lands above the status line instead of
+    colliding with it. Every console-output function in this module, plus the console log
+    handler (:class:`StatusAwareStreamHandler`), wraps its actual output in this. A no-op when no
+    status line is currently set.
+    """
+    with _status_lock:
+        _status_erase_locked()
+        try:
+            yield
+        finally:
+            _status_draw_locked()
+
+
+def set_status_line(text: str) -> None:
+    """
+    Show ``text`` as a persistent status line pinned to the bottom of an interactive console
+    (e.g. ``"Keyword: software engineer | Processed 12/143"``), replacing any previous status
+    line. Every other console-output function in this module erases this line before printing
+    and redraws it after, via :func:`_status_paused`, so it always ends up back at the bottom
+    instead of interleaved with other output. A no-op on a non-interactive stream (piped/
+    redirected output, headless/CI) — there's no fixed "bottom" to pin a line to there.
+    """
+    global _status_text
+    if not sys.stdout.isatty():
+        return
+    with _status_lock:
+        _status_erase_locked()
+        _status_text = text
+        _status_draw_locked()
+
+
+def clear_status_line() -> None:
+    """Remove the persistent status line. Call at the end of a run so it doesn't linger."""
+    global _status_text
+    with _status_lock:
+        _status_erase_locked()
+        _status_text = ""
+
+
+class StatusAwareStreamHandler(logging.StreamHandler):
+    """
+    Console ``StreamHandler`` that keeps the persistent status line (:func:`set_status_line`)
+    pinned to the bottom of the terminal: every record is emitted with the status line erased
+    first and redrawn after, instead of leaving a stale or interleaved copy behind. Pass this
+    (instead of a plain ``logging.StreamHandler``) as the console handler in
+    ``logging.basicConfig`` for status-line support to cover every ``log.info``/``log.warning``/
+    etc. call across the codebase automatically.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        with _status_paused():
+            super().emit(record)
+
+
 @contextmanager
 def waiting_message(text: str) -> Iterator[None]:
     """
     Show ``text`` on an interactive console for the duration of the ``with`` block, then erase
     it — a "please wait" notice is only useful while the wait is actually happening; leaving it
-    sitting in scrollback afterward just adds noise.
+    sitting in scrollback afterward just adds noise. ``text`` may contain ``\\n`` for a multi-line
+    message; all of its lines are erased together.
 
     On a non-interactive stream (piped/redirected output, headless/CI), just logs normally
     (``log.info``, reaching both the console and the log file) since there's no in-place line to
@@ -106,11 +207,19 @@ def waiting_message(text: str) -> Iterator[None]:
         return
 
     _log_to_file_handlers_only(text)
-    _safe_print(f"\r{text}", end="")
-    try:
-        yield
-    finally:
-        _safe_print(f"\r{' ' * len(text)}\r", end="")
+    line_count = text.count("\n") + 1
+    with _status_paused():
+        if line_count == 1:
+            _safe_print(f"\r{text}", end="")
+        else:
+            _safe_print(text, end="\n")
+        try:
+            yield
+        finally:
+            if line_count == 1:
+                _safe_print(f"\r{' ' * len(text)}\r", end="")
+            else:
+                _erase_lines(line_count)
 
 
 def print_s3_progress(verb: str, current: int, total: int, name: str, *, action: str = "") -> None:
@@ -135,6 +244,14 @@ def print_s3_progress(verb: str, current: int, total: int, name: str, *, action:
             print(text, flush=True)
         return
 
+    # Erased once per bar (idempotent — a no-op once already erased) rather than via
+    # _status_paused() per tick: the bar redraws itself in place with a bare "\r" (no trailing
+    # newline), so the cursor sits mid-line between ticks. Redrawing the status line there would
+    # print it butted up against the bar instead of on its own row, so it's only redrawn once the
+    # bar finishes and has emitted a real newline below.
+    with _status_lock:
+        _status_erase_locked()
+
     total_display = max(total, 1)
     frac = min(1.0, current / total_display)
     filled = int(round(_S3_BAR_WIDTH * frac))
@@ -154,6 +271,8 @@ def print_s3_progress(verb: str, current: int, total: int, name: str, *, action:
     if current >= total:
         print()  # move past the bar so subsequent output starts on a fresh line
         log.info("S3: %s complete — %d file(s)", verb, total)
+        with _status_lock:
+            _status_draw_locked()
 
 
 def print_job_outcome(
@@ -213,7 +332,8 @@ def print_job_fit_debug(
     ti = (title or "").replace("\r", " ").replace("\n", " ").strip() or "(no title)"
     fs = "(not scored)" if fit is None else f"{float(fit):.4f}"
     suffix = f" | {note}" if note else ""
-    print(f"[job-fit] company={c!r} | title={ti!r} | fit={fs}{suffix}", flush=True)
+    with _status_paused():
+        print(f"[job-fit] company={c!r} | title={ti!r} | fit={fs}{suffix}", flush=True)
 
 
 def print_saved_jobs_summary(
@@ -229,19 +349,20 @@ def print_saved_jobs_summary(
     wrote_path: str | None = None,
 ) -> None:
     """Summary block after importing saved jobs (``saved_jobs.txt``) into the assisted CSV."""
-    print("=== Jobs import summary ===")
-    print(f"Parsed {total_parsed} job(s) from {source_label}")
-    if invalid:
-        print(f"Skipped {len(invalid)} unparseable line(s):")
-        for line in invalid:
-            print(f"  • {line}")
-    if dry_run:
-        print("Dry run — no CSV changes written.")
-    print(f"Added {added} row(s) to {dest_label}")
-    print(f"Skipped {skipped} duplicate(s) already in assisted CSV or archive")
-    if skipped_jobs:
-        for job in skipped_jobs:
-            print(f"  • {job.get('title')} at {job.get('company')} ({job.get('url')})")
-    if added and not dry_run and wrote_path:
-        print(f"Wrote: {wrote_path}")
-    print()
+    with _status_paused():
+        print("=== Jobs import summary ===")
+        print(f"Parsed {total_parsed} job(s) from {source_label}")
+        if invalid:
+            print(f"Skipped {len(invalid)} unparseable line(s):")
+            for line in invalid:
+                print(f"  • {line}")
+        if dry_run:
+            print("Dry run — no CSV changes written.")
+        print(f"Added {added} row(s) to {dest_label}")
+        print(f"Skipped {skipped} duplicate(s) already in assisted CSV or archive")
+        if skipped_jobs:
+            for job in skipped_jobs:
+                print(f"  • {job.get('title')} at {job.get('company')} ({job.get('url')})")
+        if added and not dry_run and wrote_path:
+            print(f"Wrote: {wrote_path}")
+        print()

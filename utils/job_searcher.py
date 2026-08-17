@@ -45,6 +45,11 @@ _MORE_RELATED_RESULTS_MARKER_TEXT = "found more results related to your search"
 # been confirmed against live HTML yet, so it's a best guess pending correction.
 _TRY_AI_SEARCH_BUTTON_TEXT = "try ai job search"
 _TRY_CLASSIC_SEARCH_BUTTON_TEXT = "try classic job search"
+
+# Classic/"raw" search shows a results header like "143 results" near #results-list__title (e.g.
+# `<span dir="ltr">143 results</span>` inside `.jobs-search-results-list__subtitle`). AI-assisted
+# search doesn't show a fixed count the same way, so this is expected to come back empty there.
+_HIT_COUNT_RE = re.compile(r"([\d,]+)\+?\s*results?\b", re.IGNORECASE)
 from selenium.webdriver.common.by import By
 
 from .chrome_driver import (
@@ -59,7 +64,7 @@ from .chrome_driver import (
     save_cookies,
     scroll_into_view,
 )
-from .display_utils import log_only, print_job_separator, waiting_message
+from .display_utils import clear_status_line, log_only, print_job_separator, set_status_line, waiting_message
 from .job_records import append_listing_record
 
 log = logging.getLogger(__name__)
@@ -473,6 +478,7 @@ class JobSearcher:
         driver_closed = False
         stop_requested = False
         search_mode_logged = False
+        hit_count: int | None = None
         kw_list = normalize_search_keywords(keywords)
 
         def _claim_job_id(jid: str) -> bool:
@@ -487,6 +493,13 @@ class JobSearcher:
                 return False
             seen_job_ids.add(jid)
             return True
+
+        def _update_status() -> None:
+            """Persistent bottom-of-console status: current keyword, and (classic mode only,
+            where LinkedIn reports a fixed count) processed/total."""
+            parts = [f"Keyword {kw_index + 1}/{len(kw_list)}: {keyword!r}"]
+            parts.append(f"Processed {processed}/{hit_count}" if hit_count is not None else f"Processed {processed}")
+            set_status_line(" | ".join(parts))
 
         try:
             load_cookies(driver, self.session_file)
@@ -542,6 +555,16 @@ class JobSearcher:
                         )
                     else:
                         log.info("LinkedIn search mode: could not be determined from the page.")
+
+                hit_count = self._detect_job_search_hit_count(driver)
+                if hit_count is not None:
+                    log.info("Search keyword %r: LinkedIn reports %d result(s).", keyword, hit_count)
+                else:
+                    log_only(
+                        "Search keyword %r: no result count found on page (expected in AI-assisted mode).",
+                        keyword,
+                    )
+                _update_status()
 
                 while max_listings is None or processed < max_listings:
                     if driver_closed:
@@ -678,6 +701,7 @@ class JobSearcher:
                             )
                             page_done += 1
                             processed += 1
+                            _update_status()
                             if (
                                 max_applies is not None
                                 and apply_counter is not None
@@ -730,6 +754,7 @@ class JobSearcher:
 
                         page_done += 1
                         processed += 1
+                        _update_status()
                         if driver_closed or stop_requested:
                             break
                         if (
@@ -813,6 +838,7 @@ class JobSearcher:
             log_driver_session_closed()
             return processed
         finally:
+            clear_status_line()
             quit_chrome(driver)
 
     def _driver_stopped(self, driver) -> bool:
@@ -977,6 +1003,47 @@ class JobSearcher:
             log_driver_session_closed()
             return None
         except Exception:
+            return None
+
+    def _detect_job_search_hit_count(self, driver) -> int | None:
+        """
+        Total result count LinkedIn reports for the current search (e.g. 143 for "143 results"),
+        or ``None`` when no such count is found on the page.
+
+        Only classic/"raw" search shows this; AI-assisted search has no fixed count (it keeps
+        surfacing "related" results past real matches — see
+        :func:`_more_related_results_marker_present`), so ``None`` there is expected, not an
+        error. Reads near ``#results-list__title`` first (where the header currently lives), then
+        falls back to a page-wide "N results" text scan in case the id moves — the id and classes
+        here look hand-authored rather than hashed/Ember-generated, but LinkedIn's markup has
+        proven to shift before.
+        """
+        if self._driver_stopped(driver):
+            return None
+        try:
+            text = driver.execute_script(
+                """
+                const anchor = document.getElementById('results-list__title');
+                if (anchor) {
+                  const container = anchor.closest('header') || anchor.parentElement;
+                  if (container && container.textContent) return container.textContent;
+                }
+                return document.body ? document.body.textContent : '';
+                """
+            )
+        except WebDriverException:
+            log_driver_session_closed()
+            return None
+        except Exception:
+            return None
+        if not text:
+            return None
+        m = _HIT_COUNT_RE.search(text)
+        if not m:
+            return None
+        try:
+            return int(m.group(1).replace(",", ""))
+        except ValueError:
             return None
 
     def _scroll_job_list_to_top(self, driver) -> None:
