@@ -297,28 +297,55 @@ function getJobForSave() {
 // componentkey attributes; .jobs-description__content is legacy fallback. Unlike the Python
 // scraper we don't scroll+wait for lazy-loaded sections — by the time someone clicks "Generate
 // Cover Letter" they've already been looking at the page, so it's normally already rendered.
+//
+// IMPORTANT: expandable-text-box (and its "…more" toggle button) also appears on "Trending
+// employee content" / promoted feed cards on the same job details page — see
+// job_searcher.py's SEL["job_description"] comment. Root-scope the search to a real job
+// description container first, and skip anything nested inside a feed/post/profile link.
+const LINKEDIN_JOB_DESCRIPTION_ROOT_SELECTORS = [
+    'div[componentkey^="JobDetails_AboutTheJob_"]',
+    ".jobs-description__content",
+    ".jobs-description-content",
+    ".jobs-box__html-content",
+    "#job-details",
+];
+
 const LINKEDIN_JOB_DESCRIPTION_SELECTORS = [
     'span[data-testid="expandable-text-box"]',
     'div[componentkey^="JobDetails_AboutTheJob_"]',
     ".jobs-description__content",
 ];
 
+function elementInsideFeedOrProfileLink(el) {
+    return !!el.closest(
+        'a[href*="/feed/"], a[href*="/feed/update"], a[href*="urn:li:activity"], a[href*="/in/"]'
+    );
+}
+
 function findLinkedInJobDescriptionElement() {
+    for (const rootSelector of LINKEDIN_JOB_DESCRIPTION_ROOT_SELECTORS) {
+        const root = document.querySelector(rootSelector);
+        if (!root || elementInsideFeedOrProfileLink(root)) continue;
+        for (const selector of LINKEDIN_JOB_DESCRIPTION_SELECTORS) {
+            const el = root.matches(selector) ? root : root.querySelector(selector);
+            if (el && !elementInsideFeedOrProfileLink(el)) return el;
+        }
+    }
     for (const selector of LINKEDIN_JOB_DESCRIPTION_SELECTORS) {
         const el = document.querySelector(selector);
-        if (el) return el;
+        if (el && !elementInsideFeedOrProfileLink(el)) return el;
     }
     return null;
 }
 
 function getLinkedInJobDescription() {
-    // Click the "…more" toggle that visually clamps the description text, if present — a JS
-    // click bypasses its pointer-events:none (that CSS only blocks real pointer hit-testing,
-    // not a programmatic .click()). Mirrors job_searcher._expand_job_description.
-    document
-        .querySelectorAll('button[data-testid="expandable-text-button"]')
-        .forEach((btn) => btn.click());
-
+    // No "…more" click here — innerText/textContent already holds the full un-clamped text
+    // (the "…more" clamp is purely visual/CSS), and clicking is both unnecessary and unsafe:
+    // that click used to run document-wide, so it could also hit a "…more" toggle on an
+    // unrelated feed/promoted post elsewhere on the page and trigger that post's own click
+    // handler, navigating the tab away to a /feed/ or /posts/ URL. Mirrors
+    // job_searcher._read_job_description_panel / _dom_text, which reads textContent directly
+    // for the same reason.
     const el = findLinkedInJobDescriptionElement();
     if (!el) return "";
     return (el.innerText || el.textContent || "").trim();
