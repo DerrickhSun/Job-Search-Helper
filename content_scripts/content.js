@@ -1696,7 +1696,17 @@ function getRadioOrCheckboxLabel(input) {
     }
     const wrappingLabel = input.closest("label");
     if (wrappingLabel) return getLinkedInElementText(wrappingLabel);
-    return (input.getAttribute("aria-label") || input.value || "").trim();
+    const authoredValue = input.hasAttribute("value") ? input.value : "";
+    return (input.getAttribute("aria-label") || authoredValue || "").trim();
+}
+
+// A checked radio/checkbox with no authored `value` attribute defaults its
+// .value property to the literal string "on" (HTML spec) — every option in
+// a group would report the same meaningless "on" if that were trusted, so
+// only use .value when the attribute was actually authored (e.g. Ashby's
+// EEO radios have no value attribute at all and rely on their <label> text).
+function getControlValueOrLabel(c) {
+    return (c.hasAttribute("value") ? c.value : "") || getRadioOrCheckboxLabel(c) || "";
 }
 
 // Joins every checked control's value/label (checkbox groups can have more
@@ -1704,7 +1714,7 @@ function getRadioOrCheckboxLabel(input) {
 function getCheckedGroupValue(controls) {
     return controls
         .filter((c) => c.checked)
-        .map((c) => c.value || getRadioOrCheckboxLabel(c) || "")
+        .map(getControlValueOrLabel)
         .filter(Boolean)
         .join(", ");
 }
@@ -1835,10 +1845,26 @@ function normalizeMatchText(text) {
     return (text || "").trim().toLowerCase();
 }
 
+// Many sites (autocomplete/combobox widgets especially) don't treat a field
+// as "answered" from .value + input/change alone — they only commit the
+// value, dismiss a suggestion popup, or clear a validation error on an Enter
+// keypress. Simulated (dispatchEvent) keyboard events are untrusted, so the
+// browser won't run native default actions like implicit form submission for
+// them — only a page's own JS keydown handler reacts, which is exactly the
+// commit behavior this is trying to trigger.
+function dispatchEnterKey(el) {
+    const eventInit = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    el.dispatchEvent(new KeyboardEvent("keydown", eventInit));
+    el.dispatchEvent(new KeyboardEvent("keypress", eventInit));
+    el.dispatchEvent(new KeyboardEvent("keyup", eventInit));
+}
+
 function fillTextLikeField(el, value) {
+    el.focus();
     el.value = value;
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
+    dispatchEnterKey(el);
 }
 
 function fillSelectField(el, value) {
