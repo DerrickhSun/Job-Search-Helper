@@ -53,6 +53,13 @@ DEFAULT_RULES_PATH = (
 # Special screening answer: close the apply flow and choose Discard (not Save) on the draft dialog.
 DISCARD_APPLY = "__discard_apply__"
 
+# Questions starting with "if" as their own word (not e.g. "different") are conditioned on
+# another answer or on context we don't track ("If you were referred by...", "If yes, please
+# explain..."). We have no inter-question dependency tracking, so no rule — however specific —
+# can safely auto-answer these; skip rule matching entirely and leave them for manual review
+# rather than risk answering in a way that contradicts the question's own premise.
+_CONDITIONAL_QUESTION_RE = re.compile(r"^if\b")
+
 # List-valued top-level keys are concatenated across files; everything else is treated as a scalar.
 _MERGEABLE_LIST_KEYS = (
     "screening_yes_no",
@@ -185,6 +192,12 @@ class FormFillRulesEngine:
         return label_matches(normalized_label, spec)
 
     @staticmethod
+    def _is_conditional_question(normalized_label: str) -> bool:
+        """See :data:`_CONDITIONAL_QUESTION_RE` — questions starting with "if" are skipped
+        entirely rather than matched against any rule."""
+        return bool(_CONDITIONAL_QUESTION_RE.match(normalized_label))
+
+    @staticmethod
     def _coerce_screening_answer(raw: Any) -> str | None:
         if raw is None:
             return None
@@ -228,7 +241,7 @@ class FormFillRulesEngine:
         candidates (leave the field empty for the user to fill).
         """
         n = self.normalize_label(label)
-        if not n:
+        if not n or self._is_conditional_question(n):
             return []
         for rule in self._data.get("screening_yes_no", []):
             if not self._matches(n, rule.get("match", {})):
@@ -371,7 +384,7 @@ class FormFillRulesEngine:
 
     def _first_matching_text_input_rule(self, label: str) -> dict[str, Any] | None:
         n = self.normalize_label(label)
-        if not n:
+        if not n or self._is_conditional_question(n):
             return None
         for rule in self._data.get("text_inputs", []):
             if self._matches(n, rule.get("match", {})):
@@ -420,7 +433,7 @@ class FormFillRulesEngine:
         if s is not None:
             return s
         n = self.normalize_label(label)
-        if not n:
+        if not n or self._is_conditional_question(n):
             return None
         for rule in self._data.get("textareas", []):
             if self._matches(n, rule.get("match", {})):
@@ -438,7 +451,7 @@ class FormFillRulesEngine:
         if s:
             return s
         n = self.normalize_label(label)
-        if not n:
+        if not n or self._is_conditional_question(n):
             return []
         for rule in self._data.get("selects", []):
             if self._matches(n, rule.get("match", {})):
@@ -473,7 +486,7 @@ class FormFillRulesEngine:
         ``apply_source=…`` (``linkedin`` is the default when unset).
         """
         n = self.normalize_label(fieldset_legend_text)
-        if not n:
+        if not n or self._is_conditional_question(n):
             return []
         for rule in self._data.get("checkbox_groups", []):
             if label_matches(n, rule.get("match", {})):
