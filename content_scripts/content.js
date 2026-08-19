@@ -1673,19 +1673,28 @@ function getGenericFieldLabel(el) {
         if (text) return text;
     }
 
-    return (el.getAttribute("placeholder") || "").trim();
+    const placeholder = (el.getAttribute("placeholder") || "").trim();
+    if (placeholder) return placeholder;
+
+    // Some sites (e.g. Workday) wrap a single text/textarea/select field in a
+    // bare <fieldset><legend> instead of using label[for] at all — same
+    // positional convention getFieldsetLegendLabel already uses for grouped
+    // radio/checkbox fieldsets, just with exactly one control inside instead
+    // of several.
+    const fieldset = el.closest("fieldset");
+    return fieldset ? getFieldsetLegendLabel(fieldset) : "";
 }
 
 function getFieldsetLegendLabel(fieldset) {
     const legend = fieldset.querySelector(":scope > legend");
-    if (legend) return getLinkedInElementText(legend);
+    if (legend) return trimLinkedInFieldLabel(getLinkedInElementText(legend));
     // Some component libraries use a leading <label> as the group heading
     // instead of a semantic <legend> (e.g. Ashby's EEO gender/race/veteran
     // question fieldsets) — its `for` often doesn't resolve to anything
     // (matches a `data-field-path` wrapper, not an actual control), so this
     // is purely positional: first <label> that's a direct child.
     const leadingLabel = fieldset.querySelector(":scope > label");
-    return leadingLabel ? getLinkedInElementText(leadingLabel) : "";
+    return leadingLabel ? trimLinkedInFieldLabel(getLinkedInElementText(leadingLabel)) : "";
 }
 
 function getRadioOrCheckboxLabel(input) {
@@ -1717,6 +1726,38 @@ function getCheckedGroupValue(controls) {
         .map(getControlValueOrLabel)
         .filter(Boolean)
         .join(", ");
+}
+
+// Workday's custom "Select One" dropdown: a <button aria-haspopup="listbox">
+// showing the current choice as its own text (e.g. "No", or "Select One"
+// when unanswered), paired with a same-container mirror <input type="text">
+// that has no id/name/label of its own and just tracks the selected option's
+// internal GUID — without this check that mirror input would otherwise get
+// picked up by the main loop above as an ordinary (unlabeled, GUID-valued)
+// text field.
+function isListboxComboboxCompanionInput(el) {
+    if (el.tagName !== "INPUT") return false;
+    const prev = el.previousElementSibling;
+    return !!(prev && prev.tagName === "BUTTON" && prev.getAttribute("aria-haspopup") === "listbox");
+}
+
+// The button's own aria-label describes its *current value* (e.g. "No
+// Required"), not the question — unlike getGenericFieldLabel, this must
+// prefer the fieldset/legend text and only fall back to a cleaned-up
+// aria-label when there's no fieldset ancestor.
+function getComboboxButtonLabel(button) {
+    const fieldset = button.closest("fieldset");
+    const fieldsetLabel = fieldset && getFieldsetLegendLabel(fieldset);
+    if (fieldsetLabel) return fieldsetLabel;
+    const ariaLabel = (button.getAttribute("aria-label") || "").trim();
+    return ariaLabel.replace(/\s*(required|optional)\s*$/i, "").trim();
+}
+
+const COMBOBOX_PLACEHOLDER_VALUES = new Set(["select one", "select...", "select"]);
+
+function getComboboxButtonValue(button) {
+    const text = (button.textContent || "").trim();
+    return COMBOBOX_PLACEHOLDER_VALUES.has(text.toLowerCase()) ? "" : text;
 }
 
 // Ashby-style (and similar) Yes/No question: a single <input type="checkbox">
@@ -1782,6 +1823,8 @@ function scanFormFields(root, { onlyBlank } = {}) {
     }
 
     root.querySelectorAll("input, textarea, select").forEach((el) => {
+        if (isListboxComboboxCompanionInput(el)) return; // handled via the combobox button pass below
+
         const type = (el.getAttribute("type") || "").toLowerCase();
 
         if (type === "checkbox") {
@@ -1835,6 +1878,17 @@ function scanFormFields(root, { onlyBlank } = {}) {
             if (!onlyBlank || !value) {
                 addField(label, "checkbox_group", { fieldset, controls: checkboxes }, value);
             }
+        }
+    });
+
+    // Workday-style custom "Select One" combobox (see isListboxComboboxCompanionInput).
+    root.querySelectorAll('button[aria-haspopup="listbox"]').forEach((button) => {
+        if (!isVisibleElement(button)) return;
+        const label = getComboboxButtonLabel(button);
+        if (!label) return;
+        const value = getComboboxButtonValue(button);
+        if (!onlyBlank || !value) {
+            addField(label, "combobox", button, value);
         }
     });
 
@@ -1907,12 +1961,57 @@ function fillYesNoToggle(toggle, value) {
     return false;
 }
 
+// Polls `check` every 50ms for up to 1.5s — a popup listbox renders
+// asynchronously after its trigger is clicked (state update + re-render), so
+// a fixed short delay would be either too slow or too flaky depending on
+// page load. Resolves with check()'s first truthy result, or null on timeout.
+function waitFor(check, { timeoutMs = 1500, intervalMs = 50 } = {}) {
+    return new Promise((resolve) => {
+        const start = Date.now();
+        const tick = () => {
+            const result = check();
+            if (result) {
+                resolve(result);
+            } else if (Date.now() - start >= timeoutMs) {
+                resolve(null);
+            } else {
+                setTimeout(tick, intervalMs);
+            }
+        };
+        tick();
+    });
+}
+
+// Workday's custom "Select One" combobox has no value to just set directly —
+// clicking the button opens a popup listbox of freshly-rendered
+// [role="option"] elements (often rendered elsewhere in the DOM, not nested
+// under the button), and only the page's own click handling on the chosen
+// option actually drives its state. Async because that popup doesn't exist
+// until after the click's state update has flushed.
+async function fillComboboxField(button, value) {
+    const target = normalizeMatchText(value);
+    button.click();
+
+    const option = await waitFor(() => {
+        const opts = [...document.querySelectorAll('[role="option"]')].filter(isVisibleElement);
+        return opts.find((o) => normalizeMatchText(o.textContent) === target) || null;
+    });
+
+    if (!option) {
+        button.click(); // best-effort: close the popup we opened rather than leaving it stuck open
+        return false;
+    }
+
+    option.click();
+    return true;
+}
+
 // The server may offer several acceptable answers in priority order (e.g. ["No", "Not
 // applicable"]) when a rule has more than one — try each until one matches an option this
 // field actually has, and leave the field untouched if none do. `answer.values` is the new
 // candidate-list shape; `answer.value` alone (older server / no candidates) is treated as a
 // one-item list so this still works unchanged against a server that hasn't been updated.
-function applyFieldAnswer(descriptor, element, answer) {
+async function applyFieldAnswer(descriptor, element, answer) {
     if (!answer) return false;
     const candidates = Array.isArray(answer.values) && answer.values.length
         ? answer.values
@@ -1933,6 +2032,8 @@ function applyFieldAnswer(descriptor, element, answer) {
             ok = fillSelectField(element, value);
         } else if (descriptor.type === "radio" || descriptor.type === "checkbox_group") {
             ok = element.yesNoToggle ? fillYesNoToggle(element, value) : fillGroupField(element, value);
+        } else if (descriptor.type === "combobox") {
+            ok = await fillComboboxField(element, value);
         }
         if (ok) return true;
     }
@@ -1978,16 +2079,18 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             const answers = res.answers || [];
             let filled = 0;
             let flagged = 0;
-            descriptors.forEach((descriptor, i) => {
+            // Sequential (not Promise.all) since combobox answers open/close a
+            // real popup on the page — filling two at once would race.
+            for (let i = 0; i < descriptors.length; i++) {
                 const answer = answers[i];
                 if (answer && answer.flag === "discard") {
                     flagged += 1;
-                    return;
+                    continue;
                 }
-                if (applyFieldAnswer(descriptor, elements[i], answer)) {
+                if (await applyFieldAnswer(descriptors[i], elements[i], answer)) {
                     filled += 1;
                 }
-            });
+            }
 
             sendResponse({ filled, total: descriptors.length, flagged });
         })();
