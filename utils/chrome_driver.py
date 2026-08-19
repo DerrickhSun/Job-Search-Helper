@@ -30,6 +30,18 @@ _DRIVER_ALIVE_PROBE_TIMEOUT = 3.0
 # HTTP read timeout for WebDriver commands (fail faster when the browser window is gone).
 _DRIVER_COMMAND_TIMEOUT = 12.0
 
+# Selenium's own page-load timeout (distinct from _DRIVER_COMMAND_TIMEOUT above). The command
+# timeout only bounds how long our HTTP client waits for chromedriver's *response* — it says
+# nothing to chromedriver about giving up on the navigation itself. Without this, a page that
+# never fires its load event (stuck XHR, slow ad/tracker script, a rate-limited session) leaves
+# chromedriver waiting on that navigation indefinitely; our client times out on that one command
+# after _DRIVER_COMMAND_TIMEOUT but chromedriver stays wedged, so every *subsequent* command to
+# the same session queues up behind it and times out too, one after another, for as long as the
+# stuck load lasts — looking from the outside like the whole session is hung. This makes
+# chromedriver itself abandon a slow navigation and return (raising, which callers already catch
+# around their .get() calls) instead of waiting forever.
+_PAGE_LOAD_TIMEOUT = 45.0
+
 # How long to wait for a clean ``driver.quit()`` before force-killing the process tree.
 _QUIT_TIMEOUT = 20.0
 
@@ -83,6 +95,10 @@ def build_chrome(headless: bool = False) -> webdriver.Chrome:
         driver.command_executor.set_timeout(_DRIVER_COMMAND_TIMEOUT)
     except Exception:
         log.debug("Could not set WebDriver command timeout", exc_info=True)
+    try:
+        driver.set_page_load_timeout(_PAGE_LOAD_TIMEOUT)
+    except Exception:
+        log.debug("Could not set WebDriver page load timeout", exc_info=True)
     if not headless:
         try:
             driver.maximize_window()

@@ -244,14 +244,6 @@ def print_s3_progress(verb: str, current: int, total: int, name: str, *, action:
             print(text, flush=True)
         return
 
-    # Erased once per bar (idempotent — a no-op once already erased) rather than via
-    # _status_paused() per tick: the bar redraws itself in place with a bare "\r" (no trailing
-    # newline), so the cursor sits mid-line between ticks. Redrawing the status line there would
-    # print it butted up against the bar instead of on its own row, so it's only redrawn once the
-    # bar finishes and has emitted a real newline below.
-    with _status_lock:
-        _status_erase_locked()
-
     total_display = max(total, 1)
     frac = min(1.0, current / total_display)
     filled = int(round(_S3_BAR_WIDTH * frac))
@@ -259,19 +251,30 @@ def print_s3_progress(verb: str, current: int, total: int, name: str, *, action:
         detail = "…" + detail[-(_S3_DETAIL_MAX_LEN - 1) :]
     bar = "█" * filled + "░" * (_S3_BAR_WIDTH - filled)
     line = f"\r{f'S3 {verb} [{bar}] {current}/{total} {detail}':<{_S3_LINE_PAD}}"
-    try:
-        print(line, end="", flush=True)
-    except UnicodeEncodeError:
-        # Legacy (non-UTF-8) console codepage can't render the block characters or ellipsis —
-        # fall back to plain ASCII rather than crashing a sync mid-run over cosmetics.
-        bar = "#" * filled + "-" * (_S3_BAR_WIDTH - filled)
-        detail_ascii = detail.replace("…", "...")
-        line = f"\r{f'S3 {verb} [{bar}] {current}/{total} {detail_ascii}':<{_S3_LINE_PAD}}"
-        print(line.encode("ascii", "replace").decode("ascii"), end="", flush=True)
-    if current >= total:
-        print()  # move past the bar so subsequent output starts on a fresh line
-        log.info("S3: %s complete — %d file(s)", verb, total)
-        with _status_lock:
+
+    # The whole tick (erase status -> write the bar -> optionally finish it off) has to happen as
+    # one atomic unit under _status_lock, not just the erase. print()'s own internal lock only
+    # keeps a single call from tearing; it does nothing to stop a *different* thread's log record
+    # (StatusAwareStreamHandler.emit(), which also takes _status_lock) from landing its own
+    # newline-terminated write in the gap between this bar's erase and its "\r"-prefixed write.
+    # Once that happens the next "\r" only returns to the start of *that* line, not back up to
+    # where the bar was, so the bar starts a fresh line on every subsequent tick instead of
+    # overwriting in place — e.g. background company-lookup-worker log lines racing the bar during
+    # a shutdown-time S3 upload.
+    with _status_lock:
+        _status_erase_locked()
+        try:
+            print(line, end="", flush=True)
+        except UnicodeEncodeError:
+            # Legacy (non-UTF-8) console codepage can't render the block characters or ellipsis —
+            # fall back to plain ASCII rather than crashing a sync mid-run over cosmetics.
+            bar = "#" * filled + "-" * (_S3_BAR_WIDTH - filled)
+            detail_ascii = detail.replace("…", "...")
+            line = f"\r{f'S3 {verb} [{bar}] {current}/{total} {detail_ascii}':<{_S3_LINE_PAD}}"
+            print(line.encode("ascii", "replace").decode("ascii"), end="", flush=True)
+        if current >= total:
+            print()  # move past the bar so subsequent output starts on a fresh line
+            log.info("S3: %s complete — %d file(s)", verb, total)
             _status_draw_locked()
 
 

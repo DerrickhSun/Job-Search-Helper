@@ -21,9 +21,16 @@ an actual option. A plain string is still a valid one-item list (fully backward 
 Directory mode: every ``*.json`` file in the directory is loaded in **case-insensitive filename order**
 and merged. List-valued keys (``screening_yes_no``, ``text_inputs``, ``textareas``, ``selects``,
 ``checkbox_groups``) are **concatenated** in that order; scalar keys (``schema_version``,
-``documentation``) take the value from the first file that defines them. Because the FIRST matching
-rule within a category wins, split a category across files using numeric filename prefixes (e.g.
-``screening_10_*.json`` before ``screening_20_*.json``) to control precedence.
+``documentation``) take the value from the first file that defines them.
+
+Rule priority: any rule may set an optional numeric ``priority`` (default ``0``, higher wins). When more
+than one rule in a category matches the same label, the rule with the **highest** ``priority`` is used,
+regardless of file/list order; ties keep the original file-name-then-list-order precedence. This is
+separate from the "priority-ordered answers" below (which order candidate *values* within a single
+matched rule) — ``priority`` instead orders *which rule* is considered matched in the first place. Prefer
+``priority`` over renumbering filenames when a specific rule (e.g. a more specific label like "full name")
+should win over a broader one (e.g. "last name") that would otherwise also match via substring. See
+:meth:`FormFillRulesEngine._matching_rules_by_priority`.
 """
 
 from __future__ import annotations
@@ -192,6 +199,27 @@ class FormFillRulesEngine:
         return label_matches(normalized_label, spec)
 
     @staticmethod
+    def _priority(rule: dict[str, Any]) -> float:
+        p = rule.get("priority", 0)
+        try:
+            return float(p)
+        except (TypeError, ValueError):
+            log.warning("Non-numeric priority in form rule %r: %r (treated as 0)", rule.get("id"), p)
+            return 0.0
+
+    def _matching_rules_by_priority(self, category: str, normalized_label: str) -> list[dict[str, Any]]:
+        """
+        Every rule in ``category`` whose ``match`` matches ``normalized_label``, ordered by descending
+        ``priority`` (see module docstring). Rules with equal priority (the default, when neither sets
+        it) keep their original file-name-then-list-order — i.e. behavior is unchanged unless a rule
+        explicitly opts into a non-zero ``priority``.
+        """
+        rules = self._data.get(category, [])
+        matched = [(i, r) for i, r in enumerate(rules) if self._matches(normalized_label, r.get("match", {}))]
+        matched.sort(key=lambda pair: (-self._priority(pair[1]), pair[0]))
+        return [r for _, r in matched]
+
+    @staticmethod
     def _is_conditional_question(normalized_label: str) -> bool:
         """See :data:`_CONDITIONAL_QUESTION_RE` — questions starting with "if" are skipped
         entirely rather than matched against any rule."""
@@ -243,9 +271,7 @@ class FormFillRulesEngine:
         n = self.normalize_label(label)
         if not n or self._is_conditional_question(n):
             return []
-        for rule in self._data.get("screening_yes_no", []):
-            if not self._matches(n, rule.get("match", {})):
-                continue
+        for rule in self._matching_rules_by_priority("screening_yes_no", n):
             region_cfg = rule.get("answer_by_region")
             if region_cfg:
                 ans, decided = self._resolve_region_answer(n, region_cfg)
@@ -386,10 +412,8 @@ class FormFillRulesEngine:
         n = self.normalize_label(label)
         if not n or self._is_conditional_question(n):
             return None
-        for rule in self._data.get("text_inputs", []):
-            if self._matches(n, rule.get("match", {})):
-                return rule
-        return None
+        matches = self._matching_rules_by_priority("text_inputs", n)
+        return matches[0] if matches else None
 
     def text_input_press_enter_after_fill(self, label: str) -> bool:
         """True when the first matching ``text_inputs`` rule sets ``press_enter_after_fill`` (autocomplete commit)."""
@@ -435,9 +459,9 @@ class FormFillRulesEngine:
         n = self.normalize_label(label)
         if not n or self._is_conditional_question(n):
             return None
-        for rule in self._data.get("textareas", []):
-            if self._matches(n, rule.get("match", {})):
-                return self._apply_textarea_result(rule.get("result", {}), cover_letter)
+        matches = self._matching_rules_by_priority("textareas", n)
+        if matches:
+            return self._apply_textarea_result(matches[0].get("result", {}), cover_letter)
         return None
 
     def answer_select_candidates(self, label: str) -> list[str]:
@@ -453,17 +477,17 @@ class FormFillRulesEngine:
         n = self.normalize_label(label)
         if not n or self._is_conditional_question(n):
             return []
-        for rule in self._data.get("selects", []):
-            if self._matches(n, rule.get("match", {})):
-                r = rule.get("result", {})
-                t = (r.get("type") or "").strip()
-                if t == "literal":
-                    v = self._apply_literal(r)
-                    return [v] if v else []
-                if t == "literal_fallbacks":
-                    return [str(v).strip() for v in (r.get("values") or []) if str(v).strip()]
-                log.warning("Unknown selects result: %s", r)
-                return []
+        matches = self._matching_rules_by_priority("selects", n)
+        if not matches:
+            return []
+        r = matches[0].get("result", {})
+        t = (r.get("type") or "").strip()
+        if t == "literal":
+            v = self._apply_literal(r)
+            return [v] if v else []
+        if t == "literal_fallbacks":
+            return [str(v).strip() for v in (r.get("values") or []) if str(v).strip()]
+        log.warning("Unknown selects result: %s", r)
         return []
 
     def answer_select(self, label: str) -> str | None:
@@ -488,21 +512,20 @@ class FormFillRulesEngine:
         n = self.normalize_label(fieldset_legend_text)
         if not n or self._is_conditional_question(n):
             return []
-        for rule in self._data.get("checkbox_groups", []):
-            if label_matches(n, rule.get("match", {})):
-                src_map = rule.get("choose_label_from_apply_source")
-                if isinstance(src_map, dict) and src_map:
-                    src = self._apply_source or "linkedin"
-                    if src not in ("greenhouse", "linkedin"):
-                        src = "linkedin"
-                    raw = src_map.get(src)
-                    if raw is None or (isinstance(raw, str) and not raw.strip()):
-                        raw = src_map.get("default") or src_map.get("linkedin")
-                    return self._coerce_answer_list(raw)
-                raw = rule.get("choose_label") or rule.get("option_label")
-                cands = self._coerce_answer_list(raw)
-                if cands:
-                    return cands
+        for rule in self._matching_rules_by_priority("checkbox_groups", n):
+            src_map = rule.get("choose_label_from_apply_source")
+            if isinstance(src_map, dict) and src_map:
+                src = self._apply_source or "linkedin"
+                if src not in ("greenhouse", "linkedin"):
+                    src = "linkedin"
+                raw = src_map.get(src)
+                if raw is None or (isinstance(raw, str) and not raw.strip()):
+                    raw = src_map.get("default") or src_map.get("linkedin")
+                return self._coerce_answer_list(raw)
+            raw = rule.get("choose_label") or rule.get("option_label")
+            cands = self._coerce_answer_list(raw)
+            if cands:
+                return cands
         return []
 
     def checkbox_group_choice(self, fieldset_legend_text: str) -> str | None:

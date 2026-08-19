@@ -56,6 +56,23 @@
       }
     },
     {
+      "id": "full_name",
+      "comment": "Combined name field; must outrank first_name/last_name, which would otherwise substring-match e.g. 'First and Last Name' on 'last name'",
+      "priority": 10,
+      "match": {
+        "any_substrings": [
+          "first and last name",
+          "first & last name",
+          "full name",
+          "full legal name"
+        ]
+      },
+      "result": {
+        "type": "resume_key_list",
+        "keys": ["name"]
+      }
+    },
+    {
       "id": "first_name",
       "match": {
         "any_substrings": [
