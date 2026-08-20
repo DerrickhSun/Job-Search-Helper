@@ -9,6 +9,7 @@ whatever) only touches this file rather than the logic that produces the results
 from __future__ import annotations
 
 import logging
+import shutil
 import sys
 import threading
 from contextlib import contextmanager
@@ -17,8 +18,8 @@ from typing import Any, Iterator
 log = logging.getLogger(__name__)
 
 _S3_BAR_WIDTH = 24
-_S3_DETAIL_MAX_LEN = 40
-_S3_LINE_PAD = 100  # wide enough to blank out any shorter previous line when overwritten
+_S3_DETAIL_MAX_LEN = 40  # upper bound only — print_s3_progress shrinks this to fit narrower terminals
+_S3_LINE_PAD = 100  # upper bound only — clamped to the actual terminal width at print time (see below)
 
 # Persistent "where we are" status line pinned to the bottom of an interactive console (see
 # set_status_line). Guarded by an RLock (not a plain Lock) because redrawing it happens from
@@ -247,10 +248,27 @@ def print_s3_progress(verb: str, current: int, total: int, name: str, *, action:
     total_display = max(total, 1)
     frac = min(1.0, current / total_display)
     filled = int(round(_S3_BAR_WIDTH * frac))
-    if len(detail) > _S3_DETAIL_MAX_LEN:
-        detail = "…" + detail[-(_S3_DETAIL_MAX_LEN - 1) :]
     bar = "█" * filled + "░" * (_S3_BAR_WIDTH - filled)
-    line = f"\r{f'S3 {verb} [{bar}] {current}/{total} {detail}':<{_S3_LINE_PAD}}"
+
+    # The "\r"-in-place trick only works if the whole padded line fits in one terminal row — a
+    # line that's wider than the terminal wraps onto a second row, and the next tick's "\r" then
+    # only rewinds to the start of *that* wrapped row, not back up to the bar's true start. Once
+    # that happens the bar grows a new line on every subsequent tick instead of overwriting in
+    # place. _S3_LINE_PAD (100) assumed a wide terminal; an 80-column console/panel (a common
+    # Windows default) is already narrower than that even before the filename detail is added. So
+    # clamp everything to the terminal's actual width, with a 1-column margin — some terminals
+    # wrap as soon as the cursor reaches the last column even without a newline being printed.
+    try:
+        term_width = shutil.get_terminal_size(fallback=(_S3_LINE_PAD, 24)).columns
+    except OSError:
+        term_width = _S3_LINE_PAD
+    line_width = max(20, min(_S3_LINE_PAD, term_width - 1))
+
+    prefix = f"S3 {verb} [{bar}] {current}/{total} "
+    detail_budget = max(4, min(_S3_DETAIL_MAX_LEN, line_width - len(prefix)))
+    if len(detail) > detail_budget:
+        detail = "…" + detail[-(detail_budget - 1) :]
+    line = f"\r{(prefix + detail):<{line_width}}"
 
     # The whole tick (erase status -> write the bar -> optionally finish it off) has to happen as
     # one atomic unit under _status_lock, not just the erase. print()'s own internal lock only
@@ -268,9 +286,10 @@ def print_s3_progress(verb: str, current: int, total: int, name: str, *, action:
         except UnicodeEncodeError:
             # Legacy (non-UTF-8) console codepage can't render the block characters or ellipsis —
             # fall back to plain ASCII rather than crashing a sync mid-run over cosmetics.
-            bar = "#" * filled + "-" * (_S3_BAR_WIDTH - filled)
+            bar_ascii = "#" * filled + "-" * (_S3_BAR_WIDTH - filled)
             detail_ascii = detail.replace("…", "...")
-            line = f"\r{f'S3 {verb} [{bar}] {current}/{total} {detail_ascii}':<{_S3_LINE_PAD}}"
+            prefix_ascii = f"S3 {verb} [{bar_ascii}] {current}/{total} "
+            line = f"\r{(prefix_ascii + detail_ascii):<{line_width}}"
             print(line.encode("ascii", "replace").decode("ascii"), end="", flush=True)
         if current >= total:
             print()  # move past the bar so subsequent output starts on a fresh line
