@@ -1899,6 +1899,29 @@ function normalizeMatchText(text) {
     return (text || "").trim().toLowerCase();
 }
 
+// React (and similar frameworks) instruments controlled inputs by
+// redefining `value`/`checked` as an own property on the DOM *node itself*,
+// whose setter both writes the real value and updates React's internal
+// "last known value" tracker in one step. A plain `el.value = x` goes
+// through that same patched setter — so by the time the input/change event
+// we dispatch afterward fires, React compares current-vs-tracked value, sees
+// no difference (both already updated together), and never calls the
+// component's onChange. The field ends up visibly filled in the DOM but the
+// app's own state — what's actually checked as "answered" and submitted —
+// never received it. Writing through the *native* prototype setter instead
+// (found on HTMLInputElement.prototype etc., one level up from React's
+// instance-level override) updates the real value without touching React's
+// tracker, so the tracker is left stale and the dispatched event reads as a
+// genuine change — same effect a real user's keystroke/click would have.
+function setNativeProperty(el, prop, value) {
+    const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), prop);
+    if (descriptor && descriptor.set) {
+        descriptor.set.call(el, value);
+    } else {
+        el[prop] = value;
+    }
+}
+
 // Many sites (autocomplete/combobox widgets especially) don't treat a field
 // as "answered" from .value + input/change alone — they only commit the
 // value, dismiss a suggestion popup, or clear a validation error on an Enter
@@ -1915,7 +1938,7 @@ function dispatchEnterKey(el) {
 
 function fillTextLikeField(el, value) {
     el.focus();
-    el.value = value;
+    setNativeProperty(el, "value", value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     dispatchEnterKey(el);
@@ -1927,7 +1950,7 @@ function fillSelectField(el, value) {
         (o) => normalizeMatchText(o.value) === target || normalizeMatchText(o.textContent) === target
     );
     if (!option) return false;
-    el.value = option.value;
+    setNativeProperty(el, "value", option.value);
     el.dispatchEvent(new Event("change", { bubbles: true }));
     return true;
 }
@@ -1939,7 +1962,7 @@ function fillGroupField(group, value) {
             normalizeMatchText(getRadioOrCheckboxLabel(input)) === target
     );
     if (!match) return false;
-    match.checked = true;
+    setNativeProperty(match, "checked", true);
     match.dispatchEvent(new Event("change", { bubbles: true }));
     return true;
 }
