@@ -71,6 +71,15 @@ log = logging.getLogger(__name__)
 RESOURCE_COVERLETTERS = "coverletters"
 RESOURCE_FORM_FILL_RULES = "form_fill_rules"
 
+# Cap on how many entries a log keeps — otherwise it grows forever. Trimmed to the most recent
+# this-many entries (by sequence) every time the log is uploaded (see _trim_log_doc). A device
+# whose last-applied sequence falls before the oldest surviving entry can no longer replay via
+# simulate() (the entries it needs are gone) and falls back to a full resync instead (see
+# _log_has_gap / _resolve_download_delete_sets) — not "more than this many entries have passed
+# since I last synced" (fine, simulate() handles that), but specifically "the entries I need have
+# actually been evicted." May be adjusted later.
+_MAX_LOG_ENTRIES = 100
+
 _COVER_LETTER_MODE_NAMES = cover_letter_mode_names()
 
 
@@ -197,6 +206,79 @@ def simulate(entries: list[dict[str, Any]], last_applied_sequence: int) -> tuple
     return to_download, to_delete
 
 
+def _log_has_gap(entries: list[dict[str, Any]], last_applied_sequence: int) -> bool:
+    """
+    True when ``last_applied_sequence`` is far enough behind that :func:`simulate` can't safely
+    reconstruct the current state: the oldest entry the (trimmed) log still has is *newer* than
+    what this device would need to resume from, meaning whatever happened in between has been
+    evicted and is now unknown. A device merely behind — even by a lot, as long as everything it
+    still needs is still in the log — has no gap and uses ``simulate`` normally.
+    """
+    if not entries:
+        return False
+    oldest = min(int(e["sequence"]) for e in entries)
+    return last_applied_sequence < oldest - 1
+
+
+def _compute_full_resync_sets(
+    s3, bucket: str, output_dir: Path, cfg: _ResourceConfig
+) -> tuple[set[str], set[str]]:
+    """
+    Full alternative to :func:`simulate` for a device whose gap can't be bridged from the log
+    alone: lists every object currently under this resource's content prefix in S3 (the log's
+    entries are pruned, but S3 itself always reflects the current authoritative set, since every
+    add/delete entry's own upload/delete already happened against these same keys) and diffs that
+    against what's locally present. Returns ``(to_download, to_delete)`` in the exact same shape
+    :func:`simulate` produces, so callers apply it identically either way (including mode
+    filtering and the mutable-content-always-overwrites rule in :func:`_apply_add_delete`, and the
+    ``to_download``-based conflict detection in :func:`sync_log_upload`).
+    """
+    content_root = output_dir / cfg.content_dir_name
+    content_prefix = s3_key_for_file(output_dir, content_root) + "/"
+
+    remote_paths: set[str] = set()
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=content_prefix):
+        for obj in page.get("Contents") or []:
+            key = obj.get("Key") or ""
+            if not key or key.endswith("/") or not key.startswith(content_prefix):
+                continue
+            remote_paths.add(key[len(content_prefix):])
+
+    if cfg.mutable_content:
+        local_paths = (
+            {p.name for p in content_root.glob("*.json") if p.is_file()} if content_root.is_dir() else set()
+        )
+        # Always re-pull every remote file for mutable content, existing locally or not — same
+        # reasoning as _apply_add_delete's mutable_content check: existence doesn't mean current.
+        to_download = set(remote_paths)
+    else:
+        local_paths = (
+            {p.relative_to(content_root).as_posix() for p in content_root.rglob("*.docx") if p.is_file()}
+            if content_root.is_dir()
+            else set()
+        )
+        to_download = remote_paths - local_paths
+
+    to_delete = local_paths - remote_paths
+    return to_download, to_delete
+
+
+def _resolve_download_delete_sets(
+    s3, bucket: str, output_dir: Path, cfg: _ResourceConfig,
+    entries: list[dict[str, Any]], last_applied_sequence: int,
+) -> tuple[set[str], set[str]]:
+    """``simulate()``, or a full resync if this device's gap can no longer be bridged that way."""
+    if _log_has_gap(entries, last_applied_sequence):
+        log.info(
+            "%s: local state is too far behind the trimmed log (needed entries have been "
+            "evicted) — doing a full resync instead of incremental catch-up.",
+            cfg.content_dir_name,
+        )
+        return _compute_full_resync_sets(s3, bucket, output_dir, cfg)
+    return simulate(entries, last_applied_sequence)
+
+
 def _get_s3_client_or_none():
     try:
         from .s3_outputs import _s3_client
@@ -224,7 +306,17 @@ def _download_remote_log(s3, bucket: str, output_dir: Path, cfg: _ResourceConfig
         raise
 
 
+def _trim_log_doc(doc: dict[str, Any]) -> None:
+    """Keep only the most recent ``_MAX_LOG_ENTRIES`` entries (by sequence), in place. Called from
+    every place that uploads the log, so it's the one choke point that keeps it bounded."""
+    entries = doc.get("entries") or []
+    if len(entries) > _MAX_LOG_ENTRIES:
+        entries = sorted(entries, key=lambda e: int(e["sequence"]))
+        doc["entries"] = entries[-_MAX_LOG_ENTRIES:]
+
+
 def _upload_remote_log(s3, bucket: str, output_dir: Path, cfg: _ResourceConfig, doc: dict[str, Any]) -> None:
+    _trim_log_doc(doc)
     key = _s3_log_key(output_dir, cfg)
     body = json.dumps(doc, indent=2, ensure_ascii=False).encode("utf-8")
     s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
@@ -364,6 +456,103 @@ def _apply_add_delete(
                 log.warning("Could not delete local %s: %s", dest, e)
 
 
+def backfill_existing_files(resource: str, *, root: Path) -> None:
+    """
+    One-time migration for files that already existed locally before this log-based protocol did.
+
+    Those files have no log entry anywhere — they were uploaded (if at all) by the old,
+    unconditional-every-run sync this module replaced, so a *different* device (or a fresh one)
+    would never learn about them via :func:`sync_log_download`, since that only ever pulls files
+    referenced by a logged entry, never "whatever happens to already be in S3." This scans what's
+    currently on disk and backfills whichever of those files have genuinely never been logged.
+
+    Deliberately narrower than "scan and re-add everything local": any file already mentioned in
+    *any* existing entry (add or delete, regardless of status) is skipped, not re-backfilled. A
+    device that's been offline a long time can still have a stale local copy of something another
+    device already correctly deleted (a cover letter) or rewrote to remove a rule from (a
+    form-fill-rules file) — with no such check, this function would re-add exactly that stale
+    copy as a *new*, higher-sequence entry, and since :func:`simulate` lets later entries override
+    earlier ones for the same path, that resurrects the deleted/superseded content for every
+    device, not just this one. Only genuinely never-logged files are safe to backfill; a file
+    that already has *some* history is trusted to that history instead, even if this device
+    hasn't caught up on it yet (the :func:`sync_log_download` call right after this one does that).
+
+    The tradeoff, accepted deliberately: once a file has any history at all, a second device's
+    independently-accumulated local edits to that same file (e.g. rules learned entirely offline
+    before ever syncing) won't get merged in automatically — plain union-by-id merging can't tell
+    "genuinely new" apart from "stale, already deleted elsewhere" without tracking deletions
+    explicitly (tombstones), which this does not do. Files with zero history anywhere are
+    unaffected and still merge normally.
+
+    Idempotent and safe to call on every run: no-ops immediately once this device has a
+    ``local_log.json`` for ``resource`` — from a prior backfill, or from ever having completed a
+    normal sync cycle — since that means it has already participated in the protocol at least once.
+    """
+    if not s3_output_sync_enabled():
+        return
+    cfg = _RESOURCE_CONFIGS[resource]
+    output_dir = resolve_output_dir(root).parent
+    local_log_path = output_dir / cfg.local_log_rel
+    if local_log_path.is_file():
+        return
+
+    content_root = output_dir / cfg.content_dir_name
+    if not content_root.is_dir():
+        return
+
+    s3 = _get_s3_client_or_none()
+    if s3 is None:
+        return
+    bucket = s3_output_bucket()
+    try:
+        remote_doc = _download_remote_log(s3, bucket, output_dir, cfg)
+    except Exception as e:
+        # Can't safely tell what's already logged — skip backfilling this run rather than risk
+        # resurrecting something. Retried next run.
+        log.warning("Could not check existing %s log before backfill: %s", resource, e)
+        return
+    already_known: set[str] = {
+        f["path"] for entry in (remote_doc.get("entries") or []) for f in (entry.get("files") or [])
+    }
+
+    if resource == RESOURCE_COVERLETTERS:
+        candidates = [
+            p.relative_to(content_root).as_posix()
+            for p in sorted(content_root.rglob("*.docx"))
+            if p.is_file()
+        ]
+    else:
+        # Matches FormFillRulesEngine/RuleIndex's own glob scope exactly, so a fresh device ends
+        # up with the complete rule set (hand-curated files included), not just auto_rules.json.
+        candidates = [p.name for p in sorted(content_root.glob("*.json")) if p.is_file()]
+
+    tracker = PendingChangeTracker()
+    skipped = 0
+    for rel in candidates:
+        if rel in already_known:
+            skipped += 1
+            continue
+        tracker.record_write(rel)
+    if skipped:
+        log.info(
+            "%s: skipping backfill of %d file(s) that already have log history — trusting the "
+            "log over a possibly-stale local copy.", resource, skipped,
+        )
+
+    if tracker.is_empty():
+        # Nothing to backfill — write an empty local_log so this scan doesn't repeat every run
+        # forever. Any real remote history still gets picked up normally by the
+        # sync_log_download() call that follows this one.
+        _write_local_log_doc(local_log_path, _empty_log_doc())
+        return
+
+    log.info(
+        "%s: backfilling %d pre-existing local file(s) into the sync log (one-time).",
+        resource, len(tracker.pending_adds),
+    )
+    sync_log_upload(resource, root=root, pending=tracker)
+
+
 def sync_log_download(
     resource: str, *, root: Path, mode_filter: tuple[str, ...] | None = None
 ) -> None:
@@ -402,7 +591,9 @@ def sync_log_download(
         remote_doc = _download_remote_log(s3, bucket, output_dir, cfg)  # definitive, lock held
         if _reap_stale_entries(s3, bucket, output_dir, cfg, remote_doc, stale_after_seconds=_SYNC_LOCK_STALE_SECONDS):
             _upload_remote_log(s3, bucket, output_dir, cfg, remote_doc)
-        to_download, to_delete = simulate(remote_doc.get("entries") or [], last_applied)
+        to_download, to_delete = _resolve_download_delete_sets(
+            s3, bucket, output_dir, cfg, remote_doc.get("entries") or [], last_applied
+        )
         _apply_add_delete(s3, bucket, output_dir, cfg, to_download, to_delete, mode_filter=mode_filter)
         _write_local_log_doc(local_log_path, remote_doc)
     finally:
@@ -437,7 +628,9 @@ def sync_log_upload(resource: str, *, root: Path, pending: PendingChangeTracker)
 
         local_doc = _read_local_log_doc(local_log_path)
         last_applied = _last_applied_sequence(local_doc)
-        to_download, to_delete = simulate(doc.get("entries") or [], last_applied)
+        to_download, to_delete = _resolve_download_delete_sets(
+            s3, bucket, output_dir, cfg, doc.get("entries") or [], last_applied
+        )
 
         pending_adds = set(pending.pending_adds)
         pending_deletes = set(pending.pending_deletes)

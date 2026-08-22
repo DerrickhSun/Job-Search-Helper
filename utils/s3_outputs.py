@@ -564,9 +564,20 @@ def sync_download_output_coordinated(
     form-fill rules are unaffected by this particular token either way — they coordinate through
     their own separate locks.
     """
-    from .s3_log_sync import RESOURCE_COVERLETTERS, RESOURCE_FORM_FILL_RULES, sync_log_download
+    from .s3_log_sync import (
+        RESOURCE_COVERLETTERS,
+        RESOURCE_FORM_FILL_RULES,
+        backfill_existing_files,
+        sync_log_download,
+    )
 
     root = resolve_output_dir(local_dir)
+    # One-time no-op-after-first-success migration for files that predate this log-based protocol
+    # (see backfill_existing_files docstring) — must run before sync_log_download so a first-time
+    # device's own pre-existing content is folded in rather than left permanently unlogged.
+    backfill_existing_files(RESOURCE_COVERLETTERS, root=root / COVERLETTERS_DIR.name)
+    backfill_existing_files(RESOURCE_FORM_FILL_RULES, root=root / FORM_FILL_RULES_DIR.name)
+
     sync_log_download(RESOURCE_COVERLETTERS, root=root / COVERLETTERS_DIR.name, mode_filter=cover_letter_modes)
     sync_log_download(RESOURCE_FORM_FILL_RULES, root=root / FORM_FILL_RULES_DIR.name)
 
