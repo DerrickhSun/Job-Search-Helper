@@ -35,7 +35,8 @@ from utils.output_paths import (
     migrate_legacy_root_archive_files,
 )
 from utils.output_cleanup import prune_cover_letters_for_sync
-from utils.s3_outputs import sync_download_output, sync_upload_output
+from utils.s3_log_sync import PendingChangeTracker
+from utils.s3_outputs import sync_download_output_coordinated, sync_upload_output_coordinated
 from utils.sheet_csv import read_sheet_csv, sort_sheet_rows_by_date, union_sheet_rows, write_sheet_csv
 
 
@@ -76,8 +77,11 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv()
-    sync_download_output()
-    prune_cover_letters_for_sync()
+    cover_letter_changes = PendingChangeTracker()
+    # Held through the upload in the finally block below — the archive merge in between is a
+    # read-modify-write over the whole CSV, so it needs the same lock scope as sync.py's merge.
+    lock_token = sync_download_output_coordinated()
+    prune_cover_letters_for_sync(tracker=cover_letter_changes)
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
     migrate_form_fill_rules()
@@ -96,8 +100,8 @@ def main() -> None:
             print(f"Assisted: archived {n} new (deduped) row(s) -> {ASSISTED_APPLICATIONS_HISTORY_CSV.resolve()}")
             print(f"Assisted: reset {ASSISTED_APPLICATIONS_CSV.resolve()} to header only.")
     finally:
-        prune_cover_letters_for_sync()
-        sync_upload_output()
+        prune_cover_letters_for_sync(tracker=cover_letter_changes)
+        sync_upload_output_coordinated(lock_token=lock_token, cover_letter_changes=cover_letter_changes)
 
 
 if __name__ == "__main__":

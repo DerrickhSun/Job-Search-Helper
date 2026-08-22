@@ -13,7 +13,7 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from selenium.common.exceptions import (
     NoSuchElementException,
@@ -39,7 +39,10 @@ from .chrome_driver import (
 from .cover_letter import cover_letter_docx_path_unique, write_cover_letter_docx
 from .display_utils import waiting_message
 from .form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
-from .output_paths import LINKEDIN_COVERLETTERS_DIR
+from .output_paths import COVERLETTERS_DIR, LINKEDIN_COVERLETTERS_DIR
+
+if TYPE_CHECKING:  # avoids a circular import
+    from .s3_log_sync import PendingChangeTracker
 
 log = logging.getLogger(__name__)
 
@@ -226,6 +229,7 @@ class EasyApplyFiller:
         form_fill_rules_path: Path | str | None = None,
         helper_scan_all_tabs: bool = False,
         headshot_image_path: Path | str | None = None,
+        cover_letter_tracker: "PendingChangeTracker | None" = None,
     ):
         self.headless = headless
         self.screenshot_dir = Path(screenshot_dir)
@@ -233,6 +237,9 @@ class EasyApplyFiller:
         self.session_file = Path(session_file)
         self.cover_letter_docx_dir = Path(cover_letter_docx_dir)
         self.cover_letter_docx_dir.mkdir(parents=True, exist_ok=True)
+        # Records each cover letter this filler writes, so a caller can flush them to S3's
+        # operation log after the run (see utils/s3_log_sync.py) — None is a safe no-op.
+        self.cover_letter_tracker = cover_letter_tracker
         self.step_delay = step_delay
         self.highlight = highlight and not headless
         self.easy_apply_wait_seconds = max(0.0, float(easy_apply_wait_seconds))
@@ -3346,6 +3353,17 @@ class EasyApplyFiller:
         except Exception:
             return False
 
+    def _record_cover_letter_write(self, docx_path: Path) -> None:
+        """Tell ``self.cover_letter_tracker`` (if set) about a cover letter this filler just wrote,
+        so it gets pushed to S3 as a logged add entry next time the caller flushes the tracker."""
+        if self.cover_letter_tracker is None:
+            return
+        try:
+            rel = docx_path.resolve().relative_to(COVERLETTERS_DIR.resolve()).as_posix()
+        except ValueError:
+            return
+        self.cover_letter_tracker.record_write(rel)
+
     def _save_text_cover_letter(self, cover_letter: str, job: dict) -> None:
         """Write cover letter to disk when it was submitted as typed text rather than a file upload."""
         try:
@@ -3358,6 +3376,7 @@ class EasyApplyFiller:
             )
             write_cover_letter_docx(cover_letter, docx_path)
             log.info("Saved text-field cover letter as DOCX: %s", docx_path)
+            self._record_cover_letter_write(docx_path)
         except Exception as e:
             log.warning("Could not save text-field cover letter: %s", e)
 
@@ -3809,6 +3828,7 @@ class EasyApplyFiller:
                     finp.send_keys(str(docx_path.resolve()))
                     self._after_field_fill()
                     log.info("Uploaded cover letter as DOCX: %s", docx_path)
+                    self._record_cover_letter_write(docx_path)
                     continue
                 if self._file_input_is_photo_upload(driver, finp):
                     photo_path = self._headshot_path_for_upload()

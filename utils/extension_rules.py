@@ -18,15 +18,59 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from utils.form_fill_rules import FormFillRulesEngine, label_matches, normalize_label_for_exact
 
 log = logging.getLogger(__name__)
 from utils.output_paths import FORM_FILL_RULES_DIR
 
+if TYPE_CHECKING:  # avoids a circular import — utils/s3_log_sync.py imports union_rule_file from here
+    from utils.s3_log_sync import PendingChangeTracker
+
 AUTO_RULES_FILENAME = "auto_rules.json"
 RULE_CATEGORIES = ("screening_yes_no", "text_inputs", "textareas", "selects")
+
+
+def union_rule_file(local_data: dict[str, Any], remote_data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Merge two form-fill-rule JSON documents (``{category: [rule, ...]}`` shape) by rule ``id``,
+    used by ``utils/s3_log_sync.py`` instead of letting a remote-completed upload silently
+    overwrite (and lose) rules this device added locally in the same window.
+
+    Per category, the remote/already-agreed list wins on ``id`` collisions (it's authoritative —
+    mirrors :func:`utils.sheet_csv.union_sheet_rows`'s "pass the authoritative rows first" pattern),
+    then any local-only rule ``id`` not already present is appended. Rules without an ``id`` are
+    kept from both sides unconditionally (nothing to dedupe them by).
+    """
+    categories = set(local_data) | set(remote_data)
+    merged: dict[str, Any] = {}
+    for key in categories:
+        local_list = local_data.get(key)
+        remote_list = remote_data.get(key)
+        if not isinstance(local_list, list) and not isinstance(remote_list, list):
+            # Scalar keys (schema_version, documentation, etc.) — remote wins if present.
+            merged[key] = remote_data[key] if key in remote_data else local_data[key]
+            continue
+        local_list = local_list if isinstance(local_list, list) else []
+        remote_list = remote_list if isinstance(remote_list, list) else []
+
+        by_id: dict[str, Any] = {}
+        unkeyed: list[Any] = []
+        for rule in remote_list:
+            rid = rule.get("id") if isinstance(rule, dict) else None
+            if rid:
+                by_id[rid] = rule
+            else:
+                unkeyed.append(rule)
+        for rule in local_list:
+            rid = rule.get("id") if isinstance(rule, dict) else None
+            if rid:
+                by_id.setdefault(rid, rule)
+            else:
+                unkeyed.append(rule)
+        merged[key] = list(by_id.values()) + unkeyed
+    return merged
 
 # Deleted rules are moved here instead of discarded outright, so a rule dropped for conflicting
 # with an extension answer can still be reviewed, fixed, and restored. Deliberately a sibling
@@ -199,7 +243,11 @@ def _recycle_rule(
 
 
 def restore_recycled_rule(
-    entry_id: int, *, rules_dir: Path | None = None, dry_run: bool = False
+    entry_id: int,
+    *,
+    rules_dir: Path | None = None,
+    dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> dict[str, Any] | None:
     """
     Move recycle-bin entry ``entry_id`` (see :func:`list_recycled_rules`) back into
@@ -219,7 +267,9 @@ def restore_recycled_rule(
     if not dry_run:
         remaining = entries[:entry_id] + entries[entry_id + 1 :]
         _write_json_array(path, remaining)
-        append_rule_to_auto_rules(entry.get("category") or "screening_yes_no", entry["rule"], rules_dir=rules_dir)
+        append_rule_to_auto_rules(
+            entry.get("category") or "screening_yes_no", entry["rule"], rules_dir=rules_dir, tracker=tracker
+        )
     return entry
 
 
@@ -453,6 +503,7 @@ def migrate_extension_auto_rules_to_exact(
     *,
     rules_dir: Path | None = None,
     dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> int:
     """
     Rewrite ``extension_auto_*`` rules in ``auto_rules.json`` to use ``match.exact``.
@@ -483,6 +534,8 @@ def migrate_extension_auto_rules_to_exact(
     if changed and not dry_run:
         _write_json_object(path, data)
         log.info("Migrated %d extension auto rule(s) to exact match in %s", changed, path)
+        if tracker is not None:
+            tracker.record_write(path.name)
     return changed
 
 
@@ -523,7 +576,12 @@ def auto_rules_path(rules_dir: Path | None = None) -> Path:
     return base / AUTO_RULES_FILENAME
 
 
-def remove_empty_auto_rules(*, rules_dir: Path | None = None, dry_run: bool = False) -> int:
+def remove_empty_auto_rules(
+    *,
+    rules_dir: Path | None = None,
+    dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
+) -> int:
     """
     Delete blank literal / empty-answer rules from ``auto_rules.json``.
 
@@ -546,6 +604,8 @@ def remove_empty_auto_rules(*, rules_dir: Path | None = None, dry_run: bool = Fa
     if removed and not dry_run:
         _write_json_object(path, data)
         log.info("Removed %d empty rule(s) from %s", removed, path)
+        if tracker is not None:
+            tracker.record_write(path.name)
     return removed
 
 
@@ -555,6 +615,7 @@ def append_rule_to_auto_rules(
     *,
     rules_dir: Path | None = None,
     dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> Path:
     path = auto_rules_path(rules_dir)
     data = _read_json_object(path)
@@ -568,6 +629,8 @@ def append_rule_to_auto_rules(
     rules.append(rule)
     if not dry_run:
         _write_json_object(path, data)
+        if tracker is not None:
+            tracker.record_write(path.name)
     return path
 
 
@@ -578,6 +641,7 @@ def delete_rule(
     context: dict[str, Any] | None = None,
     rules_dir: Path | None = None,
     dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> None:
     """Move ``ref``'s rule to the recycle bin (see :func:`_recycle_rule`), then remove it."""
     data = _read_json_object(ref.file)
@@ -590,6 +654,8 @@ def delete_rule(
     data[ref.category] = rules
     if not dry_run:
         _write_json_object(ref.file, data)
+        if tracker is not None:
+            tracker.record_write(ref.file.name)
 
 
 @dataclass
@@ -678,6 +744,7 @@ def resolve_conflicts_interactively(
     *,
     rules_dir: Path | None = None,
     dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> tuple[int, int, int]:
     """Prompt the user for each conflict. Returns ``(replaced_count, kept_count, combined_count)``."""
     replaced = 0
@@ -739,10 +806,11 @@ def resolve_conflicts_interactively(
                         reason="conflict_replaced",
                         context=recycle_context,
                         rules_dir=rules_dir,
+                        tracker=tracker,
                     )
                     index.reload()
                     category, rule = new_rule_for_question(q.question, q.answer)
-                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
+                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
                     index.reload()
                 replaced += 1
                 print("  → Replaced with extension answer in auto_rules.json.")
@@ -761,9 +829,10 @@ def resolve_conflicts_interactively(
                         reason="conflict_combined_existing_priority",
                         context=recycle_context,
                         rules_dir=rules_dir,
+                        tracker=tracker,
                     )
                     index.reload()
-                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
+                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
                     index.reload()
                 combined_total += 1
                 print(f"  → Combined (existing priority): {_rule_answer_preview(rule)}")
@@ -782,9 +851,10 @@ def resolve_conflicts_interactively(
                         reason="conflict_combined_extension_priority",
                         context=recycle_context,
                         rules_dir=rules_dir,
+                        tracker=tracker,
                     )
                     index.reload()
-                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
+                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
                     index.reload()
                 combined_total += 1
                 print(f"  → Combined (extension priority): {_rule_answer_preview(rule)}")
@@ -807,6 +877,7 @@ def confirm_blank_rules_interactively(
     *,
     rules_dir: Path | None = None,
     dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> tuple[int, int]:
     """
     Prompt before saving extension answers that are blank.
@@ -834,7 +905,7 @@ def confirm_blank_rules_interactively(
                 break
             if choice in ("2", "save", "yes", "y"):
                 if not dry_run:
-                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir)
+                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
                 saved += 1
                 print(f"  → Saved blank rule to {AUTO_RULES_FILENAME}.")
                 break
@@ -848,15 +919,16 @@ def process_extension_questions(
     rules_dir: Path | None = None,
     dry_run: bool = False,
     interactive: bool = True,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> QuestionProcessResult:
     questions, invalid = parse_saved_questions_file(path)
     result = QuestionProcessResult(invalid_blocks=invalid)
     if not questions:
         # Still purge empty auto rules even when the export has no parseable Q/A.
-        result.empty_rules_removed = remove_empty_auto_rules(rules_dir=rules_dir, dry_run=dry_run)
+        result.empty_rules_removed = remove_empty_auto_rules(rules_dir=rules_dir, dry_run=dry_run, tracker=tracker)
         return result
 
-    result.empty_rules_removed = remove_empty_auto_rules(rules_dir=rules_dir, dry_run=dry_run)
+    result.empty_rules_removed = remove_empty_auto_rules(rules_dir=rules_dir, dry_run=dry_run, tracker=tracker)
 
     skipped, conflicts, new_rules, blank_new_rules = classify_extension_questions(
         questions, rules_dir=rules_dir
@@ -867,12 +939,12 @@ def process_extension_questions(
     result.blank_new = [item for item, _cat, _rule in blank_new_rules]
 
     for _item, category, rule in new_rules:
-        append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, dry_run=dry_run)
+        append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, dry_run=dry_run, tracker=tracker)
         result.added += 1
 
     if blank_new_rules and interactive and not dry_run:
         saved, skipped_blank = confirm_blank_rules_interactively(
-            blank_new_rules, rules_dir=rules_dir, dry_run=dry_run
+            blank_new_rules, rules_dir=rules_dir, dry_run=dry_run, tracker=tracker
         )
         result.blank_saved = saved
         result.blank_skipped = skipped_blank
@@ -883,7 +955,7 @@ def process_extension_questions(
 
     if conflicts and interactive and not dry_run:
         replaced, kept, combined_total = resolve_conflicts_interactively(
-            conflicts, rules_dir=rules_dir, dry_run=dry_run
+            conflicts, rules_dir=rules_dir, dry_run=dry_run, tracker=tracker
         )
         result.resolved_replaced = replaced
         result.resolved_kept = kept

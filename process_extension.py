@@ -56,7 +56,12 @@ from utils.output_paths import (
     migrate_form_fill_rules,
     migrate_legacy_root_archive_files,
 )
-from utils.s3_outputs import sync_download_output, sync_upload_output
+from utils.s3_log_sync import PendingChangeTracker
+from utils.s3_outputs import (
+    release_sync_lock,
+    sync_download_output_coordinated,
+    sync_upload_output_coordinated,
+)
 from utils.sheet_csv import (
     read_sheet_csv,
     sheet_row_key,
@@ -173,7 +178,10 @@ def parse_saved_jobs_file(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
 
 
 def delete_cover_letters_for_applied_jobs(
-    jobs: list[dict[str, Any]], *, dry_run: bool = False
+    jobs: list[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+    tracker: PendingChangeTracker | None = None,
 ) -> int:
     """
     Delete filter-mode cover letters for jobs that appear in the extension export.
@@ -209,6 +217,7 @@ def delete_cover_letters_for_applied_jobs(
                 company=str(job.get("company") or ""),
                 title=str(job.get("title") or ""),
                 job_id=job_id,
+                tracker=tracker,
             )
     return total
 
@@ -362,11 +371,15 @@ def main() -> int:
         return 0
 
     load_dotenv()
-    sync_download_output()
-    prune_cover_letters_for_sync()
+    cover_letter_changes = PendingChangeTracker()
+    form_fill_rule_changes = PendingChangeTracker()
+    # Held across this whole run, through the upload near the end (or released early below if
+    # --print-only/--dry-run means that upload never happens) — see sync_download_output_coordinated.
+    lock_token = sync_download_output_coordinated()
+    prune_cover_letters_for_sync(tracker=cover_letter_changes)
     migrate_legacy_root_archive_files()
     migrate_form_fill_rules()
-    migrated = migrate_extension_auto_rules_to_exact(dry_run=args.dry_run)
+    migrated = migrate_extension_auto_rules_to_exact(dry_run=args.dry_run, tracker=form_fill_rule_changes)
     if migrated:
         print(f"Migrated {migrated} extension auto rule(s) to exact label matching.")
 
@@ -420,7 +433,9 @@ def main() -> int:
                 dry_run=args.dry_run,
                 wrote_path=str(ASSISTED_APPLICATIONS_CSV.resolve()),
             )
-            deleted_cls = delete_cover_letters_for_applied_jobs(parsed, dry_run=args.dry_run)
+            deleted_cls = delete_cover_letters_for_applied_jobs(
+                parsed, dry_run=args.dry_run, tracker=cover_letter_changes
+            )
             if deleted_cls:
                 print(f"Deleted {deleted_cls} cover letter(s) for applied jobs.")
             else:
@@ -437,6 +452,7 @@ def main() -> int:
                 questions_path,
                 dry_run=args.dry_run,
                 interactive=not args.no_interactive,
+                tracker=form_fill_rule_changes,
             )
             print_questions_summary(questions_path, q_result, dry_run=args.dry_run)
             needs_interactive = (q_result.conflicts or q_result.blank_new) and (
@@ -455,8 +471,12 @@ def main() -> int:
             print()
 
     if not args.print_only and not args.dry_run:
-        prune_cover_letters_for_sync()
-        sync_upload_output()
+        prune_cover_letters_for_sync(tracker=cover_letter_changes)
+        sync_upload_output_coordinated(
+            lock_token=lock_token,
+            cover_letter_changes=cover_letter_changes,
+            form_fill_rule_changes=form_fill_rule_changes,
+        )
 
         cleared: list[str] = []
         if clear_jobs_file and _clear_notepad_file(saved_jobs_path):
@@ -468,6 +488,10 @@ def main() -> int:
                     cleared.append(path.name)
         if cleared:
             print(f"Cleared extension export file(s): {', '.join(cleared)}")
+    elif lock_token is not None:
+        # --print-only/--dry-run never reaches the coordinated upload above, so release here
+        # instead of leaving it held until it's judged stale.
+        release_sync_lock(lock_token)
 
     return exit_code
 

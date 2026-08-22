@@ -14,7 +14,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlencode
 
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
@@ -41,11 +41,37 @@ from .eval_utils.matcher import JobMatcher
 from .output_paths import (
     ASSISTED_APPLICATIONS_CSV as ASSISTED_GREENHOUSE_CSV,
     ASSISTED_APPLICATIONS_HISTORY_CSV as ASSISTED_GREENHOUSE_HISTORY_CSV,
+    COVERLETTERS_DIR,
     GREENHOUSE_COVERLETTERS_DIR,
     GREENHOUSE_DISMISSED_CSV,
 )
 from .resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 from .tracker import ApplicationTracker, normalize_greenhouse_job_url
+
+if TYPE_CHECKING:  # avoids a circular import
+    from .s3_log_sync import PendingChangeTracker
+
+# Set once by run_greenhouse_sign_in_flow (or its caller) at the start of a run, then read
+# directly by the cover-letter write/delete call sites deep inside this module's mostly-procedural
+# call graph — avoids threading a tracker parameter through many layers of helper functions for a
+# module this large. See utils/s3_log_sync.py.
+_cover_letter_tracker: "PendingChangeTracker | None" = None
+
+
+def set_cover_letter_tracker(tracker: "PendingChangeTracker | None") -> None:
+    """Set the tracker used by this module's cover-letter write/delete sites for the current run."""
+    global _cover_letter_tracker
+    _cover_letter_tracker = tracker
+
+
+def _record_cover_letter_write(docx_path: Path) -> None:
+    if _cover_letter_tracker is None:
+        return
+    try:
+        rel = docx_path.resolve().relative_to(COVERLETTERS_DIR.resolve()).as_posix()
+    except ValueError:
+        return
+    _cover_letter_tracker.record_write(rel)
 
 log = logging.getLogger(__name__)
 
@@ -1651,6 +1677,7 @@ def _run_greenhouse_application_helper_concurrent(
                     company=str(pub.get("company") or ""),
                     title=str(pub.get("title") or ""),
                     job_id=str(pub.get("id") or "job"),
+                    tracker=_cover_letter_tracker,
                 )
             elif action == "next_dismiss":
                 _append_greenhouse_dismissed((pub.get("url") or url).strip(), source="terminal_d")
@@ -1873,6 +1900,7 @@ def run_greenhouse_application_helper(driver: Any, args: Any, view_job_entries: 
                 company=str(pub.get("company") or ""),
                 title=str(pub.get("title") or ""),
                 job_id=str(pub.get("id") or "job"),
+                tracker=_cover_letter_tracker,
             )
         elif action == "next_dismiss":
             _append_greenhouse_dismissed(
@@ -2288,6 +2316,7 @@ def maybe_upload_greenhouse_cover_letter(
     except Exception as e:
         log.warning("Could not write Greenhouse cover letter DOCX: %s", e)
         return
+    _record_cover_letter_write(out_file)
     time.sleep(0.8)
     if _upload_file_to_greenhouse_cover_letter_input(driver, out_file):
         log.info("Greenhouse cover letter attached: %s", out_file.resolve())
@@ -2428,7 +2457,7 @@ def _pause_until_user_closes_browser() -> None:
         pass
 
 
-def run_greenhouse_sign_in_flow(args) -> None:
+def run_greenhouse_sign_in_flow(args, *, cover_letter_tracker: "PendingChangeTracker | None" = None) -> None:
     """
     Open Chrome on MyGreenhouse sign-in, wait until ``/dashboard``, then open ``/jobs?query=…`` using
     ``--keywords``, scroll to load lazy results, collect **View job** URLs, write them to JSON, open the
@@ -2436,7 +2465,11 @@ def run_greenhouse_sign_in_flow(args) -> None:
     resume cache (same pipeline as LinkedIn), attach it to the **Cover Letter** file field when present,
     apply ``data/greenhouse_fill_rules.json`` checkbox rules when present, save cookies, then (by default)
     wait for Enter before closing Chrome.
+
+    ``cover_letter_tracker`` (see :func:`set_cover_letter_tracker`) records every cover letter this
+    run writes/deletes, for the caller to flush to S3's operation log afterward.
     """
+    set_cover_letter_tracker(cover_letter_tracker)
     path = Path(args.greenhouse_cookies)
     max_wait = float(getattr(args, "greenhouse_login_max_seconds", 600.0))
     prompt_before_close = bool(getattr(args, "greenhouse_prompt_before_close", True))

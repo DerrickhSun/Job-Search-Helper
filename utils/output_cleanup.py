@@ -4,8 +4,18 @@ Prune stale files under ``output/`` (cover letters by default) to keep S3 sync f
 Age is based on the file's local modification time (``Path.stat().st_mtime``), or for S3
 objects the object's ``LastModified`` timestamp.
 
-When S3 downloads cover letters, :func:`utils.s3_outputs.sync_download_output` sets local
-mtime from S3 ``LastModified`` so age- and count-based pruning stay meaningful across machines.
+When S3 downloads cover letters, the log-based sync in ``utils/s3_log_sync.py`` sets local mtime
+from S3 ``LastModified`` so age- and count-based pruning stay meaningful across machines.
+
+Local pruning (:func:`prune_local_cover_letters`, :func:`prune_local_cover_letters_by_count`)
+records each file it removes locally into an optional ``tracker`` (a
+:class:`utils.s3_log_sync.PendingChangeTracker`) instead of deleting the matching S3 object
+directly — the actual S3-side delete happens later, as a properly logged ``"delete"`` entry when
+the caller flushes the tracker via ``sync_log_upload``. This propagates the deletion to every
+other device (not just this one), which a direct, unlogged S3 delete never did: a file removed
+here for a good reason (aged out, or no longer needed) would otherwise just keep sitting on every
+other device that never learns it's gone. The separate ``prune_s3_cover_letters*`` functions below
+remain useful as a backstop for objects that exist only in S3 and were never downloaded here.
 """
 
 from __future__ import annotations
@@ -15,8 +25,12 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .output_paths import COVERLETTERS_DIR, OUTPUT_DIR, cover_letter_dir_for_mode, cover_letter_output_dirs
+
+if TYPE_CHECKING:
+    from .s3_log_sync import PendingChangeTracker
 
 log = logging.getLogger(__name__)
 
@@ -96,11 +110,21 @@ def file_is_older_than_days(path: Path, max_age_days: float, *, now: float | Non
     return age_seconds > max_age_days * 86400.0
 
 
+def _rel_to_coverletters_dir(path: Path) -> str | None:
+    """``path``'s location relative to ``output/coverletters/`` (e.g. ``linkedin/x.docx``), for
+    :class:`utils.s3_log_sync.PendingChangeTracker`. ``None`` if ``path`` isn't under there."""
+    try:
+        return path.resolve().relative_to(COVERLETTERS_DIR.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
 def prune_local_cover_letters(
     *,
     max_age_days: float | None = None,
     cover_dir: Path | str = COVERLETTERS_DIR,
     dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> int:
     """
     Delete ``.docx`` files under ``output/coverletters/`` older than ``max_age_days``.
@@ -134,6 +158,11 @@ def prune_local_cover_letters(
             log.debug("Deleted old cover letter: %s", path)
         except OSError as e:
             log.warning("Could not delete %s: %s", path, e)
+        else:
+            if tracker is not None:
+                rel = _rel_to_coverletters_dir(path)
+                if rel is not None:
+                    tracker.record_delete(rel)
 
     if removed and not dry_run:
         log.info(
@@ -158,6 +187,7 @@ def prune_local_cover_letters_by_count(
     cover_dir: Path | str = COVERLETTERS_DIR,
     mode: str | None = None,
     dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> int:
     """
     When more than ``max_count`` ``.docx`` files exist under ``output/coverletters/``, delete the
@@ -192,6 +222,11 @@ def prune_local_cover_letters_by_count(
             log.debug("Deleted excess cover letter (count cap): %s", path)
         except OSError as e:
             log.warning("Could not delete %s: %s", path, e)
+        else:
+            if tracker is not None:
+                rel = _rel_to_coverletters_dir(path)
+                if rel is not None:
+                    tracker.record_delete(rel)
 
     if removed and not dry_run:
         log.info(
@@ -364,12 +399,18 @@ def prune_cover_letters_for_sync(
     cover_subdirs: tuple[str, ...] | None = None,
     cover_letter_modes: tuple[str, ...] | None = None,
     dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> tuple[int, int]:
     """
     Local + S3 prune when configured.
 
     ``cover_letter_modes`` / ``cover_subdirs``: mode names under ``output/coverletters/``
     (``linkedin``, ``filter``, ``greenhouse``). ``None`` prunes all three.
+
+    ``tracker``, if given, records every locally-pruned file as a pending delete (flushed to S3 as
+    a logged ``"delete"`` entry next time the caller flushes it via ``sync_log_upload`` — see
+    module docstring); the separate ``prune_s3_cover_letters*`` calls below are independent of
+    ``tracker`` and keep running regardless, as a backstop for S3-only stragglers.
     """
     modes = cover_letter_modes if cover_letter_modes is not None else cover_subdirs
 
@@ -385,8 +426,10 @@ def prune_cover_letters_for_sync(
         if cover_dir is None:
             log.warning("Unknown cover letter mode for prune: %r", mode)
             continue
-        local += prune_local_cover_letters(cover_dir=cover_dir, dry_run=dry_run)
-        local += prune_local_cover_letters_by_count(cover_dir=cover_dir, mode=mode, dry_run=dry_run)
+        local += prune_local_cover_letters(cover_dir=cover_dir, dry_run=dry_run, tracker=tracker)
+        local += prune_local_cover_letters_by_count(
+            cover_dir=cover_dir, mode=mode, dry_run=dry_run, tracker=tracker
+        )
         remote += prune_s3_cover_letters(cover_mode=mode, dry_run=dry_run)
         remote += prune_s3_cover_letters_by_count(cover_mode=mode, dry_run=dry_run)
     return local, remote

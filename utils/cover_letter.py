@@ -14,11 +14,15 @@ import logging
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import dspy
 
+from .output_paths import COVERLETTERS_DIR
 from .resume_parser import experience_entry_description, project_entry_description
+
+if TYPE_CHECKING:  # avoids a circular import
+    from .s3_log_sync import PendingChangeTracker
 
 log = logging.getLogger(__name__)
 
@@ -230,11 +234,14 @@ def delete_cover_letter_for_job(
     company: str,
     title: str,
     job_id: str,
+    tracker: "PendingChangeTracker | None" = None,
 ) -> int:
     """
     Delete all .docx files in output_dir whose name starts with the cover letter stem for this job.
 
-    Handles the __2/__3 uniqueness suffixes from cover_letter_docx_path_unique. Returns the count deleted.
+    Handles the __2/__3 uniqueness suffixes from cover_letter_docx_path_unique. Returns the count
+    deleted. Each deletion is recorded into ``tracker`` (if given) so it propagates to other
+    devices as a logged delete entry next time the caller flushes it via ``sync_log_upload``.
     """
     output_dir = Path(output_dir)
     if not output_dir.is_dir():
@@ -249,6 +256,13 @@ def delete_cover_letter_for_job(
                 removed += 1
             except OSError as e:
                 log.warning("Could not delete cover letter %s: %s", p, e)
+            else:
+                if tracker is not None:
+                    try:
+                        rel = p.resolve().relative_to(COVERLETTERS_DIR.resolve()).as_posix()
+                        tracker.record_delete(rel)
+                    except ValueError:
+                        pass
     return removed
 
 

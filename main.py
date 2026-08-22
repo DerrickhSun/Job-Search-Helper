@@ -155,12 +155,18 @@ from utils.eval_utils.matcher import (
 from utils.extension_rules import migrate_extension_auto_rules_to_exact
 from utils.output_cleanup import prune_cover_letters_for_sync
 from utils.output_paths import (
+    COVERLETTERS_DIR,
     migrate_legacy_consulting_companies_file,
     migrate_legacy_cover_letter_layout,
     migrate_form_fill_rules,
     migrate_legacy_root_archive_files,
 )
-from utils.s3_outputs import sync_download_output, sync_upload_output
+from utils.s3_log_sync import PendingChangeTracker
+from utils.s3_outputs import (
+    release_sync_lock,
+    sync_download_output_coordinated,
+    sync_upload_output_coordinated,
+)
 from utils.resume_cache import load_or_build_resume
 from utils.resume_parser import ResumeParser, first_name_from_resume
 from utils.tracker import ApplicationTracker
@@ -196,7 +202,15 @@ def _job_searcher_from_args(args, timing: dict, search: dict, **kwargs):
     )
 
 
-def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
+def run(
+    args,
+    timing: dict,
+    paths: dict,
+    behavior: dict,
+    search: dict,
+    *,
+    cover_letter_changes: PendingChangeTracker,
+):
     if getattr(args, "auto", False):
         log.info("Auto mode: no manual-intervention pauses (login failures exit, unfilled fields close the job).")
         timing = {**timing, "apply_review_pause": 0.0, "apply_first_empty_pause": 0.0}
@@ -240,7 +254,7 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
         if getattr(args, "auto", False):
             args.greenhouse_manual_next_listing = False
             args.greenhouse_prompt_before_close = False
-        run_greenhouse_sign_in_flow(args)
+        run_greenhouse_sign_in_flow(args, cover_letter_tracker=cover_letter_changes)
         return
 
     if args.debug_jobs_page:
@@ -340,6 +354,7 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
             cover_letter_docx_dir=paths["cover_letter_dir"],
             form_fill_rules_path=paths["form_fill_rules"],
             headshot_image_path=paths["headshot"],
+            cover_letter_tracker=cover_letter_changes,
         )
 
     searcher = _job_searcher_from_args(args, timing, search, account_first_name=account_first)
@@ -765,6 +780,11 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
         try:
             write_cover_letter_docx(cover_letter, docx_path)
             log.info("  → Cover letter: %s", docx_path.resolve())
+            try:
+                rel = docx_path.resolve().relative_to(COVERLETTERS_DIR.resolve()).as_posix()
+                cover_letter_changes.record_write(rel)
+            except ValueError:
+                pass
         except Exception as e:
             log.warning("  → Could not write cover letter docx: %s", e)
         log.info("  → Saving on LinkedIn (filter mode)...")
@@ -1078,6 +1098,7 @@ def run(args, timing: dict, paths: dict, behavior: dict, search: dict):
                 company=str(job.get("company") or ""),
                 title=str(job.get("title") or ""),
                 job_id=jid,
+                tracker=cover_letter_changes,
             )
         else:
             log.warning("  ✗ Application failed — check output/screenshots/")
@@ -1148,6 +1169,11 @@ def _early_cli_flags() -> argparse.Namespace:
 
 def main():
     load_dotenv()
+    # Guard for the finally block below, in case something raises before the download call ever
+    # assigns it a real value.
+    lock_token: str | None = None
+    cover_letter_changes = PendingChangeTracker()
+    form_fill_rule_changes = PendingChangeTracker()
     timing = _load_timing()
     paths = _load_paths()
     behavior = _load_behavior()
@@ -1159,14 +1185,16 @@ def main():
             "S3 cover letters: active subfolder(s) coverletters/%s (other modes skipped)",
             ", coverletters/".join(cover_modes),
         )
-    sync_download_output(cover_letter_modes=cover_modes)
-    prune_cover_letters_for_sync(cover_letter_modes=cover_modes)
+    # Held through the upload in the finally block below, across the entire pipeline run in
+    # between — see sync_download_output_coordinated.
+    lock_token = sync_download_output_coordinated(cover_letter_modes=cover_modes)
+    prune_cover_letters_for_sync(cover_letter_modes=cover_modes, tracker=cover_letter_changes)
     warn_if_listings_log_sidecars(paths.get("listings_log"))
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
     migrate_legacy_cover_letter_layout()
     migrate_form_fill_rules()
-    migrate_extension_auto_rules_to_exact()
+    migrate_extension_auto_rules_to_exact(tracker=form_fill_rule_changes)
 
     ap = argparse.ArgumentParser(
         description="Job tools: LinkedIn Easy Apply or filter mode, or Greenhouse MyGreenhouse application helper."
@@ -1308,17 +1336,27 @@ def main():
                     "(needed when data/resume_profile.json is missing or with --force-resume-parse)."
                 )
 
-        run(args, timing, paths, behavior, search)
+        run(args, timing, paths, behavior, search, cover_letter_changes=cover_letter_changes)
     except KeyboardInterrupt:
         log.info("Stopped.")
     finally:
         clear_status_line()
         try:
             cover_modes = _cover_letter_modes_for_run(site=args.site, filter_mode=args.filter)
-            prune_cover_letters_for_sync(cover_letter_modes=cover_modes)
-            sync_upload_output(cover_letter_modes=cover_modes)
+            prune_cover_letters_for_sync(cover_letter_modes=cover_modes, tracker=cover_letter_changes)
+            sync_upload_output_coordinated(
+                cover_letter_modes=cover_modes,
+                lock_token=lock_token,
+                cover_letter_changes=cover_letter_changes,
+                form_fill_rule_changes=form_fill_rule_changes,
+            )
         except KeyboardInterrupt:
             log.info("Shutdown: skipping S3 sync.")
+            # sync_upload_output_coordinated() releases the lock itself once it finishes the
+            # locked-scope upload — if Ctrl+C landed mid-upload instead, it never got there, so
+            # release it here rather than leaving it held until another device judges it stale.
+            if lock_token is not None:
+                release_sync_lock(lock_token)
 
 
 if __name__ == "__main__":

@@ -39,7 +39,8 @@ from utils.output_paths import (
     migrate_form_fill_rules,
     migrate_legacy_root_archive_files,
 )
-from utils.s3_outputs import sync_download_output, sync_upload_output
+from utils.s3_log_sync import PendingChangeTracker
+from utils.s3_outputs import sync_download_output_coordinated, sync_upload_output_coordinated
 from utils.sheet_csv import (
     read_sheet_csv,
     sheet_row_key,
@@ -51,6 +52,7 @@ from utils.sheet_csv import (
 
 def main() -> None:
     load_dotenv()
+    cover_letter_changes = PendingChangeTracker()
 
     # 1. Snapshot local state before download overwrites it with the S3 copy.
     local_app_archive = read_sheet_csv(APPLICATIONS_ARCHIVE_CSV)
@@ -58,9 +60,11 @@ def main() -> None:
     local_applications = read_sheet_csv(APPLICATIONS_CSV)
     local_assisted = read_sheet_csv(ASSISTED_APPLICATIONS_CSV)
 
-    # 2. Pull the shared S3 state (overwrites the local files read above).
-    sync_download_output()
-    prune_cover_letters_for_sync()
+    # 2. Pull the shared S3 state (overwrites the local files read above). The CSV merge below is
+    # a read-modify-write over the whole file, so the cross-device sync lock has to stay held from
+    # here through the upload at the end of this function — see sync_download_output_coordinated.
+    lock_token = sync_download_output_coordinated()
+    prune_cover_letters_for_sync(tracker=cover_letter_changes)
     warn_if_listings_log_sidecars()
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
@@ -101,8 +105,8 @@ def main() -> None:
             f"{len(remaining)} kept -> {path.resolve()}"
         )
 
-    prune_cover_letters_for_sync()
-    sync_upload_output()
+    prune_cover_letters_for_sync(tracker=cover_letter_changes)
+    sync_upload_output_coordinated(lock_token=lock_token, cover_letter_changes=cover_letter_changes)
 
 
 if __name__ == "__main__":
