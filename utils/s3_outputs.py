@@ -22,6 +22,7 @@ shorter-held, per-resource locks. See :func:`sync_download_output_coordinated` a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -456,6 +457,57 @@ def sync_download_output(local_dir: Path | str = OUTPUT_DIR) -> int:
     return downloaded
 
 
+def _local_md5_hex(path: Path) -> str:
+    h = hashlib.md5()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _list_remote_etags(s3, bucket: str, prefix: str) -> dict[str, str]:
+    """
+    One paginated listing of every object under *prefix*, keyed by path relative to *prefix* ->
+    ETag with surrounding quotes stripped. Used to skip re-uploading files whose content already
+    matches what's on S3 (see :func:`sync_upload_output`). Returns ``{}`` (never raises) on a
+    listing failure — callers degrade to "upload everything," the same as before this check existed.
+    """
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    etags: dict[str, str] = {}
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents") or []:
+                key = obj.get("Key") or ""
+                if not key or key.endswith("/") or not key.startswith(prefix):
+                    continue
+                rel = key[len(prefix):]
+                etag = (obj.get("ETag") or "").strip('"')
+                if etag:
+                    etags[rel] = etag
+    except (ClientError, BotoCoreError, OSError) as e:
+        log.warning("Could not list existing S3 objects under %s (will upload everything): %s", prefix, e)
+        return {}
+    return etags
+
+
+def _upload_unchanged(path: Path, rel: str, remote_etags: dict[str, str]) -> bool:
+    """
+    True if *rel* already matches what's on S3 (same content) and can be skipped. A remote ETag
+    containing ``-`` is a multipart upload's ETag, not a plain content MD5 — not comparable, so
+    never treated as a match. A local read/hash failure is treated as "changed" (upload it) rather
+    than risk silently skipping a real change.
+    """
+    etag = remote_etags.get(rel)
+    if not etag or "-" in etag:
+        return False
+    try:
+        return _local_md5_hex(path) == etag
+    except OSError:
+        return False
+
+
 def sync_upload_output(local_dir: Path | str = OUTPUT_DIR) -> int:
     """
     Upload files under *local_dir* to S3, excluding ``coverletters/``/``form_fill_rules/`` (synced
@@ -487,6 +539,15 @@ def sync_upload_output(local_dir: Path | str = OUTPUT_DIR) -> int:
     uploaded = 0
     to_upload: list[tuple[Path, str]] = [(path, path.relative_to(root).as_posix()) for path in files]
 
+    # Skip files whose content already matches what's on S3 — otherwise every run re-uploads this
+    # whole (small, roughly fixed) scope unconditionally, even when nothing in it changed.
+    remote_etags = _list_remote_etags(s3, bucket, s3_list_prefix_for_dir(root))
+    before_count = len(to_upload)
+    to_upload = [(path, rel) for path, rel in to_upload if not _upload_unchanged(path, rel, remote_etags)]
+    unchanged_count = before_count - len(to_upload)
+    if not to_upload:
+        return 0  # everything already up to date -- nothing to report
+
     skipped_local_only = 0
     for name in _SYNC_EXCLUDED_TOP_DIRS:
         excluded = root / name
@@ -498,6 +559,8 @@ def sync_upload_output(local_dir: Path | str = OUTPUT_DIR) -> int:
             skipped_local_only,
             ", ".join(sorted(_SYNC_EXCLUDED_TOP_DIRS)),
         )
+    if unchanged_count:
+        _sync_progress("S3: %d file(s) already up to date, skipping", unchanged_count)
 
     total = len(to_upload)
     if total:
@@ -613,11 +676,10 @@ def sync_upload_output_coordinated(
     from .s3_log_sync import PendingChangeTracker, RESOURCE_COVERLETTERS, RESOURCE_FORM_FILL_RULES, sync_log_upload
 
     root = resolve_output_dir(local_dir)
-    if cover_letter_changes is not None:
-        sync_log_upload(RESOURCE_COVERLETTERS, root=root / COVERLETTERS_DIR.name, pending=cover_letter_changes)
-    if form_fill_rule_changes is not None:
-        sync_log_upload(RESOURCE_FORM_FILL_RULES, root=root / FORM_FILL_RULES_DIR.name, pending=form_fill_rule_changes)
 
+    # General (small, fixed-ish) scope goes first — it's quick, and getting the tracking
+    # CSVs/archive/etc. up to date on S3 promptly shouldn't wait behind a potentially large batch
+    # of cover letters/rules. The two scopes use independent locks, so there's no ordering hazard.
     if lock_token is not None:
         sync_upload_output(local_dir)
         release_sync_lock(lock_token)
@@ -626,3 +688,8 @@ def sync_upload_output_coordinated(
             "S3: sync lock was not held this run — skipping upload of applications/consulting "
             "memory/etc. (cover letters and form-fill rules still uploaded normally)."
         )
+
+    if cover_letter_changes is not None:
+        sync_log_upload(RESOURCE_COVERLETTERS, root=root / COVERLETTERS_DIR.name, pending=cover_letter_changes)
+    if form_fill_rule_changes is not None:
+        sync_log_upload(RESOURCE_FORM_FILL_RULES, root=root / FORM_FILL_RULES_DIR.name, pending=form_fill_rule_changes)

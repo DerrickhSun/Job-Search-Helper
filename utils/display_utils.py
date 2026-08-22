@@ -80,7 +80,7 @@ def print_job_separator() -> None:
     (bypassing the log Formatter, which would otherwise stamp even an empty message).
     """
     with _status_paused():
-        print()
+        print(flush=True)
     for handler in logging.root.handlers:
         if isinstance(handler, logging.FileHandler):
             try:

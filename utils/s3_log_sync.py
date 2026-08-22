@@ -55,9 +55,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .display_utils import print_job_separator, print_s3_progress
 from .output_paths import cover_letter_mode_names
 from .s3_outputs import (
     _SYNC_LOCK_STALE_SECONDS,
+    _sync_progress,
     acquire_sync_lock,
     release_sync_lock,
     resolve_output_dir,
@@ -236,6 +238,15 @@ def _compute_full_resync_sets(
     content_root = output_dir / cfg.content_dir_name
     content_prefix = s3_key_for_file(output_dir, content_root) + "/"
 
+    # coverletters' s3_log_rel lives *inside* content_root (unlike form_fill_rules' sibling
+    # layout, chosen specifically to avoid this) — it's log infrastructure, not resource content,
+    # and must not be mistaken for a file to download/delete during a full resync.
+    log_rel_in_content: str | None = None
+    try:
+        log_rel_in_content = (output_dir / cfg.s3_log_rel).relative_to(content_root).as_posix()
+    except ValueError:
+        pass  # log lives outside content_root — nothing to exclude
+
     remote_paths: set[str] = set()
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=content_prefix):
@@ -243,7 +254,10 @@ def _compute_full_resync_sets(
             key = obj.get("Key") or ""
             if not key or key.endswith("/") or not key.startswith(content_prefix):
                 continue
-            remote_paths.add(key[len(content_prefix):])
+            rel = key[len(content_prefix):]
+            if rel == log_rel_in_content:
+                continue
+            remote_paths.add(rel)
 
     if cfg.mutable_content:
         local_paths = (
@@ -434,12 +448,30 @@ def _apply_add_delete(
     to_download: set[str], to_delete: set[str], *, mode_filter: tuple[str, ...] | None,
 ) -> None:
     content_root = output_dir / cfg.content_dir_name
-    for rel in sorted(to_download):
-        if mode_filter is not None and cfg.content_dir_name == RESOURCE_COVERLETTERS:
-            if not _cover_letter_rel_in_modes(rel, mode_filter):
-                continue
+
+    if mode_filter is not None and cfg.content_dir_name == RESOURCE_COVERLETTERS:
+        download_list = sorted(rel for rel in to_download if _cover_letter_rel_in_modes(rel, mode_filter))
+    else:
+        download_list = sorted(to_download)
+    delete_list = sorted(to_delete)
+
+    total = len(download_list) + len(delete_list)
+    if total == 0:
+        return
+
+    print_job_separator()
+    _sync_progress(
+        "%s: sync phase — %d file(s) from S3 (%d to download, %d to delete)...",
+        cfg.content_dir_name, total, len(download_list), len(delete_list),
+    )
+
+    verb = f"{cfg.content_dir_name} download"
+    current = 0
+    for rel in download_list:
+        current += 1
         dest = content_root / rel
         if dest.is_file() and not cfg.mutable_content:
+            print_s3_progress(verb, current, total, rel, action="already up to date")
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         key = _content_key(output_dir, cfg, rel)
@@ -447,13 +479,19 @@ def _apply_add_delete(
             s3.download_file(bucket, key, str(dest))
         except Exception as e:
             log.warning("Could not download s3://%s/%s: %s", bucket, key, e)
-    for rel in sorted(to_delete):
+        print_s3_progress(verb, current, total, rel, action="downloading")
+    for rel in delete_list:
+        current += 1
         dest = content_root / rel
         if dest.is_file():
             try:
                 dest.unlink()
             except OSError as e:
                 log.warning("Could not delete local %s: %s", dest, e)
+            print_s3_progress(verb, current, total, rel, action="deleting")
+        else:
+            print_s3_progress(verb, current, total, rel, action="already removed")
+    print_job_separator()
 
 
 def backfill_existing_files(resource: str, *, root: Path) -> None:
@@ -648,10 +686,25 @@ def sync_log_upload(resource: str, *, root: Path, pending: PendingChangeTracker)
 
         _apply_add_delete(s3, bucket, output_dir, cfg, to_download, to_delete, mode_filter=None)
 
+        total_upload = len(pending_adds) + len(pending_deletes)
+        if total_upload:
+            print_job_separator()
+            _sync_progress(
+                "%s: upload phase — %d file(s) to S3 (%d to upload, %d to delete)...",
+                cfg.content_dir_name, total_upload, len(pending_adds), len(pending_deletes),
+            )
         if pending_adds:
-            doc = _append_add_entry(s3, bucket, output_dir, cfg, doc, content_root, pending_adds)
+            doc = _append_add_entry(
+                s3, bucket, output_dir, cfg, doc, content_root, pending_adds,
+                progress_start=0, progress_total=total_upload,
+            )
         if pending_deletes:
-            doc = _append_delete_entry(s3, bucket, output_dir, cfg, doc, pending_deletes)
+            doc = _append_delete_entry(
+                s3, bucket, output_dir, cfg, doc, pending_deletes,
+                progress_start=len(pending_adds), progress_total=total_upload,
+            )
+        if total_upload:
+            print_job_separator()
 
         _write_local_log_doc(local_log_path, doc)
         pending.clear()
@@ -699,7 +752,7 @@ def _snapshot_before_etags(s3, bucket: str, output_dir: Path, cfg: _ResourceConf
 
 def _append_add_entry(
     s3, bucket: str, output_dir: Path, cfg: _ResourceConfig, doc: dict[str, Any],
-    content_root: Path, rels: set[str],
+    content_root: Path, rels: set[str], *, progress_start: int, progress_total: int,
 ) -> dict[str, Any]:
     from .s3_outputs import _sync_lock_owner
 
@@ -714,9 +767,11 @@ def _append_add_entry(
     doc.setdefault("entries", []).append(entry)
     _upload_remote_log(s3, bucket, output_dir, cfg, doc)
 
-    for rel in rel_list:
+    verb = f"{cfg.content_dir_name} upload"
+    for i, rel in enumerate(rel_list, start=1):
         src = content_root / rel
         if not src.is_file():
+            print_s3_progress(verb, progress_start + i, progress_total, rel, action="missing locally")
             continue
         key = _content_key(output_dir, cfg, rel)
         ctype, _ = mimetypes.guess_type(src.name)
@@ -728,6 +783,7 @@ def _append_add_entry(
                 s3.upload_file(str(src), bucket, key)
         except Exception as e:
             log.warning("Could not upload s3://%s/%s: %s", bucket, key, e)
+        print_s3_progress(verb, progress_start + i, progress_total, rel, action="uploading")
 
     from .s3_outputs import _sync_lock_key as _lk
 
@@ -752,6 +808,7 @@ def _append_add_entry(
 
 def _append_delete_entry(
     s3, bucket: str, output_dir: Path, cfg: _ResourceConfig, doc: dict[str, Any], rels: set[str],
+    *, progress_start: int, progress_total: int,
 ) -> dict[str, Any]:
     from .s3_outputs import _sync_lock_owner
 
@@ -768,12 +825,14 @@ def _append_delete_entry(
 
     from botocore.exceptions import ClientError
 
-    for rel in rel_list:
+    verb = f"{cfg.content_dir_name} upload"
+    for i, rel in enumerate(rel_list, start=1):
         key = _content_key(output_dir, cfg, rel)
         try:
             s3.delete_object(Bucket=bucket, Key=key)
         except ClientError as e:
             log.warning("Could not delete s3://%s/%s: %s", bucket, key, e)
+        print_s3_progress(verb, progress_start + i, progress_total, rel, action="deleting")
 
     doc2 = _download_remote_log(s3, bucket, output_dir, cfg)
     ours = next((e for e in doc2.get("entries") or [] if e.get("sequence") == seq), None)
