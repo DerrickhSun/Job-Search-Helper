@@ -33,6 +33,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .display_utils import print_s3_progress
+from .eval_utils.company_blacklist import (
+    DEFAULT_BLACKLIST_PATH,
+    DEFAULT_TEMP_BLACKLIST_PATH,
+    load_company_blacklist,
+    load_temporary_blacklist,
+    merge_company_blacklist_entries,
+    merge_temporary_blacklist_entries,
+    save_company_blacklist,
+    save_temporary_blacklist,
+)
 from .output_paths import (
     APPLICATIONS_ARCHIVE_CSV,
     APPLICATIONS_CSV,
@@ -347,6 +357,75 @@ def _clean_memory_against_archive(memory_csv: Path, archive_csv: Path) -> int:
     return removed
 
 
+# (local_path, s3-key relative to the prefix, load_fn, merge_fn, save_fn, label) for each
+# blacklist-style file synced outside the output/ tree — see _sync_company_blacklists_download/
+# _sync_company_blacklists_upload. S3-keyed to mirror the local ``data/`` path directly, parallel
+# to (but outside) the ``{prefix}output/...`` layout everything else in this module uses.
+_BLACKLIST_FILES = (
+    (DEFAULT_BLACKLIST_PATH, "data/company_blacklist.json",
+     load_company_blacklist, merge_company_blacklist_entries, save_company_blacklist,
+     "company blacklist"),
+    (DEFAULT_TEMP_BLACKLIST_PATH, "data/company_blacklist_temporary.json",
+     load_temporary_blacklist, merge_temporary_blacklist_entries, save_temporary_blacklist,
+     "temporary company blacklist"),
+)
+
+
+def _download_and_merge_blacklist_file(
+    s3, bucket: str, s3_key: str, local_path: Path, *, load_fn, merge_fn, save_fn, label: str,
+) -> None:
+    """
+    Merge one blacklist-style JSON file with whatever's on S3 (missing remote object -> nothing to
+    merge yet; the local file gets pushed as-is at upload time). Reuses the existing loaders
+    (``load_company_blacklist``/``load_temporary_blacklist``) against a throwaway temp copy of the
+    remote bytes rather than duplicating their JSON-parsing/tolerance logic here.
+    """
+    import tempfile
+
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=s3_key)
+        remote_bytes = resp["Body"].read()
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code", "") not in ("NoSuchKey", "404"):
+            log.warning("Could not check S3 for %s: %s", label, e)
+        return
+    except (BotoCoreError, OSError) as e:
+        log.warning("Could not check S3 for %s: %s", label, e)
+        return
+
+    local_entries = load_fn(local_path)
+    with tempfile.TemporaryDirectory() as td:
+        tmp_path = Path(td) / local_path.name
+        tmp_path.write_bytes(remote_bytes)
+        remote_entries = load_fn(tmp_path)
+
+    merged = merge_fn(local_entries, remote_entries)
+    if merged != local_entries:
+        save_fn(merged, local_path)
+        _sync_progress("S3: merged %s -> %d total entr%s", label, len(merged), "y" if len(merged) == 1 else "ies")
+
+
+def _sync_company_blacklists_download(s3, bucket: str) -> None:
+    for local_path, s3_rel, load_fn, merge_fn, save_fn, label in _BLACKLIST_FILES:
+        _download_and_merge_blacklist_file(
+            s3, bucket, f"{s3_output_prefix()}{s3_rel}", local_path,
+            load_fn=load_fn, merge_fn=merge_fn, save_fn=save_fn, label=label,
+        )
+
+
+def _sync_company_blacklists_upload(s3, bucket: str) -> None:
+    for local_path, s3_rel, _load_fn, _merge_fn, _save_fn, label in _BLACKLIST_FILES:
+        if not local_path.is_file():
+            continue
+        key = f"{s3_output_prefix()}{s3_rel}"
+        try:
+            s3.upload_file(str(local_path), bucket, key, ExtraArgs={"ContentType": "application/json"})
+        except Exception as e:
+            log.warning("Could not upload %s to S3: %s", label, e)
+
+
 def sync_download_output(local_dir: Path | str = OUTPUT_DIR) -> int:
     """
     Download objects from S3 into *local_dir*, excluding ``coverletters/``/``form_fill_rules/``
@@ -646,6 +725,11 @@ def sync_download_output_coordinated(
 
     token = acquire_sync_lock()
     if token is not None:
+        try:
+            s3 = _s3_client()
+            _sync_company_blacklists_download(s3, s3_output_bucket())
+        except ImportError:
+            log.warning("Company blacklist S3 sync skipped: install boto3")
         sync_download_output(local_dir)
     else:
         _sync_progress(
@@ -682,6 +766,11 @@ def sync_upload_output_coordinated(
     # of cover letters/rules. The two scopes use independent locks, so there's no ordering hazard.
     if lock_token is not None:
         sync_upload_output(local_dir)
+        try:
+            s3 = _s3_client()
+            _sync_company_blacklists_upload(s3, s3_output_bucket())
+        except ImportError:
+            log.warning("Company blacklist S3 sync skipped: install boto3")
         release_sync_lock(lock_token)
     else:
         _sync_progress(
