@@ -64,13 +64,8 @@ _BEHAVIOR_DEFAULTS = {
 
 _BEHAVIOR_FILE = Path("data/behavior.json")
 
-_SEARCH_DEFAULTS: dict = {
-    "keywords": ["software developer", "software engineer", "data scientist", "data analyst"],
-    "location": "United States",
-    "posted_within_24h": True,
-}
-
-_SEARCH_FILE = Path("data/search.json")
+from utils.search_config import DEFAULT_SEARCH_PATH as _SEARCH_FILE
+from utils.search_config import SEARCH_DEFAULTS as _SEARCH_DEFAULTS
 
 
 def _load_config(path: Path, defaults: dict) -> dict:

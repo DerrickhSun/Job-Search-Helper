@@ -52,6 +52,12 @@ from .output_paths import (
     FORM_FILL_RULES_DIR,
     OUTPUT_DIR,
 )
+from .search_config import (
+    DEFAULT_SEARCH_PATH,
+    load_search_config,
+    merge_search_config,
+    save_search_config,
+)
 
 if TYPE_CHECKING:  # avoids a circular import — s3_log_sync.py imports several names from here
     from .s3_log_sync import PendingChangeTracker
@@ -426,6 +432,87 @@ def _sync_company_blacklists_upload(s3, bucket: str) -> None:
             log.warning("Could not upload %s to S3: %s", label, e)
 
 
+_SEARCH_CONFIG_S3_REL = "data/search.json"
+
+
+def _download_and_merge_search_config(s3, bucket: str) -> None:
+    """
+    Unlike the blacklist files, ``search.json`` has scalar fields (``location``,
+    ``posted_within_24h``) that can't be unioned — only ``keywords`` can. Those scalars need
+    genuine last-write-wins based on real modification time (local file mtime vs. the S3 object's
+    ``LastModified``), not "download always overwrites" — that would silently clobber a fresh local
+    edit the human just made by hand but hasn't uploaded yet. See :func:`merge_search_config`.
+    """
+    import tempfile
+
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    key = f"{s3_output_prefix()}{_SEARCH_CONFIG_S3_REL}"
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        remote_bytes = resp["Body"].read()
+        remote_mtime = resp["LastModified"].timestamp()
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code", "") not in ("NoSuchKey", "404"):
+            log.warning("Could not check S3 for search config: %s", e)
+        return
+    except (BotoCoreError, OSError) as e:
+        log.warning("Could not check S3 for search config: %s", e)
+        return
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp_path = Path(td) / DEFAULT_SEARCH_PATH.name
+        tmp_path.write_bytes(remote_bytes)
+        remote_config = load_search_config(tmp_path)
+
+    if not DEFAULT_SEARCH_PATH.is_file():
+        # No local file to merge with yet -- take remote as-is rather than unioning its keywords
+        # against the built-in fallback defaults (load_search_config's missing-file return value),
+        # which would pollute a brand-new device with keywords nobody actually asked for.
+        save_search_config(remote_config, DEFAULT_SEARCH_PATH)
+        _sync_progress("S3: downloaded search config (no local copy yet)")
+        return
+
+    local_config = load_search_config(DEFAULT_SEARCH_PATH)
+    local_mtime = DEFAULT_SEARCH_PATH.stat().st_mtime
+    merged = merge_search_config(
+        local_config, remote_config, local_mtime=local_mtime, remote_mtime=remote_mtime
+    )
+    if merged != local_config:
+        save_search_config(merged, DEFAULT_SEARCH_PATH)
+        _sync_progress("S3: merged search config from S3")
+
+
+def _upload_search_config(s3, bucket: str) -> None:
+    if not DEFAULT_SEARCH_PATH.is_file():
+        return
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    key = f"{s3_output_prefix()}{_SEARCH_CONFIG_S3_REL}"
+    rel = DEFAULT_SEARCH_PATH.name
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+        remote_etags = {rel: (head.get("ETag") or "").strip('"')}
+    except ClientError as e:
+        status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        code = e.response.get("Error", {}).get("Code", "")
+        if status == 404 or code in ("404", "NoSuchKey", "NotFound"):
+            remote_etags = {}
+        else:
+            log.warning("Could not check S3 for search config before upload: %s", e)
+            return
+    except (BotoCoreError, OSError) as e:
+        log.warning("Could not check S3 for search config before upload: %s", e)
+        return
+
+    if _upload_unchanged(DEFAULT_SEARCH_PATH, rel, remote_etags):
+        return  # unchanged -- keep S3's LastModified meaningful for the mtime-based merge above
+    try:
+        s3.upload_file(str(DEFAULT_SEARCH_PATH), bucket, key, ExtraArgs={"ContentType": "application/json"})
+    except Exception as e:
+        log.warning("Could not upload search config to S3: %s", e)
+
+
 def sync_download_output(local_dir: Path | str = OUTPUT_DIR) -> int:
     """
     Download objects from S3 into *local_dir*, excluding ``coverletters/``/``form_fill_rules/``
@@ -727,9 +814,11 @@ def sync_download_output_coordinated(
     if token is not None:
         try:
             s3 = _s3_client()
-            _sync_company_blacklists_download(s3, s3_output_bucket())
+            bucket = s3_output_bucket()
+            _sync_company_blacklists_download(s3, bucket)
+            _download_and_merge_search_config(s3, bucket)
         except ImportError:
-            log.warning("Company blacklist S3 sync skipped: install boto3")
+            log.warning("Company blacklist/search-config S3 sync skipped: install boto3")
         sync_download_output(local_dir)
     else:
         _sync_progress(
@@ -768,9 +857,11 @@ def sync_upload_output_coordinated(
         sync_upload_output(local_dir)
         try:
             s3 = _s3_client()
-            _sync_company_blacklists_upload(s3, s3_output_bucket())
+            bucket = s3_output_bucket()
+            _sync_company_blacklists_upload(s3, bucket)
+            _upload_search_config(s3, bucket)
         except ImportError:
-            log.warning("Company blacklist S3 sync skipped: install boto3")
+            log.warning("Company blacklist/search-config S3 sync skipped: install boto3")
         release_sync_lock(lock_token)
     else:
         _sync_progress(
