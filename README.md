@@ -126,3 +126,20 @@ The modular design makes it straightforward to add new job boards:
 
 This tool automates actions on LinkedIn. Use it responsibly and in accordance
 with LinkedIn's Terms of Service. Apply only to jobs you're genuinely interested in.
+
+---
+
+## Known Issues / TODO
+
+- **`_peek_job_from_list_link` can mislabel `job["company"]` as job-title text** (`utils/job_searcher.py:1992-2018`).
+  When a list card's title/company can't be read via the primary CSS selectors, it falls back to
+  splitting the card's raw visible text by line and assuming line 0 = title, line 1+ = company —
+  but never checks that the candidate it picks for `company` isn't just the title again. This has
+  contaminated `output/consulting_companies.json`'s `normalized_company_names` with job-title-like
+  strings (e.g. `"data scientist"`, `"full stack engineer"`) that have no corresponding entry in
+  `slugs`, since the LinkedIn company slug is read separately (and correctly) from the job's detail
+  pane via `selected_job_company_link`. Low-priority: worst case is an occasional false-positive
+  "consulting" skip if a future job's real company name happens to substring-match one of the
+  contaminated stored strings. Fix: add a `cand != title` (case-insensitive) guard to the fallback
+  loop, and prune the already-contaminated title-like entries out of
+  `output/consulting_companies.json`.
