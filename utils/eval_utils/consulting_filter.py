@@ -16,10 +16,11 @@ Company **name** uses whole-word ``consulting`` (e.g. ``X Consulting LLC``), ``s
 Names containing the substring ``IT`` (capital **I** + capital **T** only — case-sensitive, so lowercase
 ``it`` inside words does not match) are also treated as likely staffing/IT body shops and skipped.
 
-In **posting text** (title + description), bare ``consulting`` is *not* matched alone: postings often list
-prior experience in ``quantitative consulting``, ``management consulting``, etc., without the employer being
-a consultancy. Instead we match employer-style phrases (``consulting firm``, ``our consulting team``,
-``consultancy``, ``consultant`` roles, ``client company``, …).
+In **posting text** (title + description), bare ``consulting``/``staffing``/``talent`` are *not* matched
+alone: postings often list prior experience in ``quantitative consulting``, ``management consulting``, etc.,
+or invite general applicants to "join our talent community" / "talent acquisition team", without the employer
+being a consultancy or staffing agency. Instead we match employer-style phrases (``consulting firm``,
+``our consulting team``, ``consultancy``, ``consultant`` roles, ``client company``, …).
 The same description-style patterns are applied to the **title** as well as the description.
 """
 
@@ -61,12 +62,6 @@ def _posting_text_consulting_signals(title: str, description: str) -> bool:
     if _DESC_CONSULTANCY.search(text):
         return True
     if _DESC_CLIENT_COMPANY.search(text):
-        return True
-    if _COMPANY_CONSULTING.search(text):
-        return True
-    if _COMPANY_STAFFING.search(text):
-        return True
-    if _COMPANY_TALENT.search(text):
         return True
     return False
 
