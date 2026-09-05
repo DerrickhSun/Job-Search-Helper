@@ -162,6 +162,7 @@ from utils.s3_outputs import (
     sync_download_output_coordinated,
     sync_upload_output_coordinated,
 )
+from utils.apply_sheets import sheet_export_url_dedupe_key
 from utils.resume_cache import load_or_build_resume
 from utils.resume_parser import ResumeParser, first_name_from_resume
 from utils.tracker import ApplicationTracker
@@ -593,6 +594,22 @@ def run(
         if tracker.already_saved(job["id"]):
             print_job_outcome(job["title"], job["company"], outcome="skipped", reason="already applied/saved", job_id=jid)
             return
+
+        if not job.get("easy_apply"):
+            # Some companies repost the identical listing under a second LinkedIn job id; the
+            # id-based check above can't catch that, but both postings' external "Apply" button
+            # goes to the same destination — read it and dedupe on that instead.
+            dest_url = searcher.selected_job_apply_destination_url(driver)
+            if dest_url:
+                dest_key = sheet_export_url_dedupe_key(dest_url)
+                if dest_key and dest_key in tracker.recorded_url_dedupe_keys():
+                    print_job_outcome(
+                        job["title"], job["company"], outcome="skipped",
+                        reason="duplicate posting (same external apply link)", job_id=jid,
+                    )
+                    return
+                job = {**job, "url": dest_url}
+
         if is_company_blacklisted(job.get("company") or "", company_blacklist):
             _tracker_log(job, status="blacklisted", score=0.0)
             print_job_outcome(job["title"], job["company"], outcome="blacklisted", job_id=jid)

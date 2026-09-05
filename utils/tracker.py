@@ -159,6 +159,29 @@ class ApplicationTracker:
                 keys.add(k)
         return frozenset(keys)
 
+    def recorded_url_dedupe_keys(
+        self, *, statuses: tuple[str, ...] = ("applied", "saved", "apply_opened")
+    ) -> frozenset[str]:
+        """
+        ``sheet_export_url_dedupe_key`` for every stored ``url`` with one of the given statuses.
+
+        General-purpose sibling of :func:`recorded_greenhouse_job_url_keys` — keyed by the same
+        LinkedIn-id/Greenhouse/other three-tier logic used everywhere else job identity matters,
+        instead of Greenhouse-only normalization, so it also catches two different LinkedIn
+        postings whose external "Apply" destination turned out to be the exact same non-Greenhouse
+        URL (e.g. filter mode storing that destination as ``job["url"]`` once it's read from the
+        page instead of the LinkedIn posting URL).
+        """
+        if not statuses:
+            return frozenset()
+        placeholders = ",".join("?" * len(statuses))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT url FROM applications WHERE url != '' AND status IN ({placeholders})",
+                statuses,
+            ).fetchall()
+        return frozenset(k for (u,) in rows if u and (k := _sheet_export_url_dedupe_key(u)))
+
     def last_status_for_job(self, job_id: str) -> str | None:
         """Latest stored status for this LinkedIn job id, or None if never logged."""
         with self._conn() as conn:

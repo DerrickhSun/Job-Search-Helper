@@ -2450,6 +2450,82 @@ class JobSearcher:
                     return href
         return ""
 
+    def selected_job_apply_destination_url(self, driver, *, timeout_seconds: float = 5.0) -> str:
+        """
+        Best-effort external apply destination for the selected (non-Easy-Apply) job.
+
+        The external "Apply" control (``#jobs-apply-button-id``) is a plain ``<button
+        role="link">`` with no ``href`` at all — LinkedIn opens the destination in a new tab via
+        JS on click, so there's nothing to read without actually clicking. Clicks it, waits for a
+        new window handle, reads that tab's URL as soon as navigation has started (no waiting for
+        full page load or touching the destination page further), closes the tab, and restores
+        focus to the original window. Returns ``""`` on anything unexpected — driver stopped, no
+        button found, no new tab within ``timeout_seconds``, or the "destination" still being a
+        linkedin.com URL (a LinkedIn-hosted interstitial, not the real external site) — callers
+        fall back to the LinkedIn job URL exactly as before.
+        """
+        if self._driver_stopped(driver):
+            return ""
+        try:
+            btn = driver.find_element(By.CSS_SELECTOR, "#jobs-apply-button-id")
+        except WebDriverException:
+            return ""
+
+        original_handle = driver.current_window_handle
+        original_handles = set(driver.window_handles)
+        try:
+            driver.execute_script("arguments[0].click();", btn)
+        except WebDriverException:
+            self._driver_stopped(driver)
+            return ""
+
+        new_handle = None
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            extra = set(driver.window_handles) - original_handles
+            if extra:
+                new_handle = next(iter(extra))
+                break
+            time.sleep(0.2)
+
+        dest = ""
+        if new_handle:
+            try:
+                driver.switch_to.window(new_handle)
+                deadline = time.time() + timeout_seconds
+                while time.time() < deadline:
+                    cur = (driver.current_url or "").strip()
+                    if cur and cur.lower() != "about:blank":
+                        dest = cur
+                        break
+                    time.sleep(0.2)
+            except WebDriverException:
+                pass
+            finally:
+                try:
+                    driver.close()
+                except WebDriverException:
+                    pass
+                try:
+                    driver.switch_to.window(original_handle)
+                except WebDriverException:
+                    self._driver_stopped(driver)
+        else:
+            # Defensive fallback: some flow navigated the current tab instead of opening a new
+            # one -- read the changed URL, then go back to restore the job detail pane so a later
+            # save_current_job() call still has the right page open.
+            cur = (driver.current_url or "").strip()
+            if cur and "linkedin.com" not in cur.lower():
+                dest = cur
+            try:
+                driver.back()
+            except WebDriverException:
+                self._driver_stopped(driver)
+
+        if dest and "linkedin.com" in dest.lower():
+            return ""
+        return dest
+
     def fetch_dedicated_page_requirements(self, lookup_driver, job_id: str) -> str:
         """
         Navigate to the job's dedicated page and return the "Requirements added by the job poster"
