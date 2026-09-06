@@ -100,7 +100,10 @@ from utils.cover_letter import (
 )
 from utils.dspy_lm import configure_dspy
 from utils.form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
+from utils.output_paths import COVERLETTERS_DIR, FORM_FILL_RULES_DIR, OUTPUT_DIR
 from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
+from utils.s3_log_sync import RESOURCE_COVERLETTERS, RESOURCE_FORM_FILL_RULES, sync_log_download
+from utils.s3_outputs import resolve_output_dir
 
 log = logging.getLogger(__name__)
 
@@ -129,6 +132,14 @@ def _load_or_create_token() -> str:
 
 def _default_downloads_dir() -> Path:
     return Path.home() / "Downloads"
+
+
+def _coverletters_root() -> Path:
+    return resolve_output_dir(OUTPUT_DIR) / COVERLETTERS_DIR.name
+
+
+def _form_fill_rules_root() -> Path:
+    return resolve_output_dir(OUTPUT_DIR) / FORM_FILL_RULES_DIR.name
 
 
 def _job_id_for(*, company: str, title: str, url: str, explicit: str) -> str:
@@ -286,6 +297,10 @@ class _Handler(BaseHTTPRequestHandler):
             url=str(data.get("url") or ""),
             explicit=str(data.get("job_id") or "").strip(),
         )
+        try:
+            sync_log_download(RESOURCE_COVERLETTERS, root=_coverletters_root())
+        except Exception:
+            log.warning("Could not sync cover letters — serving from local state.", exc_info=True)
         existing = find_cover_letter_docx_for_job_id(job_id)
         reused = False
         if existing is not None:
@@ -373,6 +388,12 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(fields, list):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "fields must be a list"})
             return
+
+        try:
+            sync_log_download(RESOURCE_FORM_FILL_RULES, root=_form_fill_rules_root())
+            self.__class__.rules_engine = FormFillRulesEngine(apply_source=None)
+        except Exception:
+            log.warning("Could not sync/reload form-fill rules — serving existing rules.", exc_info=True)
 
         answers: list[dict[str, Any]] = []
         for field in fields:
