@@ -52,6 +52,41 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
     is reused and the file is copied into Downloads when ``save_docx`` is true — no OpenAI call.
     Downloads itself is never scanned as a source.
 
+    POST /process-extension
+        body: {"request_id": str, "saved_jobs_text": str?, "saved_questions_text": str?,
+                "dry_run": bool? (default false)}
+        -> {"type": "extension_processed", "request_id": str, "summary": {...}}
+           | {"type": "process_conflicts", "request_id": str, "server_request_id": str,
+               "conflicts": [{"conflict_id": str, "kind": "rule_conflict"|"blank_new_rule",
+                               "question": str, "job": str|null, "url": str|null,
+                               "extension_answer": str?, "existing_rule_answer": str?,
+                               "existing_rule_file": str?, "existing_rule_id": str?,
+                               "options": [{"choice": int, "label": str}, ...]}, ...]}
+
+        HTTP equivalent of running ``process_extension.py`` by hand: imports ``saved_jobs_text``
+        (same line format as ``saved_jobs.txt``) into ``output/assisted_applications.csv``,
+        classifies ``saved_questions_text`` (same block format as
+        ``saved_jobs_application_questions.txt``) against existing form-fill rules, and
+        auto-adds any that don't conflict. Unlike the CLI, rule conflicts and blank-answer
+        confirmations never block on a terminal prompt — if there are none, the response above
+        *is* the final result; otherwise a ``server_request_id`` (never the caller's own
+        ``request_id`` — see ``utils/extension_process_service.py``) is minted and the conflicts
+        are returned for the caller to resolve via ``/process-extension/resolve``. Pending
+        conflicts expire after 10 minutes of no resolution.
+
+    POST /process-extension/resolve
+        body: {"request_id": str, "server_request_id": str,
+                "resolutions": [{"conflict_id": str, "choice": int}, ...]}
+        -> {"type": "extension_processed", "request_id": str, "summary": {...}, "unresolved": [...]}
+           | {"type": "conflict_resolution_timeout", "request_id": str, "server_request_id": str}
+
+        Both ids from the ``process_conflicts`` message must be echoed back — an unknown/expired
+        ``server_request_id``, or one paired with the wrong ``request_id``, gets
+        ``conflict_resolution_timeout`` and commits nothing (no partial application of whichever
+        resolutions were sent). ``unresolved`` lists any conflict whose underlying rule changed or
+        was removed since it was first reported (a live edit from another device, or another
+        process on this one) — that one specific resolution is skipped, not the whole batch.
+
 AUTH:
     This server binds to 127.0.0.1 only, but any web page open in the browser can still attempt
     to ``fetch()`` a localhost port — without a check, a page other than our own extension could
@@ -99,6 +134,7 @@ from utils.cover_letter import (
     write_cover_letter_docx,
 )
 from utils.dspy_lm import configure_dspy
+from utils.extension_process_service import process_extension_request, resolve_conflicts
 from utils.form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
 from utils.output_paths import COVERLETTERS_DIR, FORM_FILL_RULES_DIR, OUTPUT_DIR
 from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
@@ -257,7 +293,9 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"status": "ok"})
 
     def do_POST(self) -> None:
-        if self.path not in ("/cover-letter", "/answer-fields"):
+        if self.path not in (
+            "/cover-letter", "/answer-fields", "/process-extension", "/process-extension/resolve",
+        ):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._authorized():
@@ -280,8 +318,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self.path == "/cover-letter":
             self._handle_cover_letter(data)
-        else:
+        elif self.path == "/answer-fields":
             self._handle_answer_fields(data)
+        elif self.path == "/process-extension":
+            self._handle_process_extension(data)
+        else:
+            self._handle_process_extension_resolve(data)
 
     def _handle_cover_letter(self, data: dict[str, Any]) -> None:
         title = str(data.get("title") or "").strip()
@@ -405,6 +447,46 @@ class _Handler(BaseHTTPRequestHandler):
             answers.append(self._answer_one_field(label, field_type))
 
         self._send_json(HTTPStatus.OK, {"answers": answers})
+
+    def _handle_process_extension(self, data: dict[str, Any]) -> None:
+        request_id = str(data.get("request_id") or "").strip()
+        if not request_id:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "request_id is required"})
+            return
+        try:
+            result = process_extension_request(
+                request_id=request_id,
+                saved_jobs_text=str(data.get("saved_jobs_text") or ""),
+                saved_questions_text=str(data.get("saved_questions_text") or ""),
+                dry_run=bool(data.get("dry_run", False)),
+            )
+        except Exception:
+            log.exception("process-extension request failed")
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "processing failed"})
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    def _handle_process_extension_resolve(self, data: dict[str, Any]) -> None:
+        request_id = str(data.get("request_id") or "").strip()
+        server_request_id = str(data.get("server_request_id") or "").strip()
+        resolutions = data.get("resolutions")
+        if not request_id or not server_request_id:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "request_id and server_request_id are required"})
+            return
+        if not isinstance(resolutions, list):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "resolutions must be a list"})
+            return
+        try:
+            result = resolve_conflicts(
+                request_id=request_id,
+                server_request_id=server_request_id,
+                resolutions=[r for r in resolutions if isinstance(r, dict)],
+            )
+        except Exception:
+            log.exception("process-extension/resolve request failed")
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "processing failed"})
+            return
+        self._send_json(HTTPStatus.OK, result)
 
 
 def main() -> int:

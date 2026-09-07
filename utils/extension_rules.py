@@ -739,6 +739,86 @@ def classify_extension_questions(
     return skipped, conflicts, new_rules, blank_new_rules
 
 
+def apply_conflict_resolution(
+    conflict: QuestionConflict,
+    choice: int,
+    *,
+    engine: FormFillRulesEngine,
+    resume: dict[str, Any],
+    rules_dir: Path | None = None,
+    dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
+) -> tuple[str, dict[str, Any] | None] | None:
+    """
+    Apply one resolution choice for a single conflict — the same file-system effects
+    :func:`resolve_conflicts_interactively`'s branches produce, factored out so a non-terminal
+    caller (an HTTP handler) can supply the choice directly instead of via ``input()``.
+
+    ``choice``: 1 = keep existing, 2 = replace with extension answer, 3 = combine (existing
+    answer first), 4 = combine (extension answer first). 3/4 are only valid when
+    ``conflict.rule_ref.category != "textareas"`` (free-text has no well-defined combined form).
+
+    Returns ``(outcome, rule)`` where ``outcome`` is ``"kept"``/``"replaced"``/``"combined"`` and
+    ``rule`` is the new rule dict for the latter two (``None`` for ``"kept"``) — or ``None`` if
+    ``choice`` requested a combine that isn't possible for this conflict (caller should treat this
+    like the CLI's "try 1 or 2" retry, not a hard error).
+    """
+    q = conflict.question
+    can_combine = conflict.rule_ref.category != "textareas"
+    # Attached to any recycle-bin entry created below, so a recycled rule shows why it
+    # conflicted (the question/answers involved) — useful context for refining it by hand.
+    recycle_context = {
+        "question": q.question,
+        "extension_answer": q.answer,
+        "rule_answer": conflict.rule_answer,
+        "job": q.company_title,
+        "url": q.url,
+    }
+    if choice == 1:
+        return "kept", None
+    if choice == 2:
+        category, rule = new_rule_for_question(q.question, q.answer)
+        if not dry_run:
+            delete_rule(
+                conflict.rule_ref, reason="conflict_replaced", context=recycle_context,
+                rules_dir=rules_dir, tracker=tracker,
+            )
+            append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
+        return "replaced", rule
+    if choice in (3, 4) and can_combine:
+        prioritize_existing = choice == 3
+        result = combined_rule_for_conflict(
+            conflict, engine=engine, resume=resume, prioritize_existing=prioritize_existing
+        )
+        if result is None:
+            return None
+        category, rule = result
+        if not dry_run:
+            reason = (
+                "conflict_combined_existing_priority" if prioritize_existing
+                else "conflict_combined_extension_priority"
+            )
+            delete_rule(
+                conflict.rule_ref, reason=reason, context=recycle_context,
+                rules_dir=rules_dir, tracker=tracker,
+            )
+            append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
+        return "combined", rule
+    return None
+
+
+def _parse_conflict_choice(raw: str, *, can_combine: bool) -> int | None:
+    if raw in ("1", "keep", "k", ""):
+        return 1
+    if raw in ("2", "replace", "r", "extension"):
+        return 2
+    if can_combine and raw in ("3", "existing", "combine-existing"):
+        return 3
+    if can_combine and raw in ("4", "new", "combine-new"):
+        return 4
+    return None
+
+
 def resolve_conflicts_interactively(
     conflicts: list[QuestionConflict],
     *,
@@ -750,22 +830,12 @@ def resolve_conflicts_interactively(
     replaced = 0
     kept = 0
     combined_total = 0
-    index = RuleIndex(rules_dir)
     engine = FormFillRulesEngine(rules_path=rules_dir or FORM_FILL_RULES_DIR, apply_source="linkedin")
     resume = _load_resume_for_rule_resolution()
 
     for conflict in conflicts:
         q = conflict.question
         can_combine = conflict.rule_ref.category != "textareas"
-        # Attached to any recycle-bin entry created below, so a recycled rule shows why it
-        # conflicted (the question/answers involved) — useful context for refining it by hand.
-        recycle_context = {
-            "question": q.question,
-            "extension_answer": q.answer,
-            "rule_answer": conflict.rule_answer,
-            "job": q.company_title,
-            "url": q.url,
-        }
         print()
         print("Conflict — existing rule disagrees with extension answer")
         print(f"  Question: {q.question}")
@@ -794,72 +864,30 @@ def resolve_conflicts_interactively(
             print("  (Free-text answers can't be combined — choose 1 or 2 for this one.)")
         valid = "1/2/3/4" if can_combine else "1/2"
         while True:
-            choice = input(f"  Choice [{valid}]: ").strip().lower()
-            if choice in ("1", "keep", "k", ""):
+            raw = input(f"  Choice [{valid}]: ").strip().lower()
+            choice = _parse_conflict_choice(raw, can_combine=can_combine)
+            if choice is None:
+                print(f"  Enter {valid.replace('/', ', ')}.")
+                continue
+            outcome = apply_conflict_resolution(
+                conflict, choice, engine=engine, resume=resume,
+                rules_dir=rules_dir, dry_run=dry_run, tracker=tracker,
+            )
+            if outcome is None:
+                print("  Could not build a combined rule for this question — try 1 or 2.")
+                continue
+            kind, rule = outcome
+            if kind == "kept":
                 kept += 1
                 print("  → Keeping existing rule.")
-                break
-            if choice in ("2", "replace", "r", "extension"):
-                if not dry_run:
-                    delete_rule(
-                        conflict.rule_ref,
-                        reason="conflict_replaced",
-                        context=recycle_context,
-                        rules_dir=rules_dir,
-                        tracker=tracker,
-                    )
-                    index.reload()
-                    category, rule = new_rule_for_question(q.question, q.answer)
-                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
-                    index.reload()
+            elif kind == "replaced":
                 replaced += 1
                 print("  → Replaced with extension answer in auto_rules.json.")
-                break
-            if can_combine and choice in ("3", "existing", "combine-existing"):
-                result = combined_rule_for_conflict(
-                    conflict, engine=engine, resume=resume, prioritize_existing=True
-                )
-                if result is None:
-                    print("  Could not build a combined rule for this question — try 1 or 2.")
-                    continue
-                category, rule = result
-                if not dry_run:
-                    delete_rule(
-                        conflict.rule_ref,
-                        reason="conflict_combined_existing_priority",
-                        context=recycle_context,
-                        rules_dir=rules_dir,
-                        tracker=tracker,
-                    )
-                    index.reload()
-                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
-                    index.reload()
+            else:
                 combined_total += 1
-                print(f"  → Combined (existing priority): {_rule_answer_preview(rule)}")
-                break
-            if can_combine and choice in ("4", "new", "combine-new"):
-                result = combined_rule_for_conflict(
-                    conflict, engine=engine, resume=resume, prioritize_existing=False
-                )
-                if result is None:
-                    print("  Could not build a combined rule for this question — try 1 or 2.")
-                    continue
-                category, rule = result
-                if not dry_run:
-                    delete_rule(
-                        conflict.rule_ref,
-                        reason="conflict_combined_extension_priority",
-                        context=recycle_context,
-                        rules_dir=rules_dir,
-                        tracker=tracker,
-                    )
-                    index.reload()
-                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
-                    index.reload()
-                combined_total += 1
-                print(f"  → Combined (extension priority): {_rule_answer_preview(rule)}")
-                break
-            print(f"  Enter {valid.replace('/', ', ')}.")
+                priority_note = "existing priority" if choice == 3 else "extension priority"
+                print(f"  → Combined ({priority_note}): {_rule_answer_preview(rule)}")
+            break
     return replaced, kept, combined_total
 
 
@@ -870,6 +898,35 @@ def _rule_answer_preview(rule: dict[str, Any]) -> list[str]:
     if "value" in result and not result.get("values"):
         return [str(result.get("value") or "")]
     return list(result.get("values") or [])
+
+
+def apply_blank_rule_resolution(
+    category: str,
+    rule: dict[str, Any],
+    choice: int,
+    *,
+    rules_dir: Path | None = None,
+    dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
+) -> str:
+    """
+    Apply one resolution choice for a blank-new-rule question — 1 = skip, 2 = save. Returns
+    ``"saved"`` or ``"skipped"``. Factored out of :func:`confirm_blank_rules_interactively` so a
+    non-terminal caller can supply the choice directly instead of via ``input()``.
+    """
+    if choice == 2:
+        if not dry_run:
+            append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
+        return "saved"
+    return "skipped"
+
+
+def _parse_blank_rule_choice(raw: str) -> int | None:
+    if raw in ("1", "skip", "s", ""):
+        return 1
+    if raw in ("2", "save", "yes", "y"):
+        return 2
+    return None
 
 
 def confirm_blank_rules_interactively(
@@ -898,18 +955,21 @@ def confirm_blank_rules_interactively(
         print("  [1] Skip (do not save)")
         print(f"  [2] Save blank rule to {AUTO_RULES_FILENAME}")
         while True:
-            choice = input("  Choice [1/2]: ").strip().lower()
-            if choice in ("1", "skip", "s", ""):
-                skipped += 1
-                print("  → Skipped (no rule saved).")
-                break
-            if choice in ("2", "save", "yes", "y"):
-                if not dry_run:
-                    append_rule_to_auto_rules(category, rule, rules_dir=rules_dir, tracker=tracker)
+            raw = input("  Choice [1/2]: ").strip().lower()
+            choice = _parse_blank_rule_choice(raw)
+            if choice is None:
+                print("  Enter 1 or 2.")
+                continue
+            outcome = apply_blank_rule_resolution(
+                category, rule, choice, rules_dir=rules_dir, dry_run=dry_run, tracker=tracker
+            )
+            if outcome == "saved":
                 saved += 1
                 print(f"  → Saved blank rule to {AUTO_RULES_FILENAME}.")
-                break
-            print("  Enter 1 or 2.")
+            else:
+                skipped += 1
+                print("  → Skipped (no rule saved).")
+            break
     return saved, skipped
 
 
