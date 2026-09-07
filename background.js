@@ -188,6 +188,72 @@ async function answerFields(fields) {
   return { answers: data.answers || [] };
 }
 
+async function processExtensionRequest({ savedJobsText, savedQuestionsText, dryRun }) {
+  const { serverUrl, token } = await getExtensionServerSettings();
+  if (!token) {
+    return { error: "No API token set — configure it on the extension's options page." };
+  }
+  const requestId = crypto.randomUUID();
+
+  let res;
+  try {
+    res = await fetch(serverUrl + "/process-extension", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token,
+      },
+      body: JSON.stringify({
+        request_id: requestId,
+        saved_jobs_text: savedJobsText || "",
+        saved_questions_text: savedQuestionsText || "",
+        dry_run: !!dryRun,
+      }),
+    });
+  } catch (err) {
+    return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    return { error: (data && data.error) || ("server responded " + res.status) };
+  }
+
+  return data; // {type: "extension_processed", ...} or {type: "process_conflicts", ...}
+}
+
+async function resolveExtensionConflicts({ requestId, serverRequestId, resolutions }) {
+  const { serverUrl, token } = await getExtensionServerSettings();
+  if (!token) {
+    return { error: "No API token set — configure it on the extension's options page." };
+  }
+
+  let res;
+  try {
+    res = await fetch(serverUrl + "/process-extension/resolve", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token,
+      },
+      body: JSON.stringify({
+        request_id: requestId,
+        server_request_id: serverRequestId,
+        resolutions: resolutions || [],
+      }),
+    });
+  } catch (err) {
+    return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    return { error: (data && data.error) || ("server responded " + res.status) };
+  }
+
+  return data; // {type: "extension_processed", ...} or {type: "conflict_resolution_timeout", ...}
+}
+
 browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "GENERATE_COVER_LETTER") {
     generateCoverLetter(msg.job || {}).then(sendResponse);
@@ -196,6 +262,16 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === "ANSWER_FIELDS") {
     answerFields(msg.fields || []).then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === "PROCESS_EXTENSION") {
+    processExtensionRequest(msg).then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === "RESOLVE_CONFLICTS") {
+    resolveExtensionConflicts(msg).then(sendResponse);
     return true;
   }
 

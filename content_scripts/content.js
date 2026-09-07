@@ -1218,6 +1218,229 @@ async function downloadAllSavedJobs() {
     }
 }
 
+// Handles the result of a PROCESS_EXTENSION request sent after "Download jobs" writes the
+// Downloads files. `btn` is the Download-jobs button itself, reused for a brief transient status
+// (mirrors the cover-letter button's "Copied to clipboard!" flash) when nothing needs a decision;
+// a real conflict list instead opens its own modal, independent of the button's lifecycle.
+function handleProcessExtensionResult(result, btn) {
+    if (!result || result.error) {
+        btn.textContent = "Sync failed: " + ((result && result.error) || "unknown error");
+        setTimeout(() => { btn.textContent = "Download jobs"; }, 4000);
+        return;
+    }
+    if (result.type === "process_conflicts") {
+        btn.textContent = "Download jobs";
+        showConflictResolutionModal(result);
+        return;
+    }
+    if (result.type === "extension_processed") {
+        const s = result.summary || {};
+        const parts = [];
+        if (s.jobs_added) parts.push(s.jobs_added + " job(s)");
+        const rulesChanged = (s.rules_added || 0) + (s.rules_replaced || 0) + (s.rules_combined || 0) + (s.blank_saved || 0);
+        if (rulesChanged) parts.push(rulesChanged + " rule(s)");
+        btn.textContent = parts.length ? "Synced: " + parts.join(", ") : "Synced (nothing new)";
+        setTimeout(() => { btn.textContent = "Download jobs"; }, 3000);
+        return;
+    }
+    btn.textContent = "Download jobs";
+}
+
+const CONFLICT_MODAL_KIND_LABELS = {
+    rule_conflict: "Existing rule disagrees with extension answer",
+    blank_new_rule: "Blank answer — save an empty rule?",
+};
+
+function injectConflictModalStyles() {
+    if (document.getElementById("jobhelp-conflict-modal-styles")) return;
+    const style = document.createElement("style");
+    style.id = "jobhelp-conflict-modal-styles";
+    style.textContent =
+        ".jobhelp-conflict-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);" +
+        "z-index:2147483647;display:flex;align-items:center;justify-content:center;}" +
+        ".jobhelp-conflict-card{background:#fff;color:#111;border-radius:8px;max-width:640px;" +
+        "width:90vw;max-height:85vh;overflow:auto;padding:20px;box-shadow:0 8px 30px rgba(0,0,0,.3);" +
+        "font-size:14px;line-height:1.4;}" +
+        ".jobhelp-conflict-card h2{margin:0 0 12px;font-size:16px;}" +
+        ".jobhelp-conflict-row{border:1px solid #ddd;border-radius:6px;padding:10px 12px;margin-bottom:10px;}" +
+        ".jobhelp-conflict-row .q{font-weight:600;margin-bottom:4px;}" +
+        ".jobhelp-conflict-row .meta{color:#555;font-size:12px;margin-bottom:6px;}" +
+        ".jobhelp-conflict-row .answers{margin-bottom:8px;}" +
+        ".jobhelp-conflict-options{display:flex;flex-wrap:wrap;gap:6px;}" +
+        ".jobhelp-conflict-options button{border:1px solid #999;background:#f5f5f5;border-radius:4px;" +
+        "padding:5px 10px;cursor:pointer;font-size:13px;}" +
+        ".jobhelp-conflict-options button.selected{background:#2563eb;color:#fff;border-color:#2563eb;}" +
+        ".jobhelp-conflict-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}" +
+        ".jobhelp-conflict-footer button{padding:7px 14px;border-radius:4px;cursor:pointer;font-size:13px;}" +
+        ".jobhelp-conflict-footer .submit{background:#2563eb;color:#fff;border:1px solid #2563eb;}" +
+        ".jobhelp-conflict-footer .submit:disabled{opacity:.5;cursor:not-allowed;}" +
+        ".jobhelp-conflict-footer .close{background:#fff;border:1px solid #999;}" +
+        ".jobhelp-conflict-unresolved{color:#b00020;font-size:13px;margin-top:4px;}";
+    document.head.appendChild(style);
+}
+
+function buildConflictRow(conflict, onSelect) {
+    const row = document.createElement("div");
+    row.className = "jobhelp-conflict-row";
+
+    const q = document.createElement("div");
+    q.className = "q";
+    q.textContent = conflict.question || "(no question text)";
+    row.appendChild(q);
+
+    const metaParts = [];
+    if (conflict.job) metaParts.push(conflict.job);
+    if (conflict.url) metaParts.push(conflict.url);
+    if (metaParts.length) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = metaParts.join(" — ");
+        row.appendChild(meta);
+    }
+
+    const kindLabel = document.createElement("div");
+    kindLabel.className = "meta";
+    kindLabel.textContent = CONFLICT_MODAL_KIND_LABELS[conflict.kind] || conflict.kind;
+    row.appendChild(kindLabel);
+
+    if (conflict.kind === "rule_conflict") {
+        const answers = document.createElement("div");
+        answers.className = "answers";
+        answers.textContent =
+            "Extension answer: " + (conflict.extension_answer || "(blank)") +
+            "  |  Existing rule answer: " + (conflict.existing_rule_answer || "(none)");
+        row.appendChild(answers);
+    }
+
+    const options = document.createElement("div");
+    options.className = "jobhelp-conflict-options";
+    for (const opt of conflict.options || []) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = opt.label;
+        btn.addEventListener("click", () => {
+            options.querySelectorAll("button").forEach((b) => b.classList.remove("selected"));
+            btn.classList.add("selected");
+            onSelect(opt.choice);
+        });
+        options.appendChild(btn);
+    }
+    row.appendChild(options);
+
+    return row;
+}
+
+function showConflictResolutionModal(result) {
+    injectConflictModalStyles();
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "jobhelp-conflict-backdrop";
+
+    const card = document.createElement("div");
+    card.className = "jobhelp-conflict-card";
+    backdrop.appendChild(card);
+
+    const heading = document.createElement("h2");
+    const conflicts = result.conflicts || [];
+    heading.textContent = "Resolve " + conflicts.length + " item(s) from your saved jobs";
+    card.appendChild(heading);
+
+    const choices = new Map(); // conflict_id -> choice
+    const submitBtn = document.createElement("button");
+
+    for (const conflict of conflicts) {
+        const row = buildConflictRow(conflict, (choice) => {
+            choices.set(conflict.conflict_id, choice);
+            submitBtn.disabled = choices.size < conflicts.length;
+        });
+        card.appendChild(row);
+    }
+
+    const footer = document.createElement("div");
+    footer.className = "jobhelp-conflict-footer";
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "close";
+    closeBtn.textContent = "Close";
+    closeBtn.addEventListener("click", () => backdrop.remove());
+    footer.appendChild(closeBtn);
+
+    submitBtn.type = "button";
+    submitBtn.className = "submit";
+    submitBtn.textContent = "Submit";
+    submitBtn.disabled = conflicts.length > 0;
+    submitBtn.addEventListener("click", async () => {
+        submitBtn.disabled = true;
+        closeBtn.disabled = true;
+        card.querySelectorAll(".jobhelp-conflict-options button").forEach((b) => { b.disabled = true; });
+        submitBtn.textContent = "Submitting…";
+
+        const resolutions = [...choices.entries()].map(([conflict_id, choice]) => ({ conflict_id, choice }));
+        let outcome;
+        try {
+            outcome = await browser.runtime.sendMessage({
+                type: "RESOLVE_CONFLICTS",
+                requestId: result.request_id,
+                serverRequestId: result.server_request_id,
+                resolutions,
+            });
+        } catch (err) {
+            outcome = { error: err.message };
+        }
+        renderConflictOutcome(card, outcome, () => backdrop.remove());
+    });
+    footer.appendChild(submitBtn);
+
+    card.appendChild(footer);
+    document.body.appendChild(backdrop);
+}
+
+function renderConflictOutcome(card, outcome, onDone) {
+    card.replaceChildren();
+
+    const heading = document.createElement("h2");
+    card.appendChild(heading);
+
+    const body = document.createElement("div");
+    card.appendChild(body);
+
+    if (!outcome || outcome.error) {
+        heading.textContent = "Something went wrong";
+        body.textContent = (outcome && outcome.error) || "Unknown error.";
+    } else if (outcome.type === "conflict_resolution_timeout") {
+        heading.textContent = "Took too long";
+        body.textContent = "This took too long to resolve — please press \"Download jobs\" again.";
+    } else {
+        const s = outcome.summary || {};
+        heading.textContent = "Done";
+        body.textContent =
+            "Rules — replaced: " + (s.rules_replaced || 0) +
+            ", kept: " + (s.rules_kept || 0) +
+            ", combined: " + (s.rules_combined || 0) +
+            ", blank saved: " + (s.blank_saved || 0) +
+            ", blank skipped: " + (s.blank_skipped || 0);
+
+        if (outcome.unresolved && outcome.unresolved.length) {
+            const unresolved = document.createElement("div");
+            unresolved.className = "jobhelp-conflict-unresolved";
+            unresolved.textContent =
+                outcome.unresolved.length + " item(s) could not be applied (changed since reported) — try again.";
+            card.appendChild(unresolved);
+        }
+    }
+
+    const footer = document.createElement("div");
+    footer.className = "jobhelp-conflict-footer";
+    const doneBtn = document.createElement("button");
+    doneBtn.type = "button";
+    doneBtn.className = "submit";
+    doneBtn.textContent = "Done";
+    doneBtn.addEventListener("click", onDone);
+    footer.appendChild(doneBtn);
+    card.appendChild(footer);
+}
+
 function injectSlotStyles(slot) {
     if (slot.querySelector("style[data-jobhelp]")) return;
 
@@ -1490,8 +1713,36 @@ function buildButtons(slot) {
     const downloadBtn = document.createElement("button");
     downloadBtn.type = "button";
     downloadBtn.textContent = "Download jobs";
-    downloadBtn.addEventListener("click", () => {
-        downloadAllSavedJobs();
+    downloadBtn.addEventListener("click", async () => {
+        downloadBtn.disabled = true;
+        downloadBtn.textContent = "Downloading…";
+        try {
+            const jobs = await getSavedJobs();
+            const questions = await getSavedApplicationQuestions();
+            const jobsText = jobs.map((job) => formatSavedJobDownloadLine(job)).join("\n");
+            const questionsText = questions.length ? formatApplicationQuestionsDownloadText(questions) : "";
+
+            await saveTextFile(jobsText, "saved_jobs.txt");
+            if (questions.length) {
+                await saveTextFile(questionsText, "saved_job_application_questions.txt");
+            }
+
+            let result;
+            try {
+                result = await browser.runtime.sendMessage({
+                    type: "PROCESS_EXTENSION",
+                    savedJobsText: jobsText,
+                    savedQuestionsText: questionsText,
+                });
+            } catch (err) {
+                result = { error: err.message };
+            }
+            downloadBtn.disabled = false;
+            handleProcessExtensionResult(result, downloadBtn);
+        } catch (err) {
+            downloadBtn.disabled = false;
+            handleProcessExtensionResult({ error: err.message }, downloadBtn);
+        }
     });
 
     const menuWrap = document.createElement("div");
