@@ -669,6 +669,9 @@ class QuestionProcessResult:
     resolved_replaced: int = 0
     resolved_kept: int = 0
     resolved_combined: int = 0
+    reprioritize: list[QuestionConflict] | None = None
+    resolved_reprioritized: int = 0
+    resolved_kept_priority: int = 0
     invalid_blocks: list[str] | None = None
     empty_rules_removed: int = 0
 
@@ -683,12 +686,20 @@ def classify_extension_questions(
     list[QuestionConflict],
     list[tuple[ExtensionQuestion, str, dict[str, Any]]],
     list[tuple[ExtensionQuestion, str, dict[str, Any]]],
+    list[QuestionConflict],
 ]:
     """
-    Return ``(skipped_same_answer, conflicts, new_rules, blank_new_rules)``.
+    Return ``(skipped_same_answer, conflicts, new_rules, blank_new_rules, reprioritize)``.
 
     ``new_rules`` / ``blank_new_rules`` are ``(question, category, rule_dict)`` tuples.
     Blank extension answers with no matching rule go in ``blank_new_rules`` (need confirmation).
+
+    ``reprioritize`` holds the softer case where the extension's answer is already one of the
+    rule's accepted fallback answers — just not the top-priority one — rather than a genuine
+    disagreement: e.g. a rule with ``answer: ["No", "Not applicable"]`` and an extension answer of
+    "Not applicable". Asking "replace the rule" here would be misleading (the rule already accepts
+    this answer); the only real question is whether it should move to the front. Kept out of
+    ``conflicts`` entirely so callers don't have to re-derive this distinction themselves.
     """
     index = RuleIndex(rules_dir)
     engine = FormFillRulesEngine(rules_path=rules_dir or FORM_FILL_RULES_DIR, apply_source="linkedin")
@@ -698,6 +709,7 @@ def classify_extension_questions(
     conflicts: list[QuestionConflict] = []
     new_rules: list[tuple[ExtensionQuestion, str, dict[str, Any]]] = []
     blank_new_rules: list[tuple[ExtensionQuestion, str, dict[str, Any]]] = []
+    reprioritize: list[QuestionConflict] = []
 
     for item in questions:
         ref = index.find_matching_rule(item.question)
@@ -708,13 +720,23 @@ def classify_extension_questions(
             else:
                 new_rules.append((item, category, rule))
             continue
-        rule_answer = resolve_rule_answer(ref, item.question, engine=engine, resume=resume)
+        candidates = resolve_rule_answer_candidates(ref, item.question, engine=engine, resume=resume)
+        rule_answer = candidates[0] if candidates else None
         # Empty stored literals resolve to None; treat blank-vs-blank as a match.
         if rule_answer is None and _rule_is_blank(ref.rule) and _is_blank_answer(item.answer):
             skipped.append(item)
             continue
         if _answers_match(rule_answer, item.answer):
             skipped.append(item)
+            continue
+        if rule_answer is not None and any(_answers_match(c, item.answer) for c in candidates[1:]):
+            reprioritize.append(
+                QuestionConflict(
+                    question=item,
+                    rule_ref=ref,
+                    rule_answer=rule_answer,
+                )
+            )
             continue
         if rule_answer is None:
             if _rule_is_blank(ref.rule):
@@ -736,7 +758,7 @@ def classify_extension_questions(
                 rule_answer=rule_answer,
             )
         )
-    return skipped, conflicts, new_rules, blank_new_rules
+    return skipped, conflicts, new_rules, blank_new_rules, reprioritize
 
 
 def apply_conflict_resolution(
@@ -973,6 +995,120 @@ def confirm_blank_rules_interactively(
     return saved, skipped
 
 
+def _set_rule_answer_values(rule: dict[str, Any], values: list[str]) -> None:
+    """Overwrite a multi-value rule's answer list in place, preserving its existing shape
+    (``answer`` for ``screening_yes_no``, ``result.values`` for ``literal_fallbacks``)."""
+    if "answer" in rule:
+        rule["answer"] = values
+    elif isinstance(rule.get("result"), dict):
+        rule["result"]["values"] = values
+
+
+def _rewrite_rule_in_place(
+    ref: RuleRef, values: list[str], *, rules_dir: Path | None = None, tracker: "PendingChangeTracker | None" = None,
+) -> None:
+    """Reorder ``ref``'s own answer list in its own file — unlike :func:`delete_rule` +
+    :func:`append_rule_to_auto_rules`, this is the *same* rule (same id, same file, same
+    category), just with its existing candidates re-prioritized, so there's nothing to recycle."""
+    data = _read_json_object(ref.file)
+    rules = data.get(ref.category)
+    if not isinstance(rules, list) or ref.index >= len(rules):
+        return
+    rule = rules[ref.index]
+    if not isinstance(rule, dict):
+        return
+    _set_rule_answer_values(rule, values)
+    data[ref.category] = rules
+    _write_json_object(ref.file, data)
+    if tracker is not None:
+        tracker.record_write(ref.file.name)
+
+
+def apply_reprioritize_resolution(
+    conflict: QuestionConflict,
+    choice: int,
+    *,
+    engine: FormFillRulesEngine,
+    resume: dict[str, Any],
+    rules_dir: Path | None = None,
+    dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
+) -> str:
+    """
+    Apply one resolution choice for an extension answer that's already one of the rule's accepted
+    fallback answers, just not the top-priority one (see :func:`classify_extension_questions`'s
+    ``reprioritize`` list). 1 = keep the current order, 2 = move the extension's answer to the
+    front — every other candidate keeps its existing relative order behind it. Returns ``"kept"``
+    or ``"reprioritized"``.
+    """
+    if choice != 2:
+        return "kept"
+    question = conflict.question.question
+    ext_answer = conflict.question.answer
+    existing = resolve_rule_answer_candidates(conflict.rule_ref, question, engine=engine, resume=resume)
+    reordered = _dedupe_preserve_order([ext_answer] + existing)
+    if not dry_run:
+        _rewrite_rule_in_place(conflict.rule_ref, reordered, rules_dir=rules_dir, tracker=tracker)
+    return "reprioritized"
+
+
+def _parse_reprioritize_choice(raw: str) -> int | None:
+    if raw in ("1", "keep", "k", ""):
+        return 1
+    if raw in ("2", "reprioritize", "move", "top", "yes", "y"):
+        return 2
+    return None
+
+
+def resolve_reprioritize_interactively(
+    reprioritize: list[QuestionConflict],
+    *,
+    rules_dir: Path | None = None,
+    dry_run: bool = False,
+    tracker: "PendingChangeTracker | None" = None,
+) -> tuple[int, int]:
+    """
+    Prompt before reprioritizing an extension answer that's already an accepted fallback for its
+    matched rule. Returns ``(reprioritized_count, kept_count)``.
+    """
+    reprioritized = 0
+    kept = 0
+    engine = FormFillRulesEngine(rules_path=rules_dir or FORM_FILL_RULES_DIR, apply_source="linkedin")
+    resume = _load_resume_for_rule_resolution()
+
+    for conflict in reprioritize:
+        q = conflict.question
+        print()
+        print("Extension answer is already an accepted fallback — make it top priority?")
+        print(f"  Question: {q.question}")
+        if q.company_title:
+            print(f"  Job: {q.company_title}")
+        if q.url:
+            print(f"  URL: {q.url}")
+        print(f"  Extension answer: {q.answer}")
+        print(f"  Current top priority: {conflict.rule_answer}")
+        print("  [1] Keep current order")
+        print("  [2] Move extension answer to top priority")
+        while True:
+            raw = input("  Choice [1/2]: ").strip().lower()
+            choice = _parse_reprioritize_choice(raw)
+            if choice is None:
+                print("  Enter 1 or 2.")
+                continue
+            outcome = apply_reprioritize_resolution(
+                conflict, choice, engine=engine, resume=resume,
+                rules_dir=rules_dir, dry_run=dry_run, tracker=tracker,
+            )
+            if outcome == "reprioritized":
+                reprioritized += 1
+                print("  → Moved to top priority.")
+            else:
+                kept += 1
+                print("  → Kept current order.")
+            break
+    return reprioritized, kept
+
+
 def process_extension_questions(
     path: Path,
     *,
@@ -990,12 +1126,13 @@ def process_extension_questions(
 
     result.empty_rules_removed = remove_empty_auto_rules(rules_dir=rules_dir, dry_run=dry_run, tracker=tracker)
 
-    skipped, conflicts, new_rules, blank_new_rules = classify_extension_questions(
+    skipped, conflicts, new_rules, blank_new_rules, reprioritize = classify_extension_questions(
         questions, rules_dir=rules_dir
     )
 
     result.matched = len(skipped)
     result.conflicts = conflicts
+    result.reprioritize = reprioritize
     result.blank_new = [item for item, _cat, _rule in blank_new_rules]
 
     for _item, category, rule in new_rules:
@@ -1022,6 +1159,15 @@ def process_extension_questions(
         result.resolved_combined = combined_total
     elif conflicts and (dry_run or not interactive):
         result.resolved_kept = len(conflicts)
+
+    if reprioritize and interactive and not dry_run:
+        reprioritized, kept_priority = resolve_reprioritize_interactively(
+            reprioritize, rules_dir=rules_dir, dry_run=dry_run, tracker=tracker
+        )
+        result.resolved_reprioritized = reprioritized
+        result.resolved_kept_priority = kept_priority
+    elif reprioritize and (dry_run or not interactive):
+        result.resolved_kept_priority = len(reprioritize)
 
     return result
 
@@ -1068,4 +1214,17 @@ def print_questions_summary(path: Path, result: QuestionProcessResult, *, dry_ru
             for conflict in result.conflicts:
                 print(f"    • {conflict.question.question[:80]}…")
                 print(f"      extension={conflict.question.answer!r} rule={conflict.rule_answer!r}")
+    if result.reprioritize:
+        pending_priority = (
+            len(result.reprioritize) - result.resolved_reprioritized - result.resolved_kept_priority
+        )
+        print(
+            f"Already-accepted answers needing a priority check: {len(result.reprioritize)} "
+            f"(reprioritized: {result.resolved_reprioritized}, kept order: {result.resolved_kept_priority})"
+        )
+        if pending_priority > 0:
+            print("  Unresolved:")
+            for conflict in result.reprioritize:
+                print(f"    • {conflict.question.question[:80]}…")
+                print(f"      extension={conflict.question.answer!r} current top={conflict.rule_answer!r}")
     print()

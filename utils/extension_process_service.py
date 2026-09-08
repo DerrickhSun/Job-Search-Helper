@@ -35,6 +35,7 @@ from .extension_rules import (
     append_rule_to_auto_rules,
     apply_blank_rule_resolution,
     apply_conflict_resolution,
+    apply_reprioritize_resolution,
     classify_extension_questions,
     parse_saved_questions_text,
     remove_empty_auto_rules,
@@ -50,8 +51,8 @@ _PENDING_TTL_SECONDS = 600  # 10 minutes
 @dataclass
 class _PendingConflict:
     conflict_id: str
-    kind: str  # "rule_conflict" | "blank_new_rule"
-    conflict: QuestionConflict | None = None
+    kind: str  # "rule_conflict" | "blank_new_rule" | "reprioritize"
+    conflict: QuestionConflict | None = None  # "rule_conflict" and "reprioritize" both use this
     blank: tuple[ExtensionQuestion, str, dict[str, Any]] | None = None
 
 
@@ -81,6 +82,7 @@ def _sweep_expired() -> None:
 def _build_pending_items(
     conflicts: list[QuestionConflict],
     blank_new_rules: list[tuple[ExtensionQuestion, str, dict[str, Any]]],
+    reprioritize: list[QuestionConflict],
 ) -> list[_PendingConflict]:
     items: list[_PendingConflict] = []
     i = 0
@@ -89,6 +91,9 @@ def _build_pending_items(
         i += 1
     for b in blank_new_rules:
         items.append(_PendingConflict(conflict_id=str(i), kind="blank_new_rule", blank=b))
+        i += 1
+    for r in reprioritize:
+        items.append(_PendingConflict(conflict_id=str(i), kind="reprioritize", conflict=r))
         i += 1
     return items
 
@@ -128,6 +133,24 @@ def _item_to_json(item: _PendingConflict) -> dict[str, Any]:
             "existing_rule_file": c.rule_ref.file.name,
             "existing_rule_id": c.rule_ref.rule.get("id"),
             "options": options,
+        }
+    if item.kind == "reprioritize":
+        c = item.conflict
+        assert c is not None
+        return {
+            "conflict_id": item.conflict_id,
+            "kind": "reprioritize",
+            "question": c.question.question,
+            "job": c.question.company_title,
+            "url": c.question.url,
+            "extension_answer": c.question.answer,
+            "existing_rule_answer": c.rule_answer,
+            "existing_rule_file": c.rule_ref.file.name,
+            "existing_rule_id": c.rule_ref.rule.get("id"),
+            "options": [
+                {"choice": 1, "label": "Keep current order"},
+                {"choice": 2, "label": "Move extension answer to top priority"},
+            ],
         }
     assert item.blank is not None
     q, _category, _rule = item.blank
@@ -179,8 +202,9 @@ def process_extension_request(
     rules_added = 0
     conflicts: list[QuestionConflict] = []
     blank_new_rules: list[tuple[ExtensionQuestion, str, dict[str, Any]]] = []
+    reprioritize: list[QuestionConflict] = []
     if questions:
-        _skipped, conflicts, new_rules, blank_new_rules = classify_extension_questions(
+        _skipped, conflicts, new_rules, blank_new_rules, reprioritize = classify_extension_questions(
             questions, rules_dir=rules_dir
         )
         for _item, category, rule in new_rules:
@@ -199,6 +223,8 @@ def process_extension_request(
         "rules_combined": 0,
         "blank_saved": 0,
         "blank_skipped": 0,
+        "rules_reprioritized": 0,
+        "rules_kept_priority": 0,
         "empty_rules_removed": empty_rules_removed,
         "invalid_job_lines": invalid_job_lines,
         "invalid_question_blocks": invalid_question_blocks,
@@ -211,7 +237,7 @@ def process_extension_request(
             form_fill_rule_changes=form_fill_rule_changes,
         )
 
-    pending_items = _build_pending_items(conflicts, blank_new_rules)
+    pending_items = _build_pending_items(conflicts, blank_new_rules, reprioritize)
     if not pending_items:
         return {"type": "extension_processed", "request_id": request_id, "summary": summary}
 
@@ -289,6 +315,7 @@ def resolve_conflicts(
     fresh_index = RuleIndex(rules_dir)
 
     replaced = kept = combined = blank_saved = blank_skipped = 0
+    reprioritized = kept_priority = 0
     unresolved: list[dict[str, Any]] = []
 
     for item in pending_req.pending:
@@ -296,7 +323,7 @@ def resolve_conflicts(
         if not isinstance(choice, int):
             unresolved.append({"conflict_id": item.conflict_id, "reason": "no resolution supplied"})
             continue
-        if item.kind == "rule_conflict":
+        if item.kind in ("rule_conflict", "reprioritize"):
             assert item.conflict is not None
             fresh_ref = _refind_rule_ref(fresh_index, item.conflict.rule_ref)
             if fresh_ref is None:
@@ -306,20 +333,30 @@ def resolve_conflicts(
                 })
                 continue
             conflict = replace(item.conflict, rule_ref=fresh_ref)
-            outcome = apply_conflict_resolution(
-                conflict, choice, engine=engine, resume=resume,
-                rules_dir=rules_dir, dry_run=dry_run, tracker=form_fill_rule_changes,
-            )
-            if outcome is None:
-                unresolved.append({"conflict_id": item.conflict_id, "reason": "invalid choice for this conflict"})
-                continue
-            kind, _rule = outcome
-            if kind == "kept":
-                kept += 1
-            elif kind == "replaced":
-                replaced += 1
+            if item.kind == "rule_conflict":
+                outcome = apply_conflict_resolution(
+                    conflict, choice, engine=engine, resume=resume,
+                    rules_dir=rules_dir, dry_run=dry_run, tracker=form_fill_rule_changes,
+                )
+                if outcome is None:
+                    unresolved.append({"conflict_id": item.conflict_id, "reason": "invalid choice for this conflict"})
+                    continue
+                kind, _rule = outcome
+                if kind == "kept":
+                    kept += 1
+                elif kind == "replaced":
+                    replaced += 1
+                else:
+                    combined += 1
             else:
-                combined += 1
+                outcome = apply_reprioritize_resolution(
+                    conflict, choice, engine=engine, resume=resume,
+                    rules_dir=rules_dir, dry_run=dry_run, tracker=form_fill_rule_changes,
+                )
+                if outcome == "reprioritized":
+                    reprioritized += 1
+                else:
+                    kept_priority += 1
         else:
             assert item.blank is not None
             _q, category, rule = item.blank
@@ -340,6 +377,8 @@ def resolve_conflicts(
     summary["rules_combined"] = combined
     summary["blank_saved"] = blank_saved
     summary["blank_skipped"] = blank_skipped
+    summary["rules_reprioritized"] = reprioritized
+    summary["rules_kept_priority"] = kept_priority
 
     return {
         "type": "extension_processed",

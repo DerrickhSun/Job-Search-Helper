@@ -27,20 +27,25 @@ DEFAULT_COOKIE_PATH = Path("data/selenium_linkedin_cookies.json")
 # Cap how long a health probe may block when Chrome was killed (chromedriver can hang otherwise).
 _DRIVER_ALIVE_PROBE_TIMEOUT = 3.0
 
-# HTTP read timeout for WebDriver commands (fail faster when the browser window is gone).
-_DRIVER_COMMAND_TIMEOUT = 12.0
-
-# Selenium's own page-load timeout (distinct from _DRIVER_COMMAND_TIMEOUT above). The command
-# timeout only bounds how long our HTTP client waits for chromedriver's *response* — it says
-# nothing to chromedriver about giving up on the navigation itself. Without this, a page that
-# never fires its load event (stuck XHR, slow ad/tracker script, a rate-limited session) leaves
-# chromedriver waiting on that navigation indefinitely; our client times out on that one command
-# after _DRIVER_COMMAND_TIMEOUT but chromedriver stays wedged, so every *subsequent* command to
-# the same session queues up behind it and times out too, one after another, for as long as the
-# stuck load lasts — looking from the outside like the whole session is hung. This makes
-# chromedriver itself abandon a slow navigation and return (raising, which callers already catch
-# around their .get() calls) instead of waiting forever.
+# Selenium's own page-load timeout. Without this, a page that never fires its load event (stuck
+# XHR, slow ad/tracker script, a rate-limited session) leaves chromedriver waiting on that
+# navigation indefinitely; every *subsequent* command to the same session then queues up behind
+# it and times out too, one after another, for as long as the stuck load lasts — looking from the
+# outside like the whole session is hung. This makes chromedriver itself abandon a slow navigation
+# and return (raising, which callers already catch around their .get() calls) instead of waiting
+# forever. See _DRIVER_COMMAND_TIMEOUT below for why the HTTP client's own read timeout must stay
+# comfortably above this value.
 _PAGE_LOAD_TIMEOUT = 45.0
+
+# HTTP read timeout for WebDriver commands (fail faster when the browser window is gone) — must
+# stay safely above _PAGE_LOAD_TIMEOUT. driver.get() is itself a WebDriver command, and
+# chromedriver only sends its HTTP response back once a navigation actually finishes or its own
+# _PAGE_LOAD_TIMEOUT gives up on it. A command timeout shorter than (or too close to) that would
+# fire on a perfectly normal, still-in-progress page load (a slow but healthy LinkedIn navigation,
+# say — this is exactly what was happening with the old fixed 12.0s value) well before
+# chromedriver's own timeout ever got a chance to. The +15s margin is purely a safety buffer for
+# round-trip/serialization overhead on top of whatever chromedriver itself is timing against.
+_DRIVER_COMMAND_TIMEOUT = _PAGE_LOAD_TIMEOUT + 15.0
 
 # How long to wait for a clean ``driver.quit()`` before force-killing the process tree.
 _QUIT_TIMEOUT = 20.0

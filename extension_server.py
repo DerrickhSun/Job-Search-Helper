@@ -57,11 +57,17 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
                 "dry_run": bool? (default false)}
         -> {"type": "extension_processed", "request_id": str, "summary": {...}}
            | {"type": "process_conflicts", "request_id": str, "server_request_id": str,
-               "conflicts": [{"conflict_id": str, "kind": "rule_conflict"|"blank_new_rule",
+               "conflicts": [{"conflict_id": str,
+                               "kind": "rule_conflict"|"blank_new_rule"|"reprioritize",
                                "question": str, "job": str|null, "url": str|null,
                                "extension_answer": str?, "existing_rule_answer": str?,
                                "existing_rule_file": str?, "existing_rule_id": str?,
                                "options": [{"choice": int, "label": str}, ...]}, ...]}
+
+        "reprioritize" is the softer case where the extension's answer is already one of the
+        rule's accepted fallback answers, just not the top-priority one — asking only whether it
+        should move to the front (choice 1 = keep order, 2 = move to top), not a full
+        keep/replace/combine decision (see ``utils/extension_rules.py::classify_extension_questions``).
 
         HTTP equivalent of running ``process_extension.py`` by hand: imports ``saved_jobs_text``
         (same line format as ``saved_jobs.txt``) into ``output/assisted_applications.csv``,
@@ -255,12 +261,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError as e:
+            # The client (browser tab) went away before we could respond -- e.g. the user
+            # navigated away or closed the tab mid-request. Whatever work this response was
+            # reporting on already happened; there's just no one left to deliver it to. Not worth
+            # an unhandled traceback in the console.
+            log.info("Client disconnected before response could be sent: %s", e)
 
     def _authorized(self) -> bool:
         auth = self.headers.get("Authorization", "")
