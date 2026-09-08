@@ -1249,6 +1249,7 @@ function handleProcessExtensionResult(result, btn) {
 const CONFLICT_MODAL_KIND_LABELS = {
     rule_conflict: "Existing rule disagrees with extension answer",
     blank_new_rule: "Blank answer — save an empty rule?",
+    reprioritize: "Already an accepted answer — just not top priority",
 };
 
 function injectConflictModalStyles() {
@@ -1303,12 +1304,13 @@ function buildConflictRow(conflict, onSelect) {
     kindLabel.textContent = CONFLICT_MODAL_KIND_LABELS[conflict.kind] || conflict.kind;
     row.appendChild(kindLabel);
 
-    if (conflict.kind === "rule_conflict") {
+    if (conflict.kind === "rule_conflict" || conflict.kind === "reprioritize") {
         const answers = document.createElement("div");
         answers.className = "answers";
+        const label = conflict.kind === "reprioritize" ? "Current top priority" : "Existing rule answer";
         answers.textContent =
             "Extension answer: " + (conflict.extension_answer || "(blank)") +
-            "  |  Existing rule answer: " + (conflict.existing_rule_answer || "(none)");
+            "  |  " + label + ": " + (conflict.existing_rule_answer || "(none)");
         row.appendChild(answers);
     }
 
