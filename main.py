@@ -60,6 +60,7 @@ _BEHAVIOR_DEFAULTS = {
     "greenhouse_prompt_before_close": True,
     "greenhouse_date_posted": None,
     "greenhouse_gate_probe_max_listings": 0,
+    "student_job_mode": "both",
 }
 
 _BEHAVIOR_FILE = Path("data/behavior.json")
@@ -120,6 +121,7 @@ from utils.eval_utils.consulting_filter import (
     is_consulting_listing_from_job_posting_text_only,
     is_consulting_listing_from_listing_company_line_only,
 )
+from utils.eval_utils.student_job_filter import classify_student_job, student_job_passes_filter
 from utils.cover_letter import (
     CoverLetterGenerator,
     cover_letter_docx_path_unique,
@@ -615,6 +617,16 @@ def run(
             print_job_outcome(job["title"], job["company"], outcome="blacklisted", job_id=jid)
             return
 
+        student_job_classification = classify_student_job(job["title"], job.get("description") or "")
+        if not student_job_passes_filter(student_job_classification, behavior["student_job_mode"]):
+            _tracker_log(job, status="student_job_filtered", score=0.0)
+            print_job_outcome(
+                job["title"], job["company"], outcome="student_job_filtered",
+                reason=f"classified as {student_job_classification!r}, mode={behavior['student_job_mode']!r}",
+                job_id=jid,
+            )
+            return
+
         if job.get("easy_apply"):
             _tracker_log(job, status="skipped", score=0.0)
             dismissed = searcher.dismiss_current_job(driver, reason="easy-apply", job_id=jid)
@@ -912,6 +924,16 @@ def run(
         if is_company_blacklisted(job.get("company") or "", company_blacklist):
             _tracker_log(job, status="blacklisted", score=0.0)
             print_job_outcome(job["title"], job["company"], outcome="blacklisted", job_id=jid)
+            return
+
+        student_job_classification = classify_student_job(job["title"], job.get("description") or "")
+        if not student_job_passes_filter(student_job_classification, behavior["student_job_mode"]):
+            _tracker_log(job, status="student_job_filtered", score=0.0)
+            print_job_outcome(
+                job["title"], job["company"], outcome="student_job_filtered",
+                reason=f"classified as {student_job_classification!r}, mode={behavior['student_job_mode']!r}",
+                job_id=jid,
+            )
             return
 
         if not job.get("easy_apply"):

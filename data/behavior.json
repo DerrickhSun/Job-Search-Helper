@@ -5,5 +5,6 @@
     "greenhouse_prefetch": true,
     "greenhouse_prompt_before_close": true,
     "greenhouse_date_posted": null,
-    "greenhouse_gate_probe_max_listings": 0
+    "greenhouse_gate_probe_max_listings": 0,
+    "student_job_mode": "non_student_only"
 }
