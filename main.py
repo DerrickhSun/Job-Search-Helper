@@ -61,6 +61,7 @@ _BEHAVIOR_DEFAULTS = {
     "greenhouse_date_posted": None,
     "greenhouse_gate_probe_max_listings": 0,
     "student_job_mode": "both",
+    "unpaid_job_mode": "include",
 }
 
 _BEHAVIOR_FILE = Path("data/behavior.json")
@@ -122,6 +123,7 @@ from utils.eval_utils.consulting_filter import (
     is_consulting_listing_from_listing_company_line_only,
 )
 from utils.eval_utils.student_job_filter import classify_student_job, student_job_passes_filter
+from utils.eval_utils.unpaid_job_filter import is_unpaid_job, unpaid_job_passes_filter
 from utils.cover_letter import (
     CoverLetterGenerator,
     cover_letter_docx_path_unique,
@@ -627,6 +629,17 @@ def run(
             )
             return
 
+        if not unpaid_job_passes_filter(
+            is_unpaid_job(job["title"], job.get("description") or ""), behavior["unpaid_job_mode"]
+        ):
+            _tracker_log(job, status="unpaid_job_filtered", score=0.0)
+            print_job_outcome(
+                job["title"], job["company"], outcome="unpaid_job_filtered",
+                reason=f"listing mentions \"unpaid\", mode={behavior['unpaid_job_mode']!r}",
+                job_id=jid,
+            )
+            return
+
         if job.get("easy_apply"):
             _tracker_log(job, status="skipped", score=0.0)
             dismissed = searcher.dismiss_current_job(driver, reason="easy-apply", job_id=jid)
@@ -932,6 +945,17 @@ def run(
             print_job_outcome(
                 job["title"], job["company"], outcome="student_job_filtered",
                 reason=f"classified as {student_job_classification!r}, mode={behavior['student_job_mode']!r}",
+                job_id=jid,
+            )
+            return
+
+        if not unpaid_job_passes_filter(
+            is_unpaid_job(job["title"], job.get("description") or ""), behavior["unpaid_job_mode"]
+        ):
+            _tracker_log(job, status="unpaid_job_filtered", score=0.0)
+            print_job_outcome(
+                job["title"], job["company"], outcome="unpaid_job_filtered",
+                reason=f"listing mentions \"unpaid\", mode={behavior['unpaid_job_mode']!r}",
                 job_id=jid,
             )
             return
