@@ -28,6 +28,11 @@ data/form_fill_rules.json
 output/
 !output/.gitkeep
 
+# Company blacklists — sync via S3 too (utils/s3_outputs.py::_sync_company_blacklists_*),
+# so git tracking them just meant every S3-driven merge showed up as a dirty working tree.
+data/company_blacklist.json
+data/company_blacklist_temporary.json
+
 *.log
 
 # OS / editor
