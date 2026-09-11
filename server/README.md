@@ -164,3 +164,9 @@ with LinkedIn's Terms of Service. Apply only to jobs you're genuinely interested
   shape entirely (a multi-turn chat loop, not a fire-and-forget script) and would need its own
   chat-style endpoint design. Shelved for now — revisit once the extension/webapp split below has
   settled.
+
+- **Future idea: containerize the bot with Docker for real use, not just as a build check.**
+  A `Dockerfile`/`.dockerignore` already exist and build correctly (context = `server/`), but
+  Docker isn't actually part of the normal workflow yet — the bot is still run directly via
+  `python main.py`. Come back to this later to actually adopt it (e.g. as the way this runs on a
+  server/VM, or to standardize the dev environment), rather than leaving it as a dormant file.
