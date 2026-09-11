@@ -5,7 +5,7 @@ Opens https://www.linkedin.com/jobs-tracker/ in Chrome (reuses saved LinkedIn co
 then for each saved job: overflow menu → Unsave. The page reloads after each
 unsave, so the script always targets the first job and waits for reload — no scrolling.
 
-Run from repo root::
+Run from inside server/::
 
     python cleanup.py
     python cleanup.py --headless

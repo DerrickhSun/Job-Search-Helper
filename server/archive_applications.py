@@ -8,7 +8,7 @@ LinkedIn dedupe still treats archived application rows as prior applies:
 :class:`tracker.ApplicationTracker.already_applied` reads both archive paths in addition to
 ``data/applications.db``.
 
-Run from repo root::
+Run from inside server/::
 
     python archive_applications.py
     python archive_applications.py --applications-only

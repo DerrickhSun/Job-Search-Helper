@@ -104,7 +104,7 @@ The same download/upload pattern applies to ``python archive_applications.py`` (
 After installing deps (`pip install -r requirements.txt`):
 
 ```bash
-# From repo root — uploads everything under output/ (recursive)
+# From inside server/ — uploads everything under output/ (recursive)
 python scripts/upload_outputs_to_s3.py
 
 # Dry run (print keys only)

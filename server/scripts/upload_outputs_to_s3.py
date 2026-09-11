@@ -6,7 +6,7 @@ Prerequisites: pip install boto3 (see requirements.txt), and in .env (or the env
   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION,
   S3_OUTPUT_BUCKET, optional S3_OUTPUT_PREFIX
 
-Usage (from repo root):
+Usage (from inside server/):
   python scripts/upload_outputs_to_s3.py
   python scripts/upload_outputs_to_s3.py --dry-run
   python scripts/upload_outputs_to_s3.py --local-dir data
@@ -50,7 +50,7 @@ def main() -> int:
         "--local-dir",
         type=Path,
         default=Path("output"),
-        help="Directory to upload (default: output). Relative paths are from repo root.",
+        help="Directory to upload (default: output). Relative paths are from the server/ folder.",
     )
     parser.add_argument(
         "--dry-run",

@@ -12,7 +12,7 @@ Test that the two-phase requirements fetch works correctly:
     Call fetch_dedicated_page_requirements, which navigates to /jobs/view/{id}/.
     Confirm requirements ARE returned.
 
-Usage (from repo root):
+Usage (from inside server/):
   python scripts/test_requirements_scrape.py
   python scripts/test_requirements_scrape.py --job-id 4430237392
   python scripts/test_requirements_scrape.py --headless

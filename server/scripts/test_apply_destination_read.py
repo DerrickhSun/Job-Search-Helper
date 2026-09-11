@@ -10,7 +10,7 @@ since there's no way to verify real LinkedIn DOM behavior without an actual brow
 
 Run with a VISIBLE (non-headless) window so the click/new-tab/close sequence is watchable.
 
-Usage (from repo root)::
+Usage (from inside server/)::
 
     python scripts/test_apply_destination_read.py
     python scripts/test_apply_destination_read.py --job-id 4442779372

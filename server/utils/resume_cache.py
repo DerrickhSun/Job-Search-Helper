@@ -24,7 +24,7 @@ from .resume_parser import ResumeParser
 log = logging.getLogger(__name__)
 
 DEFAULT_RESUME_CACHE_PATH = Path("data/resume_profile.json")
-# Default source document when --resume is omitted (project cwd is usually the repo root).
+# Default source document when --resume is omitted (project cwd is usually the server/ folder).
 DEFAULT_RESUME_FILE = Path("resume.pdf")
 
 

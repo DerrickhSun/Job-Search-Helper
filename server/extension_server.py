@@ -3,7 +3,7 @@ Local HTTP API that lets the browser extension request a tailored cover letter, 
 a page's form fields, on demand — instead of only relying on cover letters pre-generated during
 a ``main.py --filter`` run, or the Selenium auto-apply flow.
 
-Run from repo root::
+Run from inside server/::
 
     python extension_server.py
     python extension_server.py --port 8743 --resume resume.pdf

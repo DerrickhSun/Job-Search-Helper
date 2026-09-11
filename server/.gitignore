@@ -1,0 +1,23 @@
+# Local app data (sessions, DB, logs — recreate on each machine)
+data/selenium_linkedin_cookies.json
+data/selenium_greenhouse_cookies.json
+data/applications.db
+data/bot.log
+data/listings_log.jsonl
+data/listings_log_*.jsonl
+data/listings_log_*.jsonl.bak
+data/listings_log*.bak
+data/form_fill_rules/
+data/form_fill_rules.json
+
+# Bot outputs (CSVs, cover letters, screenshots — sync via S3; see docs/s3_outputs.md)
+output/
+!output/.gitkeep
+
+# Company blacklists — sync via S3 too (utils/s3_outputs.py::_sync_company_blacklists_*),
+# so git tracking them just meant every S3-driven merge showed up as a dirty working tree.
+data/company_blacklist.json
+data/company_blacklist_temporary.json
+
+# Optional: keep resume out of the repo (remove this line if you want to commit a sample)
+# resume.pdf

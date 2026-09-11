@@ -13,7 +13,7 @@ Opens a LinkedIn job in the two-pane search UI, then compares:
 PASS when (2)/(3) are at least as long as (1), and (when expandable) match (4)
 within a small length tolerance.
 
-Usage (from repo root)::
+Usage (from inside server/)::
 
   python scripts/test_job_description_dom_read.py
   python scripts/test_job_description_dom_read.py --job-id 4450141052

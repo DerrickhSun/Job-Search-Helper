@@ -2,7 +2,7 @@
 """
 Manual test: open LinkedIn job search **without** Easy Apply, then enable the filter via UI.
 
-Usage (from repo root):
+Usage (from inside server/):
   python scripts/test_easy_apply_filter.py
   python scripts/test_easy_apply_filter.py --keywords "software engineer" --location "United States"
 """

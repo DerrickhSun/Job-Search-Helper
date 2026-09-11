@@ -16,7 +16,7 @@ Steps (see docs/s3_outputs.md for the underlying S3 helpers):
    snapshot with the S3 copy, then drop any row already present in long-term memory.
 6. **Merge the remainder of short-term memory** back to disk and upload ``output/`` to S3.
 
-Run from repo root::
+Run from inside server/::
 
     python sync.py
 

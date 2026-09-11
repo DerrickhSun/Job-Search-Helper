@@ -12,7 +12,7 @@ The extension writes:
   - saved_jobs.txt — one job per line: ``company, title, url`` or ``company, YYYY-MM-DD, title, url``
   - saved_jobs_application_questions.txt (or saved_job_application_questions.txt)
 
-Run from repo root::
+Run from inside server/::
 
     python process_extension.py
     python process_extension.py --downloads-dir "C:\\Users\\you\\Downloads"

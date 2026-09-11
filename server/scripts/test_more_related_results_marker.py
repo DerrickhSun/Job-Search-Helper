@@ -11,7 +11,7 @@ run_search_apply_pipeline uses internally:
   - JobSearcher._more_related_results_marker_present
   - JobSearcher._find_job_card_links
 
-Usage (from repo root):
+Usage (from inside server/):
   python scripts/test_more_related_results_marker.py
   python scripts/test_more_related_results_marker.py --keywords "underwater basket weaving"
   python scripts/test_more_related_results_marker.py --headless

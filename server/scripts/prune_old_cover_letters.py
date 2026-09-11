@@ -4,7 +4,7 @@ Delete cover letter ``.docx`` files older than N days (local and optionally S3).
 
 Uses ``COVER_LETTER_MAX_AGE_DAYS`` from ``.env`` (default 7; set to 0 to disable).
 
-Usage (from repo root):
+Usage (from inside server/):
   python scripts/prune_old_cover_letters.py
   python scripts/prune_old_cover_letters.py --dry-run
   python scripts/prune_old_cover_letters.py --days 14 --local-only
