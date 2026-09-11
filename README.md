@@ -143,3 +143,19 @@ with LinkedIn's Terms of Service. Apply only to jobs you're genuinely interested
   contaminated stored strings. Fix: add a `cand != title` (case-insensitive) guard to the fallback
   loop, and prune the already-contaminated title-like entries out of
   `output/consulting_companies.json`.
+
+- **Future idea: let a webpage (e.g. a GitHub Pages control panel) trigger the bot programs
+  themselves, not just edit config.** `extension_server.py` currently only exposes quick,
+  synchronous operations (cover letters, form answers, the extension import flow). The
+  long-running, browser-driving programs (`main.py`, `cleanup.py`) are a different shape of
+  problem: they need their own OS process (Selenium/Chrome can't share a thread with the HTTP
+  server) and can run for hours, so exposing them would mean a `POST /run-main`-style endpoint
+  that launches a background `subprocess.Popen`, returns immediately, and separate `/status`/`/stop`
+  endpoints (tracked in-memory, same shape as the `_PENDING` dict in
+  `utils/extension_process_service.py`) for the page to poll/cancel. Quick no-browser utilities
+  (`lookup_application.py`, `find_rule.py`, `sync.py`, `archive_applications.py`) would be much
+  easier — same "absorb the logic into a callable, add an endpoint" pattern already used for
+  `process_extension.py`. `agent.py` (the conversational Anthropic-API agent) is a third, different
+  shape entirely (a multi-turn chat loop, not a fire-and-forget script) and would need its own
+  chat-style endpoint design. Shelved for now — revisit once the extension/webapp split below has
+  settled.
