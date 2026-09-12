@@ -1,16 +1,20 @@
 # Job-Applyer control panel (GitHub Pages)
 
 A static page that talks to your own `server/extension_server.py`, running locally — the same
-server the browser extension talks to (`extension/background.js`). Right now it's a single
-"Ping local server" button that hits `/health`; the plan is to grow this into a config-editing
-control panel later (see `server/README.md`'s Known Issues/TODO).
+server the browser extension talks to (`extension/background.js`). It has a "Ping local server"
+button (`GET /health`) and a config editor for `data/behavior.json` (skip-consulting,
+student/unpaid job mode, Greenhouse toggles) and `data/search.json` (keywords/location) via the
+server's `GET`/`POST /config` endpoints — server-side validation rejects bad values and saves
+nothing on failure, so a bad edit here can't corrupt either file.
 
 ## Using it locally
 
 Just open `pages/index.html` directly in a browser (or serve the folder with any static file
 server). Enter your server URL (default `http://127.0.0.1:8743`) and the same token from
-`COVER_LETTER_SERVER_TOKEN` in `.env` / the extension's options page, then **Save**, then
-**Ping local server**.
+`COVER_LETTER_SERVER_TOKEN` in `.env` / the extension's options page, then **Save**. From there:
+**Ping local server** just checks connectivity; **Load config** pulls the current
+behavior/search settings into the form below, and **Save updates** pushes your edits back
+(always sends the full form as one update — there's no per-field diffing).
 
 ## Deploying via GitHub Pages
 

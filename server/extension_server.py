@@ -93,6 +93,22 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
         was removed since it was first reported (a live edit from another device, or another
         process on this one) — that one specific resolution is skipped, not the whole batch.
 
+    GET  /config
+        -> {"behavior": {...data/behavior.json merged with defaults...},
+            "search": {...data/search.json merged with defaults...},
+            "options": {"student_job_mode": [...], "unpaid_job_mode": [...]}}
+
+        ``options`` lists the valid choices for the enum-like behavior fields, so a config-editing
+        UI (e.g. the ``pages/`` control panel) can render selects instead of free text.
+
+    POST /config
+        body: {"behavior": {...partial...}?, "search": {...partial...}?}
+        -> same shape as GET /config, reflecting the now-saved values
+
+        Only keys actually present in "behavior"/"search" are validated and merged into the
+        existing file's values — anything omitted from the body is left untouched. An invalid
+        value for any field fails the whole request with 400 and saves nothing (no partial write).
+
 AUTH:
     This server binds to 127.0.0.1 only, but any web page open in the browser can still attempt
     to ``fetch()`` a localhost port — without a check, a page other than our own extension could
@@ -139,6 +155,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from utils.behavior_config import load_behavior_config, save_behavior_config
 from utils.cover_letter import (
     _MAX_COVER_LETTER_FILENAME_STEM_CHARS,
     _sanitize_cover_letter_filename_segment,
@@ -149,12 +166,15 @@ from utils.cover_letter import (
     write_cover_letter_docx,
 )
 from utils.dspy_lm import configure_dspy
+from utils.eval_utils.student_job_filter import STUDENT_JOB_MODES
+from utils.eval_utils.unpaid_job_filter import UNPAID_JOB_MODES
 from utils.extension_process_service import process_extension_request, resolve_conflicts
 from utils.form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
 from utils.output_paths import COVERLETTERS_DIR, FORM_FILL_RULES_DIR, OUTPUT_DIR
 from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
 from utils.s3_log_sync import RESOURCE_COVERLETTERS, RESOURCE_FORM_FILL_RULES, sync_log_download
 from utils.s3_outputs import resolve_output_dir
+from utils.search_config import load_search_config, save_search_config
 
 log = logging.getLogger(__name__)
 
@@ -309,17 +329,21 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        if self.path != "/health":
+        if self.path not in ("/health", "/config"):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._authorized():
             self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
-        self._send_json(HTTPStatus.OK, {"status": "ok"})
+        if self.path == "/health":
+            self._send_json(HTTPStatus.OK, {"status": "ok"})
+        else:
+            self._handle_get_config()
 
     def do_POST(self) -> None:
         if self.path not in (
             "/cover-letter", "/answer-fields", "/process-extension", "/process-extension/resolve",
+            "/config",
         ):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
@@ -347,8 +371,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_answer_fields(data)
         elif self.path == "/process-extension":
             self._handle_process_extension(data)
-        else:
+        elif self.path == "/process-extension/resolve":
             self._handle_process_extension_resolve(data)
+        else:
+            self._handle_post_config(data)
 
     def _handle_cover_letter(self, data: dict[str, Any]) -> None:
         title = str(data.get("title") or "").strip()
@@ -512,6 +538,97 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "processing failed"})
             return
         self._send_json(HTTPStatus.OK, result)
+
+    def _config_payload(self) -> dict[str, Any]:
+        return {
+            "behavior": load_behavior_config(),
+            "search": load_search_config(),
+            "options": {
+                "student_job_mode": list(STUDENT_JOB_MODES),
+                "unpaid_job_mode": list(UNPAID_JOB_MODES),
+            },
+        }
+
+    def _handle_get_config(self) -> None:
+        self._send_json(HTTPStatus.OK, self._config_payload())
+
+    def _handle_post_config(self, data: dict[str, Any]) -> None:
+        behavior_updates = data.get("behavior")
+        search_updates = data.get("search")
+        if behavior_updates is not None and not isinstance(behavior_updates, dict):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "behavior must be an object"})
+            return
+        if search_updates is not None and not isinstance(search_updates, dict):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "search must be an object"})
+            return
+
+        behavior = load_behavior_config()
+        search = load_search_config()
+        try:
+            for key, value in (behavior_updates or {}).items():
+                behavior[key] = _validate_behavior_field(key, value)
+            for key, value in (search_updates or {}).items():
+                search[key] = _validate_search_field(key, value)
+        except ValueError as e:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
+            return
+
+        if behavior_updates:
+            save_behavior_config(behavior)
+        if search_updates:
+            save_search_config(search)
+        self._send_json(HTTPStatus.OK, self._config_payload())
+
+
+_BEHAVIOR_BOOL_FIELDS = (
+    "skip_consulting", "consulting_companies_memory", "greenhouse_manual_next_listing",
+    "greenhouse_prefetch", "greenhouse_prompt_before_close",
+)
+
+
+def _validate_behavior_field(key: str, value: Any) -> Any:
+    if key in _BEHAVIOR_BOOL_FIELDS:
+        if not isinstance(value, bool):
+            raise ValueError(f"{key} must be a boolean")
+        return value
+    if key == "greenhouse_date_posted":
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be a string or null")
+        return value.strip() or None
+    if key == "greenhouse_gate_probe_max_listings":
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{key} must be a non-negative integer")
+        return value
+    if key == "student_job_mode":
+        if value not in STUDENT_JOB_MODES:
+            raise ValueError(f"{key} must be one of {list(STUDENT_JOB_MODES)}")
+        return value
+    if key == "unpaid_job_mode":
+        if value not in UNPAID_JOB_MODES:
+            raise ValueError(f"{key} must be one of {list(UNPAID_JOB_MODES)}")
+        return value
+    raise ValueError(f"unknown behavior field: {key!r}")
+
+
+def _validate_search_field(key: str, value: Any) -> Any:
+    if key == "keywords":
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError("keywords must be a list of strings")
+        cleaned = [v.strip() for v in value if v.strip()]
+        if not cleaned:
+            raise ValueError("keywords must not be empty")
+        return cleaned
+    if key == "location":
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("location must be a non-empty string")
+        return value.strip()
+    if key == "posted_within_24h":
+        if not isinstance(value, bool):
+            raise ValueError("posted_within_24h must be a boolean")
+        return value
+    raise ValueError(f"unknown search field: {key!r}")
 
 
 def main() -> int:

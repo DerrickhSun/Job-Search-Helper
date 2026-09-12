@@ -52,20 +52,8 @@ _PATHS_DEFAULTS = {
 
 _PATHS_FILE = Path("data/paths.json")
 
-_BEHAVIOR_DEFAULTS = {
-    "skip_consulting": True,
-    "consulting_companies_memory": True,
-    "greenhouse_manual_next_listing": True,
-    "greenhouse_prefetch": True,
-    "greenhouse_prompt_before_close": True,
-    "greenhouse_date_posted": None,
-    "greenhouse_gate_probe_max_listings": 0,
-    "student_job_mode": "both",
-    "unpaid_job_mode": "include",
-}
-
-_BEHAVIOR_FILE = Path("data/behavior.json")
-
+from utils.behavior_config import DEFAULT_BEHAVIOR_PATH as _BEHAVIOR_FILE
+from utils.behavior_config import load_behavior_config as _load_behavior_config
 from utils.search_config import DEFAULT_SEARCH_PATH as _SEARCH_FILE
 from utils.search_config import SEARCH_DEFAULTS as _SEARCH_DEFAULTS
 
@@ -89,7 +77,7 @@ def _load_paths() -> dict:
 
 
 def _load_behavior() -> dict:
-    return _load_config(_BEHAVIOR_FILE, _BEHAVIOR_DEFAULTS)
+    return _load_behavior_config(_BEHAVIOR_FILE)
 
 
 def _load_search() -> dict:

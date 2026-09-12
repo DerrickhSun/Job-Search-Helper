@@ -20,20 +20,29 @@
       margin-bottom: 1.5rem;
     }
     label { display: block; margin-bottom: 0.75rem; font-size: 0.9rem; }
-    input[type="text"], input[type="password"] {
+    input[type="text"], input[type="password"], input[type="number"], select, textarea {
       width: 100%;
       box-sizing: border-box;
       padding: 0.4rem 0.5rem;
       margin-top: 0.25rem;
       font-size: 0.9rem;
+      font-family: inherit;
     }
+    textarea { resize: vertical; }
+    label.checkbox {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    label.checkbox input[type="checkbox"] { width: auto; margin: 0; }
+    h3 { font-size: 1rem; margin: 1.25rem 0 0.5rem; }
     button {
       padding: 0.5rem 1rem;
       font-size: 0.95rem;
       cursor: pointer;
     }
-    #status {
-      margin-top: 1rem;
+    #status, #config-status, #save-config-status, #load-status, #save-status {
+      margin-top: 0.5rem;
       font-family: ui-monospace, monospace;
       font-size: 0.85rem;
       white-space: pre-wrap;
@@ -66,6 +75,51 @@
 
   <button id="ping">Ping local server</button>
   <div id="status"></div>
+
+  <fieldset>
+    <legend>Bot config</legend>
+    <button id="load-config" type="button">Load config</button>
+    <span id="load-status"></span>
+
+    <div id="config-form" hidden>
+      <h3>Behavior</h3>
+      <label class="checkbox"><input type="checkbox" id="cfg-skip-consulting" /> Skip consulting/staffing companies</label>
+      <label class="checkbox"><input type="checkbox" id="cfg-consulting-memory" /> Remember consulting companies seen before</label>
+      <label class="checkbox"><input type="checkbox" id="cfg-gh-manual-next" /> Greenhouse: prompt before scanning next listing</label>
+      <label class="checkbox"><input type="checkbox" id="cfg-gh-prefetch" /> Greenhouse: prefetch next listing</label>
+      <label class="checkbox"><input type="checkbox" id="cfg-gh-prompt-close" /> Greenhouse: prompt before closing browser</label>
+      <label>
+        Greenhouse date-posted filter (optional)
+        <input type="text" id="cfg-gh-date-posted" placeholder="e.g. past_ten_days — blank = automatic" />
+      </label>
+      <label>
+        Greenhouse gate-probe max listings
+        <input type="number" id="cfg-gh-gate-probe" min="0" step="1" />
+      </label>
+      <label>
+        Student job mode
+        <select id="cfg-student-mode"></select>
+      </label>
+      <label>
+        Unpaid job mode
+        <select id="cfg-unpaid-mode"></select>
+      </label>
+
+      <h3>Search</h3>
+      <label>
+        Keywords (one per line)
+        <textarea id="cfg-keywords" rows="4"></textarea>
+      </label>
+      <label>
+        Location
+        <input type="text" id="cfg-location" />
+      </label>
+      <label class="checkbox"><input type="checkbox" id="cfg-posted-24h" /> Posted within 24 hours only</label>
+
+      <button id="save-config" type="button">Save updates</button>
+      <span id="save-config-status"></span>
+    </div>
+  </fieldset>
 
   <script src="app.js"></script>
 </body>
