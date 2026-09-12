@@ -106,7 +106,16 @@ AUTH:
     CORS outright when the origin is covered by host_permissions, but Firefox still sends a real
     CORS preflight (``OPTIONS``) for non-"simple" requests — a JSON body and a custom
     ``Authorization`` header each independently trigger one — even from a privileged background
-    script. ``do_OPTIONS`` below answers that preflight, and every response carries
+    script.
+
+    A plain web page (e.g. the GitHub Pages control panel in ``pages/``) has no such privilege and
+    is fully subject to CORS, plus Chrome's Private Network Access checks: a page loaded from a
+    public origin (any real https:// site, including *.github.io) triggers a preflight ``OPTIONS``
+    before it's allowed to fetch a private/loopback address like this server's, and Chrome will
+    block the real request unless that preflight response carries
+    ``Access-Control-Allow-Private-Network: true`` — see ``do_OPTIONS`` below.
+
+    ``do_OPTIONS`` answers both kinds of preflight, and every response carries
     ``Access-Control-Allow-Origin`` so both browsers can read it.
 """
 
@@ -292,6 +301,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        # Lets a page on a public origin (e.g. GitHub Pages) call this loopback server at all --
+        # see the AUTH section of this module's docstring for why Chrome requires this.
+        self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Content-Length", "0")
         self.end_headers()
