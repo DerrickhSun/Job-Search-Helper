@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Job-Applyer Control Panel</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      max-width: 560px;
+      margin: 3rem auto;
+      padding: 0 1rem;
+      color: #1a1a1a;
+    }
+    h1 { font-size: 1.4rem; }
+    fieldset {
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    label { display: block; margin-bottom: 0.75rem; font-size: 0.9rem; }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.4rem 0.5rem;
+      margin-top: 0.25rem;
+      font-size: 0.9rem;
+    }
+    button {
+      padding: 0.5rem 1rem;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    #status {
+      margin-top: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .ok { color: #1a7f37; }
+    .err { color: #cf222e; }
+  </style>
+</head>
+<body>
+  <h1>Job-Applyer Control Panel</h1>
+  <p>
+    Talks to your own <code>extension_server.py</code>, running locally — same server the
+    browser extension uses. Nothing here is sent anywhere except to the address below.
+  </p>
+
+  <fieldset>
+    <legend>Server settings</legend>
+    <label>
+      Server URL
+      <input type="text" id="server-url" placeholder="http://127.0.0.1:8743" />
+    </label>
+    <label>
+      Token
+      <input type="password" id="token" placeholder="paste your COVER_LETTER_SERVER_TOKEN" />
+    </label>
+    <button id="save">Save</button>
+    <span id="save-status"></span>
+  </fieldset>
+
+  <button id="ping">Ping local server</button>
+  <div id="status"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
