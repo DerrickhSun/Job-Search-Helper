@@ -15,8 +15,12 @@ server). Enter your server URL (default `http://127.0.0.1:8743`) and the same to
 ## Deploying via GitHub Pages
 
 This folder isn't one of GitHub's native "deploy from a branch" choices (only the branch root or
-a `/docs` folder qualify) — enabling it requires either a GitHub Actions workflow that publishes
-`pages/` as the Pages artifact, or renaming/duplicating this folder to `docs/`. Not set up yet.
+a `/docs` folder qualify), so it's published via `.github/workflows/deploy-pages.yml` instead,
+which uploads just `pages/` as the Pages artifact on every push to `main` that touches it.
+
+One-time setup in the GitHub UI: **Settings → Pages → Build and deployment → Source →
+"GitHub Actions"** (not "Deploy from a branch"). After that, pushing to `main` runs the workflow
+automatically; it can also be triggered manually from the Actions tab (`workflow_dispatch`).
 
 **Before enabling it for real:** a page served from a public `https://*.github.io` origin is
 subject to full CORS and Chrome's Private Network Access checks when it calls a private address
