@@ -109,6 +109,23 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
         existing file's values — anything omitted from the body is left untouched. An invalid
         value for any field fails the whole request with 400 and saves nothing (no partial write).
 
+    GET  /blacklist
+        -> {"permanent": [str, ...], "temporary": [{"company": str, "until": "YYYY-MM-DD"}, ...]}
+
+        Raw contents of data/company_blacklist.json and data/company_blacklist_temporary.json —
+        see utils/eval_utils/company_blacklist.py for the matching rules (normalized, substring-
+        tolerant) applied against these at apply time.
+
+    POST /blacklist
+        body: {"action": "add_permanent"|"remove_permanent"|"add_temporary"|"remove_temporary",
+                "company": str, "until": str? (required for add_temporary, "YYYY-MM-DD")}
+        -> same shape as GET /blacklist, reflecting the change
+
+        Matching for remove_* and add_temporary's "already present" check uses the same
+        normalize_company_name() as the live filter, so "Sun West Mortgage Co." and "sun west
+        mortgage co" are treated as the same entry. add_temporary on an already-present company
+        replaces its "until" date rather than adding a duplicate row.
+
 AUTH:
     This server binds to 127.0.0.1 only, but any web page open in the browser can still attempt
     to ``fetch()`` a localhost port — without a check, a page other than our own extension could
@@ -148,6 +165,7 @@ import secrets
 import shutil
 import sys
 import unicodedata
+from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -166,6 +184,13 @@ from utils.cover_letter import (
     write_cover_letter_docx,
 )
 from utils.dspy_lm import configure_dspy
+from utils.eval_utils.company_blacklist import (
+    load_company_blacklist,
+    load_temporary_blacklist,
+    normalize_company_name,
+    save_company_blacklist,
+    save_temporary_blacklist,
+)
 from utils.eval_utils.student_job_filter import STUDENT_JOB_MODES
 from utils.eval_utils.unpaid_job_filter import UNPAID_JOB_MODES
 from utils.extension_process_service import process_extension_request, resolve_conflicts
@@ -329,7 +354,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        if self.path not in ("/health", "/config"):
+        if self.path not in ("/health", "/config", "/blacklist"):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._authorized():
@@ -337,13 +362,15 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/health":
             self._send_json(HTTPStatus.OK, {"status": "ok"})
-        else:
+        elif self.path == "/config":
             self._handle_get_config()
+        else:
+            self._handle_get_blacklist()
 
     def do_POST(self) -> None:
         if self.path not in (
             "/cover-letter", "/answer-fields", "/process-extension", "/process-extension/resolve",
-            "/config",
+            "/config", "/blacklist",
         ):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
@@ -373,8 +400,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_process_extension(data)
         elif self.path == "/process-extension/resolve":
             self._handle_process_extension_resolve(data)
-        else:
+        elif self.path == "/config":
             self._handle_post_config(data)
+        else:
+            self._handle_post_blacklist(data)
 
     def _handle_cover_letter(self, data: dict[str, Any]) -> None:
         title = str(data.get("title") or "").strip()
@@ -578,6 +607,57 @@ class _Handler(BaseHTTPRequestHandler):
         if search_updates:
             save_search_config(search)
         self._send_json(HTTPStatus.OK, self._config_payload())
+
+    def _blacklist_payload(self) -> dict[str, Any]:
+        return {
+            "permanent": load_company_blacklist(),
+            "temporary": load_temporary_blacklist(),
+        }
+
+    def _handle_get_blacklist(self) -> None:
+        self._send_json(HTTPStatus.OK, self._blacklist_payload())
+
+    def _handle_post_blacklist(self, data: dict[str, Any]) -> None:
+        action = str(data.get("action") or "").strip()
+        company = str(data.get("company") or "").strip()
+        if not company:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "company is required"})
+            return
+        key = normalize_company_name(company)
+        if not key:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "company name is empty after normalization"})
+            return
+
+        if action == "add_permanent":
+            entries = load_company_blacklist()
+            if not any(normalize_company_name(e) == key for e in entries):
+                entries.append(company)
+                save_company_blacklist(entries)
+        elif action == "remove_permanent":
+            entries = load_company_blacklist()
+            kept = [e for e in entries if normalize_company_name(e) != key]
+            if len(kept) != len(entries):
+                save_company_blacklist(kept)
+        elif action == "add_temporary":
+            until = str(data.get("until") or "").strip()
+            try:
+                date.fromisoformat(until)
+            except ValueError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "until must be a valid YYYY-MM-DD date"})
+                return
+            entries = [e for e in load_temporary_blacklist() if normalize_company_name(e["company"]) != key]
+            entries.append({"company": company, "until": until})
+            save_temporary_blacklist(entries)
+        elif action == "remove_temporary":
+            entries = load_temporary_blacklist()
+            kept = [e for e in entries if normalize_company_name(e["company"]) != key]
+            if len(kept) != len(entries):
+                save_temporary_blacklist(kept)
+        else:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"unknown action: {action!r}"})
+            return
+
+        self._send_json(HTTPStatus.OK, self._blacklist_payload())
 
 
 _BEHAVIOR_BOOL_FIELDS = (
