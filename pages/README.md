@@ -2,10 +2,11 @@
 
 A static page that talks to your own `server/extension_server.py`, running locally — the same
 server the browser extension talks to (`extension/background.js`). It has a "Ping local server"
-button (`GET /health`) and a config editor for `data/behavior.json` (skip-consulting,
-student/unpaid job mode, Greenhouse toggles) and `data/search.json` (keywords/location) via the
-server's `GET`/`POST /config` endpoints — server-side validation rejects bad values and saves
-nothing on failure, so a bad edit here can't corrupt either file.
+button (`GET /health`), a config editor for `data/behavior.json` (skip-consulting, student/unpaid
+job mode, Greenhouse toggles) and `data/search.json` (keywords/location) via the server's
+`GET`/`POST /config` endpoints, and a company blacklist editor (view/add/remove permanent and
+temporary/expiring entries) via `GET`/`POST /blacklist` — server-side validation rejects bad
+values and saves nothing on failure, so a bad edit here can't corrupt any of these files.
 
 ## Using it locally
 

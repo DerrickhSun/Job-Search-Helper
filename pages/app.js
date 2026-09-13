@@ -184,4 +184,110 @@ saveConfigButton.addEventListener("click", async () => {
   }
 });
 
+// --- Company blacklist (data/company_blacklist.json + data/company_blacklist_temporary.json) ---
+
+const loadBlacklistButton = document.getElementById("load-blacklist");
+const loadBlacklistStatus = document.getElementById("load-blacklist-status");
+const blacklistSection = document.getElementById("blacklist-section");
+const blacklistStatus = document.getElementById("blacklist-status");
+const permanentList = document.getElementById("blacklist-permanent-list");
+const temporaryList = document.getElementById("blacklist-temporary-list");
+const permanentInput = document.getElementById("blacklist-permanent-input");
+const permanentAddButton = document.getElementById("blacklist-permanent-add");
+const temporaryCompanyInput = document.getElementById("blacklist-temporary-company");
+const temporaryUntilInput = document.getElementById("blacklist-temporary-until");
+const temporaryAddButton = document.getElementById("blacklist-temporary-add");
+
+function renderBlacklist(data) {
+  permanentList.innerHTML = "";
+  if (!data.permanent.length) {
+    const li = document.createElement("li");
+    li.innerHTML = '<span class="empty">None</span>';
+    permanentList.appendChild(li);
+  }
+  for (const company of data.permanent) {
+    const li = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = company;
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () => postBlacklistAction({ action: "remove_permanent", company }));
+    li.append(label, removeBtn);
+    permanentList.appendChild(li);
+  }
+
+  temporaryList.innerHTML = "";
+  if (!data.temporary.length) {
+    const li = document.createElement("li");
+    li.innerHTML = '<span class="empty">None</span>';
+    temporaryList.appendChild(li);
+  }
+  for (const entry of data.temporary) {
+    const li = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = entry.company + " — until " + entry.until;
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () =>
+      postBlacklistAction({ action: "remove_temporary", company: entry.company })
+    );
+    li.append(label, removeBtn);
+    temporaryList.appendChild(li);
+  }
+
+  blacklistSection.hidden = false;
+}
+
+async function postBlacklistAction(body) {
+  blacklistStatus.textContent = "Saving...";
+  blacklistStatus.className = "";
+  try {
+    const data = await callServer("/blacklist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    renderBlacklist(data);
+    blacklistStatus.textContent = "";
+  } catch (err) {
+    blacklistStatus.textContent = err.message;
+    blacklistStatus.className = "err";
+  }
+}
+
+loadBlacklistButton.addEventListener("click", async () => {
+  loadBlacklistStatus.textContent = " Loading...";
+  loadBlacklistStatus.className = "";
+  try {
+    const data = await callServer("/blacklist", { method: "GET" });
+    renderBlacklist(data);
+    loadBlacklistStatus.textContent = "";
+  } catch (err) {
+    loadBlacklistStatus.textContent = " " + err.message;
+    loadBlacklistStatus.className = "err";
+  }
+});
+
+permanentAddButton.addEventListener("click", async () => {
+  const company = permanentInput.value.trim();
+  if (!company) return;
+  await postBlacklistAction({ action: "add_permanent", company });
+  permanentInput.value = "";
+});
+
+temporaryAddButton.addEventListener("click", async () => {
+  const company = temporaryCompanyInput.value.trim();
+  const until = temporaryUntilInput.value;
+  if (!company || !until) {
+    blacklistStatus.textContent = "Company and date are both required.";
+    blacklistStatus.className = "err";
+    return;
+  }
+  await postBlacklistAction({ action: "add_temporary", company, until });
+  temporaryCompanyInput.value = "";
+  temporaryUntilInput.value = "";
+});
+
 loadSettings();

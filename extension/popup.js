@@ -3,7 +3,19 @@ const browser = globalThis.browser ?? globalThis.chrome;
 
 const fillFormBtn = document.getElementById("fill-form-btn");
 const saveFieldsBtn = document.getElementById("save-fields-btn");
+const openConfigBtn = document.getElementById("open-config-btn");
 const statusEl = document.getElementById("status");
+
+// Same storage key/shape options.js writes to; only read here, never exposed to the config
+// page itself or the server.
+const COVER_LETTER_SETTINGS_KEY = "coverLetterSettings";
+const DEFAULT_CONFIG_PAGE_URL = "https://derrickhsun.github.io/Job-Search-Helper/";
+
+openConfigBtn.addEventListener("click", async () => {
+    const stored = await browser.storage.local.get(COVER_LETTER_SETTINGS_KEY);
+    const settings = stored[COVER_LETTER_SETTINGS_KEY] || {};
+    browser.tabs.create({ url: settings.configPageUrl || DEFAULT_CONFIG_PAGE_URL });
+});
 
 // Fields can live inside an embedded ATS iframe (Jobvite/iCIMS-style forms
 // commonly are), not just the top-level page. content.js runs in every

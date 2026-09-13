@@ -41,6 +41,39 @@
       font-size: 0.95rem;
       cursor: pointer;
     }
+    ul.entry-list {
+      list-style: none;
+      padding: 0;
+      margin: 0 0 0.75rem;
+    }
+    ul.entry-list li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.3rem 0;
+      border-bottom: 1px solid #eee;
+      font-size: 0.9rem;
+    }
+    ul.entry-list li button {
+      padding: 0.2rem 0.6rem;
+      font-size: 0.8rem;
+      flex-shrink: 0;
+    }
+    ul.entry-list li .empty {
+      color: #777;
+      font-style: italic;
+    }
+    .add-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .add-row input {
+      width: auto;
+      flex: 1;
+      margin-top: 0;
+    }
+    .add-row input[type="date"] { flex: 0 0 auto; }
     #status, #config-status, #save-config-status, #load-status, #save-status {
       margin-top: 0.5rem;
       font-family: ui-monospace, monospace;
@@ -118,6 +151,31 @@
 
       <button id="save-config" type="button">Save updates</button>
       <span id="save-config-status"></span>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Company blacklist</legend>
+    <button id="load-blacklist" type="button">Load blacklist</button>
+    <span id="load-blacklist-status"></span>
+
+    <div id="blacklist-section" hidden>
+      <h3>Permanent</h3>
+      <ul id="blacklist-permanent-list" class="entry-list"></ul>
+      <div class="add-row">
+        <input type="text" id="blacklist-permanent-input" placeholder="Company name" />
+        <button id="blacklist-permanent-add" type="button">Add</button>
+      </div>
+
+      <h3>Temporary (capped, expires on a date)</h3>
+      <ul id="blacklist-temporary-list" class="entry-list"></ul>
+      <div class="add-row">
+        <input type="text" id="blacklist-temporary-company" placeholder="Company name" />
+        <input type="date" id="blacklist-temporary-until" />
+        <button id="blacklist-temporary-add" type="button">Add</button>
+      </div>
+
+      <div id="blacklist-status"></div>
     </div>
   </fieldset>
 
