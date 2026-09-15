@@ -279,7 +279,7 @@ function getLinkedInJobTitle() {
     return null;
 }
 
-function getJobForSave() {
+function getJobForRecord() {
     if (!isLinkedInPage()) return null;
 
     const title = getLinkedInJobTitle();
@@ -352,7 +352,7 @@ function getLinkedInJobDescription() {
 }
 
 function getJobForCoverLetter() {
-    const job = getJobForSave();
+    const job = getJobForRecord();
     if (!job) return null;
 
     return {
@@ -361,15 +361,15 @@ function getJobForCoverLetter() {
     };
 }
 
-function formatSavedJobLabel(job) {
+function formatRecordedJobLabel(job) {
     const title = job.title || "";
     const company = job.company || "";
     if (company) return company + ", " + title;
     return title;
 }
 
-function formatSavedJobDate(job) {
-    const ts = job.savedAt;
+function formatRecordedJobDate(job) {
+    const ts = job.recordedAt;
     if (!ts) return "";
 
     const d = new Date(ts);
@@ -381,15 +381,15 @@ function formatSavedJobDate(job) {
     return year + "-" + month + "-" + day;
 }
 
-function formatSavedJobDownloadLine(job) {
+function formatRecordedJobDownloadLine(job) {
     const company = job.company || "";
-    const date = formatSavedJobDate(job);
+    const date = formatRecordedJobDate(job);
     const title = job.title || "";
     const url = job.url || "";
     return company + ", " + date + ", " + title + ", " + url;
 }
 
-function savedJobKey(job) {
+function recordedJobKey(job) {
     return (job.company || "") + "\0" + (job.title || "");
 }
 
@@ -826,36 +826,49 @@ function scanLinkedInApplicationFields(root) {
 
 const browser = globalThis.browser ?? globalThis.chrome;
 
-const SAVED_JOBS_KEY = "savedJobs";
+// Renamed from "savedJobs" -- a job here means its application is complete and the user
+// recorded it, not a LinkedIn-native save. migrateLegacyRecordedJobsKey() below carries over
+// anything stored under the old key so an in-progress queue isn't silently lost on update.
+const RECORDED_JOBS_KEY = "recordedJobs";
+const LEGACY_SAVED_JOBS_KEY = "savedJobs";
 const SAVED_APPLICATION_QUESTIONS_KEY = "savedApplicationQuestions";
-const SAVED_MENU_HOVER_CLOSE_MS = 350;
-const SAVED_MENU_VIEWPORT_MARGIN = 8;
+const RECORDED_MENU_HOVER_CLOSE_MS = 350;
+const RECORDED_MENU_VIEWPORT_MARGIN = 8;
 const SAVED_QUESTION_PREVIEW_LENGTH = 30;
-const SAVE_BUTTON_REFRESH_MS = 1000;
-let savedMenuHoverCloseTimer = null;
+const RECORD_BUTTON_REFRESH_MS = 1000;
+let recordedMenuHoverCloseTimer = null;
 let questionsMenuHoverCloseTimer = null;
-let saveButtonRefreshTimer = null;
+let recordButtonRefreshTimer = null;
+
+async function migrateLegacyRecordedJobsKey() {
+    const stored = await browser.storage.local.get([RECORDED_JOBS_KEY, LEGACY_SAVED_JOBS_KEY]);
+    if (stored[RECORDED_JOBS_KEY] !== undefined) return; // already migrated (or never had legacy data)
+    const legacy = stored[LEGACY_SAVED_JOBS_KEY];
+    if (!legacy) return;
+    await browser.storage.local.set({ [RECORDED_JOBS_KEY]: legacy });
+    await browser.storage.local.remove(LEGACY_SAVED_JOBS_KEY);
+}
 
 function isLinkedInApplicationFormOpen() {
     return !!(getLinkedInApplicationRoot() || findLinkedInEasyApplyMarker());
 }
 
 function getJobContextForQuestions() {
-    return getJobForSave() || {
+    return getJobForRecord() || {
         title: getLinkedInJobTitle() || "",
         company: getLinkedInJobCompany() || "",
         url: getLinkedInJobUrl() || "",
     };
 }
 
-function updateSaveButtonState(saveBtn) {
-    const job = getJobForSave();
+function updateRecordButtonState(recordBtn) {
+    const job = getJobForRecord();
     if (job) {
-        saveBtn.disabled = false;
-        saveBtn.textContent = "Save job";
+        recordBtn.disabled = false;
+        recordBtn.textContent = "Record completed job";
     } else {
-        saveBtn.disabled = true;
-        saveBtn.textContent = "No job found";
+        recordBtn.disabled = true;
+        recordBtn.textContent = "No job found";
     }
 }
 
@@ -876,7 +889,7 @@ let coverLetterBusy = false;
 
 function updateCoverLetterButtonState(coverLetterBtn) {
     if (!coverLetterBtn || coverLetterBusy) return;
-    if (getJobForSave()) {
+    if (getJobForRecord()) {
         coverLetterBtn.disabled = false;
         coverLetterBtn.textContent = "Generate cover letter";
     } else {
@@ -885,25 +898,25 @@ function updateCoverLetterButtonState(coverLetterBtn) {
     }
 }
 
-function stopSaveButtonRefresh() {
-    if (saveButtonRefreshTimer) {
-        clearInterval(saveButtonRefreshTimer);
-        saveButtonRefreshTimer = null;
+function stopRecordButtonRefresh() {
+    if (recordButtonRefreshTimer) {
+        clearInterval(recordButtonRefreshTimer);
+        recordButtonRefreshTimer = null;
     }
 }
 
-function startSaveButtonsRefresh(saveBtn, saveQuestionsBtn, coverLetterBtn) {
-    stopSaveButtonRefresh();
+function startRecordButtonsRefresh(recordBtn, saveQuestionsBtn, coverLetterBtn) {
+    stopRecordButtonRefresh();
     const refresh = () => {
-        updateSaveButtonState(saveBtn);
+        updateRecordButtonState(recordBtn);
         updateSaveQuestionsButtonState(saveQuestionsBtn);
         updateCoverLetterButtonState(coverLetterBtn);
     };
     refresh();
-    saveButtonRefreshTimer = setInterval(refresh, SAVE_BUTTON_REFRESH_MS);
+    recordButtonRefreshTimer = setInterval(refresh, RECORD_BUTTON_REFRESH_MS);
 }
 
-function isInsideSavedMenu(target, menuRoot, menu) {
+function isInsideRecordedMenu(target, menuRoot, menu) {
     if (!target) return false;
     return target === menuRoot || menuRoot.contains(target) ||
         target === menu || menu.contains(target);
@@ -1045,62 +1058,77 @@ function openSavedQuestionsMenu(menuRoot) {
     });
 }
 
-async function getSavedJobs() {
-    const stored = await browser.storage.local.get(SAVED_JOBS_KEY);
-    return stored[SAVED_JOBS_KEY] || [];
+async function getRecordedJobs() {
+    await migrateLegacyRecordedJobsKey();
+    const stored = await browser.storage.local.get(RECORDED_JOBS_KEY);
+    return stored[RECORDED_JOBS_KEY] || [];
 }
 
-async function addSavedJob(job) {
-    const savedJobs = await getSavedJobs();
+async function addRecordedJob(job) {
+    const recordedJobs = await getRecordedJobs();
     const entry = {
         title: job.title,
         company: job.company || "",
         url: job.url || "",
-        savedAt: Date.now(),
+        recordedAt: Date.now(),
     };
-    const key = savedJobKey(entry);
-    const withoutDup = savedJobs.filter((saved) => savedJobKey(saved) !== key);
+    const key = recordedJobKey(entry);
+    const withoutDup = recordedJobs.filter((recorded) => recordedJobKey(recorded) !== key);
     withoutDup.unshift(entry);
-    await browser.storage.local.set({ [SAVED_JOBS_KEY]: withoutDup });
+    await browser.storage.local.set({ [RECORDED_JOBS_KEY]: withoutDup });
 }
 
-async function removeSavedJob(job) {
-    const savedJobs = await getSavedJobs();
-    const key = savedJobKey(job);
-    const filtered = savedJobs.filter((saved) => savedJobKey(saved) !== key);
-    await browser.storage.local.set({ [SAVED_JOBS_KEY]: filtered });
+async function removeRecordedJob(job) {
+    const recordedJobs = await getRecordedJobs();
+    const key = recordedJobKey(job);
+    const filtered = recordedJobs.filter((recorded) => recordedJobKey(recorded) !== key);
+    await browser.storage.local.set({ [RECORDED_JOBS_KEY]: filtered });
 }
 
-async function clearSavedJobs() {
-    await browser.storage.local.set({ [SAVED_JOBS_KEY]: [] });
+async function clearRecordedJobs() {
+    await browser.storage.local.set({ [RECORDED_JOBS_KEY]: [] });
 }
 
-function formatSavedJobsCountLabel(count) {
-    if (!count) return "No jobs saved";
-    if (count === 1) return "1 job saved";
-    return count + " jobs saved";
+function formatRecordedJobsCountLabel(count) {
+    if (!count) return "No jobs recorded";
+    if (count === 1) return "1 job recorded";
+    return count + " jobs recorded";
 }
 
-function updateSavedJobsCountBtn(btn, menuRoot) {
-    getSavedJobs().then((jobs) => {
-        btn.textContent = formatSavedJobsCountLabel(jobs.length);
+function updateRecordedJobsCountBtn(btn, menuRoot) {
+    getRecordedJobs().then((jobs) => {
+        btn.textContent = formatRecordedJobsCountLabel(jobs.length);
         btn.title = jobs.length
-            ? "Hover to preview saved jobs; click to clear"
-            : "Save a job to add it here";
+            ? "Hover to preview recorded jobs; click to clear"
+            : "Record a completed job to add it here";
 
         if (!menuRoot) return;
 
-        const menu = menuRoot.querySelector(".jobhelp-saved-menu");
+        const menu = menuRoot.querySelector(".jobhelp-recorded-menu");
         if (!jobs.length) {
-            closeSavedJobsMenu(menuRoot);
+            closeRecordedJobsMenu(menuRoot);
             return;
         }
         if (menu && !menu.hidden) {
-            renderSavedJobsMenu(menu, jobs, menuRoot);
-            positionSavedJobsMenu(menuRoot, menu);
+            renderRecordedJobsMenu(menu, jobs, menuRoot);
+            positionRecordedJobsMenu(menuRoot, menu);
         }
     });
 }
+
+// Keeps every open tab's recorded-jobs count in sync without polling. browser.storage.onChanged
+// fires in every extension context (every tab's content script, popup, background) whenever
+// browser.storage.local changes anywhere -- including a record/clear that happened in a
+// different tab -- so this is push-based, not a timer. Re-queries the DOM for the button each
+// time rather than closing over the one from a particular buildButtons() call, since the taskbar
+// can be rebuilt/replaced (see scheduleTaskbarRetries) and a stale closure would update a
+// detached node.
+browser.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local" || !changes[RECORDED_JOBS_KEY]) return;
+    const btn = document.querySelector(".jobhelp-recorded-count");
+    if (!btn) return;
+    updateRecordedJobsCountBtn(btn, btn.closest(".jobhelp-recorded-wrap"));
+});
 
 async function getSavedApplicationQuestions() {
     const stored = await browser.storage.local.get(SAVED_APPLICATION_QUESTIONS_KEY);
@@ -1204,10 +1232,10 @@ function updateSavedQuestionsCountBtn(btn, menuRoot) {
     });
 }
 
-async function downloadAllSavedJobs() {
-    const jobs = await getSavedJobs();
-    const text = jobs.map((job) => formatSavedJobDownloadLine(job)).join("\n");
-    await saveTextFile(text, "saved_jobs.txt");
+async function downloadAllRecordedJobs() {
+    const jobs = await getRecordedJobs();
+    const text = jobs.map((job) => formatRecordedJobDownloadLine(job)).join("\n");
+    await saveTextFile(text, "recorded_jobs.txt");
 
     const questions = await getSavedApplicationQuestions();
     if (questions.length) {
@@ -1345,7 +1373,7 @@ function renderConflictRows(card, result, { onResolved, onClose }) {
 
     const heading = document.createElement("h2");
     const conflicts = result.conflicts || [];
-    heading.textContent = "Resolve " + conflicts.length + " item(s) from your saved jobs";
+    heading.textContent = "Resolve " + conflicts.length + " item(s) from your recorded jobs";
     card.appendChild(heading);
 
     const choices = new Map(); // conflict_id -> choice
@@ -1453,45 +1481,45 @@ function injectSlotStyles(slot) {
     const style = document.createElement("style");
     style.setAttribute("data-jobhelp", "");
     style.textContent =
-        ".jobhelp-saved-wrap,.jobhelp-questions-wrap{position:relative;display:inline-flex;}" +
-        ".jobhelp-saved-menu,.jobhelp-questions-menu{position:fixed;min-width:220px;max-width:320px;" +
+        ".jobhelp-recorded-wrap,.jobhelp-questions-wrap{position:relative;display:inline-flex;}" +
+        ".jobhelp-recorded-menu,.jobhelp-questions-menu{position:fixed;min-width:220px;max-width:320px;" +
         "max-height:240px;overflow:auto;margin:0;padding:4px 0;list-style:none;background:#fff;" +
         "border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);" +
         "z-index:2147483647;font-size:13px;}" +
-        ".jobhelp-saved-menu::before,.jobhelp-questions-menu::before{content:'';position:absolute;" +
+        ".jobhelp-recorded-menu::before,.jobhelp-questions-menu::before{content:'';position:absolute;" +
         "left:0;right:0;top:-12px;height:12px;}" +
-        ".jobhelp-saved-item,.jobhelp-questions-item{display:flex;align-items:center;gap:8px;" +
+        ".jobhelp-recorded-item,.jobhelp-questions-item{display:flex;align-items:center;gap:8px;" +
         "padding:6px 8px 6px 12px;color:#111;}" +
-        ".jobhelp-saved-item-title,.jobhelp-questions-item-title{flex:1 1 auto;min-width:0;" +
+        ".jobhelp-recorded-item-title,.jobhelp-questions-item-title{flex:1 1 auto;min-width:0;" +
         "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}" +
         ".jobhelp-saved-remove{flex:0 0 auto;border:none;background:transparent;cursor:pointer;" +
         "color:#666;font-size:16px;line-height:1;padding:2px 6px;border-radius:4px;}" +
         ".jobhelp-saved-remove:hover{color:#b00020;background:#fde8e8;}" +
-        ".jobhelp-saved-menu li.jobhelp-saved-empty,.jobhelp-questions-menu li.jobhelp-questions-empty{" +
+        ".jobhelp-recorded-menu li.jobhelp-recorded-empty,.jobhelp-questions-menu li.jobhelp-questions-empty{" +
         "padding:8px 12px;color:#666;font-style:italic;}" +
-        ".jobhelp-questions-count,.jobhelp-saved-count{cursor:pointer;}" +
+        ".jobhelp-questions-count,.jobhelp-recorded-count{cursor:pointer;}" +
         "button:disabled{opacity:0.55;cursor:not-allowed;}";
     slot.prepend(style);
 }
 
-function renderSavedJobsMenu(menu, jobs, menuRoot) {
+function renderRecordedJobsMenu(menu, jobs, menuRoot) {
     menu.replaceChildren();
     if (!jobs.length) {
         const empty = document.createElement("li");
-        empty.className = "jobhelp-saved-empty";
-        empty.textContent = "No saved jobs yet";
+        empty.className = "jobhelp-recorded-empty";
+        empty.textContent = "No recorded jobs yet";
         menu.appendChild(empty);
         return;
     }
 
     for (const job of jobs) {
         const item = document.createElement("li");
-        item.className = "jobhelp-saved-item";
+        item.className = "jobhelp-recorded-item";
 
-        const label = formatSavedJobLabel(job);
+        const label = formatRecordedJobLabel(job);
 
         const title = document.createElement("span");
-        title.className = "jobhelp-saved-item-title";
+        title.className = "jobhelp-recorded-item-title";
         title.textContent = label;
         title.title = label;
 
@@ -1502,17 +1530,17 @@ function renderSavedJobsMenu(menu, jobs, menuRoot) {
         removeBtn.textContent = "×";
         removeBtn.addEventListener("click", (event) => {
             event.stopPropagation();
-            removeSavedJob(job).then(() => {
-                getSavedJobs().then((updated) => {
-                    const btn = menuRoot?.querySelector(".jobhelp-saved-count");
+            removeRecordedJob(job).then(() => {
+                getRecordedJobs().then((updated) => {
+                    const btn = menuRoot?.querySelector(".jobhelp-recorded-count");
                     if (!updated.length) {
-                        closeSavedJobsMenu(menuRoot);
+                        closeRecordedJobsMenu(menuRoot);
                     }
                     if (btn) {
-                        updateSavedJobsCountBtn(btn, menuRoot);
+                        updateRecordedJobsCountBtn(btn, menuRoot);
                     } else if (updated.length && !menu.hidden && menuRoot) {
-                        renderSavedJobsMenu(menu, updated, menuRoot);
-                        positionSavedJobsMenu(menuRoot, menu);
+                        renderRecordedJobsMenu(menu, updated, menuRoot);
+                        positionRecordedJobsMenu(menuRoot, menu);
                     }
                 });
             });
@@ -1524,28 +1552,28 @@ function renderSavedJobsMenu(menu, jobs, menuRoot) {
     }
 }
 
-function clearSavedMenuHoverCloseTimer() {
-    if (savedMenuHoverCloseTimer) {
-        clearTimeout(savedMenuHoverCloseTimer);
-        savedMenuHoverCloseTimer = null;
+function clearRecordedMenuHoverCloseTimer() {
+    if (recordedMenuHoverCloseTimer) {
+        clearTimeout(recordedMenuHoverCloseTimer);
+        recordedMenuHoverCloseTimer = null;
     }
 }
 
-function scheduleSavedMenuHoverClose(menuRoot) {
-    clearSavedMenuHoverCloseTimer();
-    savedMenuHoverCloseTimer = setTimeout(() => {
-        savedMenuHoverCloseTimer = null;
-        closeSavedJobsMenu(menuRoot);
-    }, SAVED_MENU_HOVER_CLOSE_MS);
+function scheduleRecordedMenuHoverClose(menuRoot) {
+    clearRecordedMenuHoverCloseTimer();
+    recordedMenuHoverCloseTimer = setTimeout(() => {
+        recordedMenuHoverCloseTimer = null;
+        closeRecordedJobsMenu(menuRoot);
+    }, RECORDED_MENU_HOVER_CLOSE_MS);
 }
 
-function resetSavedJobsMenuPosition(menu) {
+function resetRecordedJobsMenuPosition(menu) {
     menu.style.left = "";
     menu.style.top = "";
     menu.style.visibility = "";
 }
 
-function positionSavedJobsMenu(menuRoot, menu) {
+function positionRecordedJobsMenu(menuRoot, menu) {
     const listBtn = menuRoot.querySelector("button");
     if (!listBtn) return;
 
@@ -1554,7 +1582,7 @@ function positionSavedJobsMenu(menuRoot, menu) {
 
     const btnRect = listBtn.getBoundingClientRect();
     const menuRect = menu.getBoundingClientRect();
-    const margin = SAVED_MENU_VIEWPORT_MARGIN;
+    const margin = RECORDED_MENU_VIEWPORT_MARGIN;
 
     let left = btnRect.left;
     let top = btnRect.bottom;
@@ -1575,27 +1603,27 @@ function positionSavedJobsMenu(menuRoot, menu) {
     menu.style.visibility = "";
 }
 
-function closeSavedJobsMenu(menuRoot) {
-    const menu = menuRoot.querySelector(".jobhelp-saved-menu");
-    clearSavedMenuHoverCloseTimer();
+function closeRecordedJobsMenu(menuRoot) {
+    const menu = menuRoot.querySelector(".jobhelp-recorded-menu");
+    clearRecordedMenuHoverCloseTimer();
 
     if (menu) {
         menu.hidden = true;
-        resetSavedJobsMenuPosition(menu);
+        resetRecordedJobsMenuPosition(menu);
     }
 }
 
-function openSavedJobsMenu(menuRoot) {
-    const menu = menuRoot.querySelector(".jobhelp-saved-menu");
+function openRecordedJobsMenu(menuRoot) {
+    const menu = menuRoot.querySelector(".jobhelp-recorded-menu");
     if (!menu) return;
 
-    clearSavedMenuHoverCloseTimer();
+    clearRecordedMenuHoverCloseTimer();
 
-    getSavedJobs().then((jobs) => {
+    getRecordedJobs().then((jobs) => {
         if (!jobs.length) return;
 
-        renderSavedJobsMenu(menu, jobs, menuRoot);
-        positionSavedJobsMenu(menuRoot, menu);
+        renderRecordedJobsMenu(menu, jobs, menuRoot);
+        positionRecordedJobsMenu(menuRoot, menu);
     });
 }
 
@@ -1603,19 +1631,19 @@ function openSavedJobsMenu(menuRoot) {
 // with our slot element (inside the shared taskbar's open shadow root).
 function buildButtons(slot) {
     injectSlotStyles(slot);
-    closeSavedJobsMenu(slot);
+    closeRecordedJobsMenu(slot);
     slot.querySelectorAll(".jobhelp-questions-wrap").forEach(closeSavedQuestionsMenu);
     clearQuestionsMenuHoverCloseTimer();
-    stopSaveButtonRefresh();
+    stopRecordButtonRefresh();
 
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.addEventListener("click", async () => {
-        const job = getJobForSave();
+    const recordBtn = document.createElement("button");
+    recordBtn.type = "button";
+    recordBtn.addEventListener("click", async () => {
+        const job = getJobForRecord();
         if (!job) return;
 
-        await addSavedJob(job);
-        updateSavedJobsCountBtn(savedJobsBtn, menuWrap);
+        await addRecordedJob(job);
+        updateRecordedJobsCountBtn(recordedJobsBtn, menuWrap);
     });
 
     const saveQuestionsBtn = document.createElement("button");
@@ -1665,7 +1693,7 @@ function buildButtons(slot) {
         }, 3000);
     });
 
-    startSaveButtonsRefresh(saveBtn, saveQuestionsBtn, coverLetterBtn);
+    startRecordButtonsRefresh(recordBtn, saveQuestionsBtn, coverLetterBtn);
 
     const questionsWrap = document.createElement("div");
     questionsWrap.className = "jobhelp-questions-wrap";
@@ -1727,9 +1755,9 @@ function buildButtons(slot) {
             downloadBtn.disabled = true;
             downloadBtn.textContent = "Downloading…";
             try {
-                const jobs = await getSavedJobs();
+                const jobs = await getRecordedJobs();
                 const questions = await getSavedApplicationQuestions();
-                await saveTextFile(jobs.map((job) => formatSavedJobDownloadLine(job)).join("\n"), "saved_jobs.txt");
+                await saveTextFile(jobs.map((job) => formatRecordedJobDownloadLine(job)).join("\n"), "recorded_jobs.txt");
                 if (questions.length) {
                     await saveTextFile(
                         formatApplicationQuestionsDownloadText(questions),
@@ -1751,16 +1779,16 @@ function buildButtons(slot) {
         downloadBtn.disabled = true;
         const { backdrop, card } = openSyncPopup();
         const closeAndReenable = () => { backdrop.remove(); downloadBtn.disabled = false; };
-        renderSyncStage(card, "Downloading saved jobs…");
+        renderSyncStage(card, "Downloading recorded jobs…");
 
         let jobsText = "";
         let questionsText = "";
         try {
-            const jobs = await getSavedJobs();
+            const jobs = await getRecordedJobs();
             const questions = await getSavedApplicationQuestions();
-            jobsText = jobs.map((job) => formatSavedJobDownloadLine(job)).join("\n");
+            jobsText = jobs.map((job) => formatRecordedJobDownloadLine(job)).join("\n");
             questionsText = questions.length ? formatApplicationQuestionsDownloadText(questions) : "";
-            await saveTextFile(jobsText, "saved_jobs.txt");
+            await saveTextFile(jobsText, "recorded_jobs.txt");
             if (questions.length) {
                 await saveTextFile(questionsText, "saved_job_application_questions.txt");
             }
@@ -1775,7 +1803,7 @@ function buildButtons(slot) {
         try {
             result = await browser.runtime.sendMessage({
                 type: "PROCESS_EXTENSION",
-                savedJobsText: jobsText,
+                recordedJobsText: jobsText,
                 savedQuestionsText: questionsText,
             });
         } catch (err) {
@@ -1794,55 +1822,55 @@ function buildButtons(slot) {
     });
 
     const menuWrap = document.createElement("div");
-    menuWrap.className = "jobhelp-saved-wrap";
+    menuWrap.className = "jobhelp-recorded-wrap";
 
-    const savedJobsBtn = document.createElement("button");
-    savedJobsBtn.type = "button";
-    savedJobsBtn.className = "jobhelp-saved-count";
-    savedJobsBtn.addEventListener("click", async () => {
-        const jobs = await getSavedJobs();
+    const recordedJobsBtn = document.createElement("button");
+    recordedJobsBtn.type = "button";
+    recordedJobsBtn.className = "jobhelp-recorded-count";
+    recordedJobsBtn.addEventListener("click", async () => {
+        const jobs = await getRecordedJobs();
         if (!jobs.length) return;
 
         const confirmed = window.confirm(
-            "Clear all " + jobs.length + " saved job" +
+            "Clear all " + jobs.length + " recorded job" +
             (jobs.length === 1 ? "" : "s") + "?"
         );
         if (!confirmed) return;
 
-        await clearSavedJobs();
-        updateSavedJobsCountBtn(savedJobsBtn, menuWrap);
-        closeSavedJobsMenu(menuWrap);
+        await clearRecordedJobs();
+        updateRecordedJobsCountBtn(recordedJobsBtn, menuWrap);
+        closeRecordedJobsMenu(menuWrap);
     });
-    updateSavedJobsCountBtn(savedJobsBtn, menuWrap);
+    updateRecordedJobsCountBtn(recordedJobsBtn, menuWrap);
 
     const menu = document.createElement("ul");
-    menu.className = "jobhelp-saved-menu";
+    menu.className = "jobhelp-recorded-menu";
     menu.hidden = true;
 
-    const cancelSavedHoverClose = () => clearSavedMenuHoverCloseTimer();
+    const cancelRecordedHoverClose = () => clearRecordedMenuHoverCloseTimer();
 
     menuWrap.addEventListener("mouseenter", () => {
-        cancelSavedHoverClose();
-        openSavedJobsMenu(menuWrap);
+        cancelRecordedHoverClose();
+        openRecordedJobsMenu(menuWrap);
     });
 
     menuWrap.addEventListener("mouseleave", (event) => {
-        if (!isInsideSavedMenu(event.relatedTarget, menuWrap, menu)) {
-            scheduleSavedMenuHoverClose(menuWrap);
+        if (!isInsideRecordedMenu(event.relatedTarget, menuWrap, menu)) {
+            scheduleRecordedMenuHoverClose(menuWrap);
         }
     });
 
-    menu.addEventListener("mouseenter", cancelSavedHoverClose);
+    menu.addEventListener("mouseenter", cancelRecordedHoverClose);
     menu.addEventListener("mouseleave", (event) => {
-        if (!isInsideSavedMenu(event.relatedTarget, menuWrap, menu)) {
-            scheduleSavedMenuHoverClose(menuWrap);
+        if (!isInsideRecordedMenu(event.relatedTarget, menuWrap, menu)) {
+            scheduleRecordedMenuHoverClose(menuWrap);
         }
     });
 
-    menuWrap.appendChild(savedJobsBtn);
+    menuWrap.appendChild(recordedJobsBtn);
     menuWrap.appendChild(menu);
     slot.appendChild(saveQuestionsBtn);
-    slot.appendChild(saveBtn);
+    slot.appendChild(recordBtn);
     slot.appendChild(coverLetterBtn);
     slot.appendChild(questionsWrap);
     slot.appendChild(menuWrap);
@@ -2044,6 +2072,25 @@ function getGenericFieldLabel(el) {
             .join(" ")
             .trim();
         if (text) return text;
+    }
+
+    // Some sites (e.g. Ashby) put the real <label> as a structural sibling of the input's own
+    // wrapper instead of a working label[for]/id link — the `for` can target a different,
+    // hidden field's id while the visible input has no id at all, so the id-based check above
+    // never finds it. Walk up a few ancestor levels for the smallest container holding exactly
+    // one <label>; a uniquely-scoped nearby label is far more trustworthy than falling straight
+    // to placeholder text, which is often generic UI boilerplate ("Start typing...") shared
+    // across unrelated fields/sites — an auto-created rule keyed on boilerplate like that once
+    // fired on a totally different field's autocomplete input and filled "Purdue University"
+    // into a Location field.
+    let ancestor = el.parentElement;
+    for (let i = 0; i < 4 && ancestor; i++) {
+        const labels = ancestor.querySelectorAll("label");
+        if (labels.length === 1) {
+            const text = getLinkedInElementText(labels[0]);
+            if (text) return text;
+        }
+        ancestor = ancestor.parentElement;
     }
 
     const placeholder = (el.getAttribute("placeholder") || "").trim();

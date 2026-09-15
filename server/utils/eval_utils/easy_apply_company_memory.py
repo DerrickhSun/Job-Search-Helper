@@ -38,13 +38,22 @@ EASY_APPLY_SERVICES: tuple[str, ...] = ("greenhouse", "ashby")
 
 
 def detect_easy_apply_service(url: str) -> str | None:
-    """"greenhouse"/"ashby" if the (external apply destination) URL is hosted on that ATS, else None."""
+    """
+    "greenhouse"/"ashby" if the (external apply destination) URL is hosted on, or embeds, that
+    ATS, else None.
+
+    Checks both the ATS's own hosted subdomain (``boards.greenhouse.io``, ``jobs.ashbyhq.com``)
+    and its embeddable-widget query param on a company's own custom domain (``gh_jid=``,
+    ``ashby_jid=``) -- e.g. ``https://superhuman.com/company/careers/jobs?ashby_jid=...`` is
+    Ashby embedded on Superhuman's own domain, not Ashby's hosted subdomain at all, and would be
+    missed by a hostname-only check.
+    """
     u = (url or "").strip().lower()
     if not u:
         return None
-    if "greenhouse.io" in u:
+    if "greenhouse.io" in u or "gh_jid=" in u:
         return "greenhouse"
-    if "ashbyhq.com" in u:
+    if "ashbyhq.com" in u or "ashby_jid=" in u:
         return "ashby"
     return None
 

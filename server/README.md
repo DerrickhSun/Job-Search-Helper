@@ -165,6 +165,51 @@ with LinkedIn's Terms of Service. Apply only to jobs you're genuinely interested
   chat-style endpoint design. Shelved for now — revisit once the extension/webapp split below has
   settled.
 
+  Design notes from thinking this through further: the GIL isn't a real concern as long as
+  `main.py` runs as a genuine `subprocess.Popen` (separate process, separate GIL) rather than an
+  in-process function call — an in-process call would have other request threads stall during
+  `main.py`'s CPU-bound stretches (DSPy scoring, regex filters), since Python only releases the
+  GIL during actual I/O waits. The real risk with a subprocess is **making sure it (and everything
+  under it) actually closes when it should**: `main.py` spawns chromedriver, which spawns Chrome,
+  so killing just the top-level PID orphans the browser processes underneath it — same failure
+  mode as the duplicate `extension_server.py` instances hit repeatedly this session, just one
+  process layer deeper. Plan: track the whole process tree (the `psutil` library, not currently a
+  dependency, would help here), prefer a graceful stop first (Windows: launch with
+  `CREATE_NEW_PROCESS_GROUP`, then `send_signal(CTRL_BREAK_EVENT)` to trigger the same
+  `except KeyboardInterrupt` / `finally` cleanup `main.py` already has at `main.py:1411-1429` —
+  worth confirming `driver.quit()` is unconditionally covered there too), with a timeout that
+  escalates to a full tree-kill if it doesn't exit. Also persist the launched PID to a small lock
+  file (mirroring `sync.lock`'s pattern) so a server restart can rediscover/reconcile a still-running
+  child instead of losing track of it, and so only one `main.py` run is ever allowed at a time
+  (prevents two overlapping runs racing on the same DB/CSV/cookie files — again, the same species
+  of bug as the port-8743 collisions). Status updates back to the caller (since a real user would
+  only interact with the server, never the subprocess directly) can piggyback on existing state —
+  capture stdout/stderr into an in-memory ring buffer (same shape as the `_PENDING` dict in
+  `utils/extension_process_service.py`) plus `Popen.poll()` for liveness — with no changes needed
+  to `main.py` itself; a written progress file (e.g. `data/run_status.json`) is a cleaner signal
+  but needs actual instrumentation added to `main.py`'s loop, so start without it.
+
+- **Future idea: host `extension_server.py` on an always-on cloud server**, reachable from
+  brand-new devices that only have the extension/`pages/` control panel installed — never having
+  run any of this code locally. The main obstacle: LinkedIn login. The existing `_login()` flow
+  (`utils/job_searcher.py:3146+`) already assumes a human is watching a visible browser to solve a
+  2FA/CAPTCHA checkpoint — and a fresh, cookie-less login from a cloud-datacenter IP (plus a
+  Selenium fingerprint — `chrome_driver.py` only sets one anti-detection flag) is close to a
+  worst-case trigger for exactly that checkpoint, which nothing server-side can solve unattended.
+  Cookies have to be bootstrapped from a real, already-authenticated residential session instead of
+  asking the cloud server to log in fresh. Best path found so far: the extension already has the
+  right access for this that a plain webpage does not (LinkedIn blocks being framed at all, and its
+  session cookie is `HttpOnly` — invisible to page JS either way) — add the `cookies` permission,
+  have the extension open a real `linkedin.com/login` tab for the user to log into normally (they
+  solve any checkpoint themselves, since it's genuinely them on LinkedIn's real page), then read
+  the resulting cookies via `browser.cookies.getAll({domain: "linkedin.com"})`, map them into the
+  same shape `chrome_driver.py` already reads/writes (`expirationDate` → `expiry`, rest matches),
+  and POST them to a new endpoint that writes `data/selenium_linkedin_cookies.json` — no change
+  needed to `load_cookies()`/the login flow itself. Caveat that doesn't go away: cookies established
+  on the user's home IP but later used from the cloud server's IP can still occasionally get
+  re-challenged by LinkedIn's risk engine; this reduces cold-start failures a lot, it doesn't
+  eliminate checkpoints forever. Not started — still at the design stage.
+
 - **Future idea: containerize the bot with Docker for real use, not just as a build check.**
   A `Dockerfile`/`.dockerignore` already exist and build correctly (context = `server/`), but
   Docker isn't actually part of the normal workflow yet — the bot is still run directly via

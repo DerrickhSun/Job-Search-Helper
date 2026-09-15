@@ -4,12 +4,15 @@ const EXTENSION_DOWNLOAD_IDS_KEY = "extensionDownloadIds";
 
 // Each export uses a fixed name; numbered variants are legacy copies to delete.
 const EXTENSION_OUTPUT_PATTERNS = {
-  "saved_jobs.txt": /^saved_jobs( \(\d+\))?\.txt$/i,
+  "recorded_jobs.txt": /^recorded_jobs( \(\d+\))?\.txt$/i,
   "saved_job_application_questions.txt":
     /^saved_job_application_questions( \(\d+\))?\.txt$/i,
 };
 
 const LEGACY_OUTPUT_PATTERNS = {
+  // Renamed from "saved_jobs.txt" when "save"/"saved" terminology for jobs was standardized to
+  // "record"/"recorded" -- still clean up any pre-existing downloads under the old name.
+  "recorded_jobs.txt": /^saved_jobs( \(\d+\))?\.txt$/i,
   "saved_job_application_questions.txt":
     /^job_application_questions( \(\d+\))?\.txt$/i,
 };
@@ -206,10 +209,10 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
-async function processExtensionRequest({ savedJobsText, savedQuestionsText, dryRun }) {
+async function processExtensionRequest({ recordedJobsText, savedQuestionsText, dryRun }) {
   const { serverUrl, token, autoSyncDownloads } = await getExtensionServerSettings();
   if (!autoSyncDownloads) {
-    // Downloads (saved_jobs.txt / saved_job_application_questions.txt) already happened in
+    // Downloads (recorded_jobs.txt / saved_job_application_questions.txt) already happened in
     // content.js before this message was sent -- this setting only controls whether we also
     // import them straight into the server, so no server/token is needed at all here.
     return { type: "download_only" };
@@ -231,7 +234,7 @@ async function processExtensionRequest({ savedJobsText, savedQuestionsText, dryR
         },
         body: JSON.stringify({
           request_id: requestId,
-          saved_jobs_text: savedJobsText || "",
+          saved_jobs_text: recordedJobsText || "",
           saved_questions_text: savedQuestionsText || "",
           dry_run: !!dryRun,
         }),
