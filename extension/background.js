@@ -298,6 +298,33 @@ async function resolveExtensionConflicts({ requestId, serverRequestId, resolutio
   return data; // {type: "extension_processed", ...} or {type: "conflict_resolution_timeout", ...}
 }
 
+async function getEasyApplyCompanies() {
+  const { serverUrl, token } = await getExtensionServerSettings();
+  if (!token) {
+    return { error: "No API token set — configure it on the extension's options page." };
+  }
+
+  let res;
+  try {
+    res = await fetchWithTimeout(
+      serverUrl + "/easy-apply-companies",
+      { method: "GET", headers: { "Authorization": "Bearer " + token } },
+      PROCESS_EXTENSION_TIMEOUT_MS
+    );
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return { error: "Timed out waiting for " + serverUrl };
+    }
+    return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    return { error: (data && data.error) || ("server responded " + res.status) };
+  }
+  return data; // {companies: [...]}
+}
+
 browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "GENERATE_COVER_LETTER") {
     generateCoverLetter(msg.job || {}).then(sendResponse);
@@ -316,6 +343,11 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === "RESOLVE_CONFLICTS") {
     resolveExtensionConflicts(msg).then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === "GET_EASY_APPLY_COMPANIES") {
+    getEasyApplyCompanies().then(sendResponse);
     return true;
   }
 

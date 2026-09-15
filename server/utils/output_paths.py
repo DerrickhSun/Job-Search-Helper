@@ -42,6 +42,7 @@ ASSISTED_APPLICATIONS_CSV = OUTPUT_DIR / "assisted_applications.csv"
 ASSISTED_APPLICATIONS_HISTORY_CSV = ARCHIVE_DIR / "assisted_applications_history.csv"
 GREENHOUSE_DISMISSED_CSV = OUTPUT_DIR / "greenhouse_dismissed.csv"
 CONSULTING_COMPANIES_JSON = OUTPUT_DIR / "consulting_companies.json"
+EASY_APPLY_COMPANIES_JSON = OUTPUT_DIR / "easy_apply_companies.json"
 
 LEGACY_CONSULTING_COMPANIES_JSON = Path("data/consulting_companies.json")
 LEGACY_FORM_FILL_RULES_DIR = Path("data/form_fill_rules")

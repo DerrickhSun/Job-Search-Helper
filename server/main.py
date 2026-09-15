@@ -47,6 +47,7 @@ _PATHS_DEFAULTS = {
     "company_blacklist": "data/company_blacklist.json",
     "temporary_company_blacklist": "data/company_blacklist_temporary.json",
     "consulting_companies_memory_path": "output/consulting_companies.json",
+    "easy_apply_companies_memory_path": "output/easy_apply_companies.json",
     "greenhouse_cookies": "data/selenium_greenhouse_cookies.json",
 }
 
@@ -109,6 +110,10 @@ from utils.eval_utils.consulting_company_memory import (
 from utils.eval_utils.consulting_filter import (
     is_consulting_listing_from_job_posting_text_only,
     is_consulting_listing_from_listing_company_line_only,
+)
+from utils.eval_utils.easy_apply_company_memory import (
+    detect_easy_apply_service,
+    load_easy_apply_company_memory,
 )
 from utils.eval_utils.student_job_filter import classify_student_job, student_job_passes_filter
 from utils.eval_utils.unpaid_job_filter import is_unpaid_job, unpaid_job_passes_filter
@@ -346,6 +351,7 @@ def run(
         )
 
     searcher = _job_searcher_from_args(args, timing, search, account_first_name=account_first)
+    easy_apply_memory = load_easy_apply_company_memory(Path(paths["easy_apply_companies_memory_path"]))
     consulting_memory_path = Path(paths["consulting_companies_memory_path"])
     consulting_memory = None
     if behavior["skip_consulting"] and behavior["consulting_companies_memory"]:
@@ -601,6 +607,25 @@ def run(
                     )
                     return
                 job = {**job, "url": dest_url}
+
+                # Companies overwhelmingly stick to one ATS, so remember the service by company
+                # rather than re-deriving it per job. A company we'd previously flagged that no
+                # longer reads as Greenhouse/Ashby has likely migrated ATS providers -- drop it
+                # rather than keep stale information (see easy_apply_company_memory.py docstring).
+                company_display = str(job.get("company") or "")
+                detected_service = detect_easy_apply_service(dest_url)
+                if detected_service:
+                    easy_apply_memory.remember(
+                        slug=None, company_display=company_display, service=detected_service
+                    )
+                else:
+                    existing = easy_apply_memory.lookup(slug=None, company_display=company_display)
+                    if existing and easy_apply_memory.forget(slug=None, company_display=company_display):
+                        log.info(
+                            "Easy-apply company memory: %s no longer appears to use %s "
+                            "(external apply now goes elsewhere) — removed.",
+                            company_display, existing.get("service"),
+                        )
 
         if is_company_blacklisted(job.get("company") or "", company_blacklist):
             _tracker_log(job, status="blacklisted", score=0.0)

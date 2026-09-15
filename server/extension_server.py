@@ -126,6 +126,15 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
         mortgage co" are treated as the same entry. add_temporary on an already-present company
         replaces its "until" date rather than adding a duplicate row.
 
+    GET  /easy-apply-companies
+        -> {"companies": [{"slug": str|null, "normalized_name": str|null,
+                            "service": "greenhouse"|"ashby", "last_seen": "YYYY-MM-DD"}, ...]}
+
+        Read-only dump of output/easy_apply_companies.json (see
+        utils/eval_utils/easy_apply_company_memory.py) -- companies filter-mode runs have detected
+        posting jobs through Greenhouse or Ashby. Used by the extension's content script to
+        highlight matching job titles on LinkedIn's My Jobs tracker page.
+
 AUTH:
     This server binds to 127.0.0.1 only, but any web page open in the browser can still attempt
     to ``fetch()`` a localhost port — without a check, a page other than our own extension could
@@ -191,6 +200,7 @@ from utils.eval_utils.company_blacklist import (
     save_company_blacklist,
     save_temporary_blacklist,
 )
+from utils.eval_utils.easy_apply_company_memory import load_easy_apply_company_memory
 from utils.eval_utils.student_job_filter import STUDENT_JOB_MODES
 from utils.eval_utils.unpaid_job_filter import UNPAID_JOB_MODES
 from utils.extension_process_service import process_extension_request, resolve_conflicts
@@ -354,7 +364,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        if self.path not in ("/health", "/config", "/blacklist"):
+        if self.path not in ("/health", "/config", "/blacklist", "/easy-apply-companies"):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         if not self._authorized():
@@ -364,8 +374,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"status": "ok"})
         elif self.path == "/config":
             self._handle_get_config()
-        else:
+        elif self.path == "/blacklist":
             self._handle_get_blacklist()
+        else:
+            self._handle_get_easy_apply_companies()
 
     def do_POST(self) -> None:
         if self.path not in (
@@ -616,6 +628,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle_get_blacklist(self) -> None:
         self._send_json(HTTPStatus.OK, self._blacklist_payload())
+
+    def _handle_get_easy_apply_companies(self) -> None:
+        mem = load_easy_apply_company_memory()
+        self._send_json(HTTPStatus.OK, {"companies": mem.entries})
 
     def _handle_post_blacklist(self, data: dict[str, Any]) -> None:
         action = str(data.get("action") or "").strip()

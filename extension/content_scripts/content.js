@@ -1913,6 +1913,77 @@ function showTaskbar() {
     scheduleTaskbarRetries();
 }
 
+// ---- Highlight easy-to-apply (Greenhouse/Ashby) companies on LinkedIn's My Jobs tracker ----
+// Mirrors utils/eval_utils/easy_apply_company_memory.py's normalize/match rules so a company
+// tracked there (e.g. by main.py --filter) is recognized here regardless of case/punctuation.
+
+function isJobsTrackerPage() {
+    return location.pathname.startsWith("/jobs-tracker");
+}
+
+function normalizeCompanyName(s) {
+    return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function companyNamesMatch(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const shorter = a.length <= b.length ? a : b;
+    const longer = a.length <= b.length ? b : a;
+    if (shorter.length < 5) return false;
+    return longer.includes(shorter);
+}
+
+function isEasyApplyCompany(companyDisplay, companies) {
+    const nc = normalizeCompanyName(companyDisplay);
+    if (!nc) return false;
+    return companies.some((entry) => entry.normalized_name && companyNamesMatch(nc, entry.normalized_name));
+}
+
+// Tracker rows read "Company · Location" (or "Company · Location (Remote)") in one line.
+function extractCompanyFromTrackerLine(text) {
+    return (text || "").split("·")[0].trim();
+}
+
+const EASY_APPLY_PROCESSED_ATTR = "data-jobhelp-easy-apply-checked";
+
+function highlightEasyApplyJobs(companies) {
+    if (!companies || !companies.length) return;
+    const links = document.querySelectorAll('a[href*="/jobs/view/"]');
+    for (const link of links) {
+        if (link.getAttribute(EASY_APPLY_PROCESSED_ATTR)) continue;
+        const paragraphs = link.querySelectorAll("p");
+        if (paragraphs.length < 2) continue;
+        link.setAttribute(EASY_APPLY_PROCESSED_ATTR, "1");
+
+        const company = extractCompanyFromTrackerLine(paragraphs[1].textContent);
+        if (company && isEasyApplyCompany(company, companies)) {
+            paragraphs[0].style.color = "seagreen";
+        }
+    }
+}
+
+function startEasyApplyHighlighting() {
+    browser.runtime.sendMessage({ type: "GET_EASY_APPLY_COMPANIES" }).then((res) => {
+        const companies = (res && res.companies) || [];
+        if (!companies.length) return;
+
+        highlightEasyApplyJobs(companies);
+
+        // The tracker is a SPA (pagination/lazy render adds rows without a full reload); rescan
+        // on DOM changes, debounced since pagination can add many nodes in one burst. Already-
+        // processed links are skipped (see EASY_APPLY_PROCESSED_ATTR), so repeat scans are cheap.
+        let debounceTimer = null;
+        const observer = new MutationObserver(() => {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => highlightEasyApplyJobs(companies), 150);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }).catch((err) => {
+        console.warn("[JobHelp] could not load easy-apply companies:", err.message);
+    });
+}
+
 // Auto-show on LinkedIn for every fresh page load. The taskbar has no manual
 // toggle anymore — the toolbar icon now opens the form-fill popup instead
 // (browser.action.onClicked no longer fires once default_popup is set).
@@ -1923,6 +1994,9 @@ function showTaskbar() {
 if (window.top === window) {
   if (isLinkedInPage()) {
     showTaskbar();
+    if (isJobsTrackerPage()) {
+      startEasyApplyHighlighting();
+    }
   } else if (
     document.getElementById(SHARED_TASKBAR.HOST_ID) &&
     sharedHostIsEmptyShell() &&
