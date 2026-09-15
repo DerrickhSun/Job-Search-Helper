@@ -1218,32 +1218,15 @@ async function downloadAllSavedJobs() {
     }
 }
 
-// Handles the result of a PROCESS_EXTENSION request sent after "Download jobs" writes the
-// Downloads files. `btn` is the Download-jobs button itself, reused for a brief transient status
-// (mirrors the cover-letter button's "Copied to clipboard!" flash) when nothing needs a decision;
-// a real conflict list instead opens its own modal, independent of the button's lifecycle.
-function handleProcessExtensionResult(result, btn) {
-    if (!result || result.error) {
-        btn.textContent = "Sync failed: " + ((result && result.error) || "unknown error");
-        setTimeout(() => { btn.textContent = "Download jobs"; }, 4000);
-        return;
-    }
-    if (result.type === "process_conflicts") {
-        btn.textContent = "Download jobs";
-        showConflictResolutionModal(result);
-        return;
-    }
-    if (result.type === "extension_processed") {
-        const s = result.summary || {};
-        const parts = [];
-        if (s.jobs_added) parts.push(s.jobs_added + " job(s)");
-        const rulesChanged = (s.rules_added || 0) + (s.rules_replaced || 0) + (s.rules_combined || 0) + (s.blank_saved || 0);
-        if (rulesChanged) parts.push(rulesChanged + " rule(s)");
-        btn.textContent = parts.length ? "Synced: " + parts.join(", ") : "Synced (nothing new)";
-        setTimeout(() => { btn.textContent = "Download jobs"; }, 3000);
-        return;
-    }
-    btn.textContent = "Download jobs";
+// Reads the auto-sync-downloads setting directly (same storage key options.js/background.js
+// use) so "Download jobs" can decide, before doing anything else, whether this run will show
+// the sync popup at all.
+const COVER_LETTER_SETTINGS_KEY = "coverLetterSettings";
+
+async function isAutoSyncDownloadsEnabled() {
+    const stored = await browser.storage.local.get(COVER_LETTER_SETTINGS_KEY);
+    const settings = stored[COVER_LETTER_SETTINGS_KEY] || {};
+    return settings.autoSyncDownloads !== false;
 }
 
 const CONFLICT_MODAL_KIND_LABELS = {
@@ -1332,7 +1315,11 @@ function buildConflictRow(conflict, onSelect) {
     return row;
 }
 
-function showConflictResolutionModal(result) {
+// --- Sync popup: opened when "Download jobs" runs with auto-sync on. One popup instance is
+// reused across every stage (progress -> conflict resolution -> final result) by clearing and
+// re-rendering the same card, rather than opening a new modal per stage.
+
+function openSyncPopup() {
     injectConflictModalStyles();
 
     const backdrop = document.createElement("div");
@@ -1341,6 +1328,20 @@ function showConflictResolutionModal(result) {
     const card = document.createElement("div");
     card.className = "jobhelp-conflict-card";
     backdrop.appendChild(card);
+
+    document.body.appendChild(backdrop);
+    return { backdrop, card };
+}
+
+function renderSyncStage(card, message) {
+    card.replaceChildren();
+    const heading = document.createElement("h2");
+    heading.textContent = message;
+    card.appendChild(heading);
+}
+
+function renderConflictRows(card, result, { onResolved, onClose }) {
+    card.replaceChildren();
 
     const heading = document.createElement("h2");
     const conflicts = result.conflicts || [];
@@ -1365,7 +1366,7 @@ function showConflictResolutionModal(result) {
     closeBtn.type = "button";
     closeBtn.className = "close";
     closeBtn.textContent = "Close";
-    closeBtn.addEventListener("click", () => backdrop.remove());
+    closeBtn.addEventListener("click", onClose);
     footer.appendChild(closeBtn);
 
     submitBtn.type = "button";
@@ -1390,15 +1391,17 @@ function showConflictResolutionModal(result) {
         } catch (err) {
             outcome = { error: err.message };
         }
-        renderConflictOutcome(card, outcome, () => backdrop.remove());
+        onResolved(outcome);
     });
     footer.appendChild(submitBtn);
 
     card.appendChild(footer);
-    document.body.appendChild(backdrop);
 }
 
-function renderConflictOutcome(card, outcome, onDone) {
+// Final state for the sync popup: success ("jobs imported"), failure (error/timeout), or a
+// conflict-resolution timeout -- all rendered the same way, since by this point there's nothing
+// left to do but tell the user what happened and let them close it.
+function renderSyncOutcome(card, outcome, onDone) {
     card.replaceChildren();
 
     const heading = document.createElement("h2");
@@ -1408,20 +1411,21 @@ function renderConflictOutcome(card, outcome, onDone) {
     card.appendChild(body);
 
     if (!outcome || outcome.error) {
-        heading.textContent = "Something went wrong";
+        heading.textContent = "Import failed";
         body.textContent = (outcome && outcome.error) || "Unknown error.";
     } else if (outcome.type === "conflict_resolution_timeout") {
-        heading.textContent = "Took too long";
+        heading.textContent = "Import failed";
         body.textContent = "This took too long to resolve — please press \"Download jobs\" again.";
     } else {
         const s = outcome.summary || {};
-        heading.textContent = "Done";
-        body.textContent =
-            "Rules — replaced: " + (s.rules_replaced || 0) +
-            ", kept: " + (s.rules_kept || 0) +
-            ", combined: " + (s.rules_combined || 0) +
-            ", blank saved: " + (s.blank_saved || 0) +
-            ", blank skipped: " + (s.blank_skipped || 0);
+        heading.textContent = "Jobs imported to application";
+        const parts = [];
+        if (s.jobs_added) parts.push(s.jobs_added + " job(s) added");
+        const rulesChanged =
+            (s.rules_added || 0) + (s.rules_replaced || 0) + (s.rules_combined || 0) +
+            (s.rules_kept || 0) + (s.blank_saved || 0) + (s.blank_skipped || 0);
+        if (rulesChanged) parts.push(rulesChanged + " rule(s) updated");
+        body.textContent = parts.length ? parts.join(", ") + "." : "Nothing new to import.";
 
         if (outcome.unresolved && outcome.unresolved.length) {
             const unresolved = document.createElement("div");
@@ -1434,12 +1438,12 @@ function renderConflictOutcome(card, outcome, onDone) {
 
     const footer = document.createElement("div");
     footer.className = "jobhelp-conflict-footer";
-    const doneBtn = document.createElement("button");
-    doneBtn.type = "button";
-    doneBtn.className = "submit";
-    doneBtn.textContent = "Done";
-    doneBtn.addEventListener("click", onDone);
-    footer.appendChild(doneBtn);
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "submit";
+    closeBtn.textContent = "Close";
+    closeBtn.addEventListener("click", onDone);
+    footer.appendChild(closeBtn);
     card.appendChild(footer);
 }
 
@@ -1716,35 +1720,77 @@ function buildButtons(slot) {
     downloadBtn.type = "button";
     downloadBtn.textContent = "Download jobs";
     downloadBtn.addEventListener("click", async () => {
+        const autoSync = await isAutoSyncDownloadsEnabled();
+
+        // Sync off: just the local download, plain button-text feedback, no popup at all.
+        if (!autoSync) {
+            downloadBtn.disabled = true;
+            downloadBtn.textContent = "Downloading…";
+            try {
+                const jobs = await getSavedJobs();
+                const questions = await getSavedApplicationQuestions();
+                await saveTextFile(jobs.map((job) => formatSavedJobDownloadLine(job)).join("\n"), "saved_jobs.txt");
+                if (questions.length) {
+                    await saveTextFile(
+                        formatApplicationQuestionsDownloadText(questions),
+                        "saved_job_application_questions.txt"
+                    );
+                }
+            } catch (err) {
+                downloadBtn.textContent = "Download failed: " + err.message;
+                setTimeout(() => { downloadBtn.textContent = "Download jobs"; }, 4000);
+                downloadBtn.disabled = false;
+                return;
+            }
+            downloadBtn.disabled = false;
+            downloadBtn.textContent = "Download jobs";
+            return;
+        }
+
+        // Sync on: the popup drives every stage from here (download -> send -> conflicts? -> result).
         downloadBtn.disabled = true;
-        downloadBtn.textContent = "Downloading…";
+        const { backdrop, card } = openSyncPopup();
+        const closeAndReenable = () => { backdrop.remove(); downloadBtn.disabled = false; };
+        renderSyncStage(card, "Downloading saved jobs…");
+
+        let jobsText = "";
+        let questionsText = "";
         try {
             const jobs = await getSavedJobs();
             const questions = await getSavedApplicationQuestions();
-            const jobsText = jobs.map((job) => formatSavedJobDownloadLine(job)).join("\n");
-            const questionsText = questions.length ? formatApplicationQuestionsDownloadText(questions) : "";
-
+            jobsText = jobs.map((job) => formatSavedJobDownloadLine(job)).join("\n");
+            questionsText = questions.length ? formatApplicationQuestionsDownloadText(questions) : "";
             await saveTextFile(jobsText, "saved_jobs.txt");
             if (questions.length) {
                 await saveTextFile(questionsText, "saved_job_application_questions.txt");
             }
-
-            let result;
-            try {
-                result = await browser.runtime.sendMessage({
-                    type: "PROCESS_EXTENSION",
-                    savedJobsText: jobsText,
-                    savedQuestionsText: questionsText,
-                });
-            } catch (err) {
-                result = { error: err.message };
-            }
-            downloadBtn.disabled = false;
-            handleProcessExtensionResult(result, downloadBtn);
         } catch (err) {
-            downloadBtn.disabled = false;
-            handleProcessExtensionResult({ error: err.message }, downloadBtn);
+            renderSyncOutcome(card, { error: "Could not save downloaded files: " + err.message }, closeAndReenable);
+            return;
         }
+
+        renderSyncStage(card, "Sending to server…");
+
+        let result;
+        try {
+            result = await browser.runtime.sendMessage({
+                type: "PROCESS_EXTENSION",
+                savedJobsText: jobsText,
+                savedQuestionsText: questionsText,
+            });
+        } catch (err) {
+            result = { error: err.message };
+        }
+
+        if (result && result.type === "process_conflicts") {
+            renderConflictRows(card, result, {
+                onResolved: (outcome) => renderSyncOutcome(card, outcome, closeAndReenable),
+                onClose: closeAndReenable,
+            });
+            return;
+        }
+
+        renderSyncOutcome(card, result, closeAndReenable);
     });
 
     const menuWrap = document.createElement("div");

@@ -36,6 +36,15 @@
     padding: 6px 8px;
     font: inherit;
   }
+  label.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  label.checkbox-row input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+  }
   button {
     font: inherit;
     padding: 6px 14px;
@@ -66,6 +75,10 @@
     <label>
       <span>Config page URL</span>
       <input type="text" id="config-page-url" placeholder="https://derrickhsun.github.io/Job-Search-Helper/">
+    </label>
+    <label class="checkbox-row">
+      <input type="checkbox" id="auto-sync-downloads" checked>
+      Automatically send downloaded jobs to the server
     </label>
     <button type="submit">Save</button>
     <span id="status"></span>

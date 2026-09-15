@@ -124,6 +124,9 @@ async function getExtensionServerSettings() {
   return {
     serverUrl: (settings.serverUrl || DEFAULT_COVER_LETTER_SERVER_URL).replace(/\/+$/, ""),
     token: settings.token,
+    // Undefined (never saved before) defaults to true -- matches options.js's checked-by-default
+    // checkbox, so existing users who haven't touched the new setting keep today's behavior.
+    autoSyncDownloads: settings.autoSyncDownloads !== false,
   };
 }
 
@@ -188,8 +191,29 @@ async function answerFields(fields) {
   return { answers: data.answers || [] };
 }
 
+// Import requests can otherwise hang indefinitely if the server stalls (e.g. a slow LLM call
+// while the request handler is busy elsewhere) -- the sync popup needs SOME response to move
+// past its "Sending to server…" stage into a definite success/failure state.
+const PROCESS_EXTENSION_TIMEOUT_MS = 30_000;
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function processExtensionRequest({ savedJobsText, savedQuestionsText, dryRun }) {
-  const { serverUrl, token } = await getExtensionServerSettings();
+  const { serverUrl, token, autoSyncDownloads } = await getExtensionServerSettings();
+  if (!autoSyncDownloads) {
+    // Downloads (saved_jobs.txt / saved_job_application_questions.txt) already happened in
+    // content.js before this message was sent -- this setting only controls whether we also
+    // import them straight into the server, so no server/token is needed at all here.
+    return { type: "download_only" };
+  }
   if (!token) {
     return { error: "No API token set — configure it on the extension's options page." };
   }
@@ -197,20 +221,30 @@ async function processExtensionRequest({ savedJobsText, savedQuestionsText, dryR
 
   let res;
   try {
-    res = await fetch(serverUrl + "/process-extension", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + token,
+    res = await fetchWithTimeout(
+      serverUrl + "/process-extension",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+        },
+        body: JSON.stringify({
+          request_id: requestId,
+          saved_jobs_text: savedJobsText || "",
+          saved_questions_text: savedQuestionsText || "",
+          dry_run: !!dryRun,
+        }),
       },
-      body: JSON.stringify({
-        request_id: requestId,
-        saved_jobs_text: savedJobsText || "",
-        saved_questions_text: savedQuestionsText || "",
-        dry_run: !!dryRun,
-      }),
-    });
+      PROCESS_EXTENSION_TIMEOUT_MS
+    );
   } catch (err) {
+    if (err.name === "AbortError") {
+      return {
+        error: "Timed out waiting for " + serverUrl + " (" + (PROCESS_EXTENSION_TIMEOUT_MS / 1000) +
+          "s) — the import may or may not have completed; check the server's own log before retrying.",
+      };
+    }
     return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
   }
 
@@ -230,19 +264,29 @@ async function resolveExtensionConflicts({ requestId, serverRequestId, resolutio
 
   let res;
   try {
-    res = await fetch(serverUrl + "/process-extension/resolve", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + token,
+    res = await fetchWithTimeout(
+      serverUrl + "/process-extension/resolve",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+        },
+        body: JSON.stringify({
+          request_id: requestId,
+          server_request_id: serverRequestId,
+          resolutions: resolutions || [],
+        }),
       },
-      body: JSON.stringify({
-        request_id: requestId,
-        server_request_id: serverRequestId,
-        resolutions: resolutions || [],
-      }),
-    });
+      PROCESS_EXTENSION_TIMEOUT_MS
+    );
   } catch (err) {
+    if (err.name === "AbortError") {
+      return {
+        error: "Timed out waiting for " + serverUrl + " (" + (PROCESS_EXTENSION_TIMEOUT_MS / 1000) +
+          "s) — the resolution may or may not have been applied; check the server's own log before retrying.",
+      };
+    }
     return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
   }
 

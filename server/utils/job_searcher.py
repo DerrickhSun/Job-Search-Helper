@@ -50,6 +50,17 @@ _TRY_CLASSIC_SEARCH_BUTTON_TEXT = "try classic job search"
 # `<span dir="ltr">143 results</span>` inside `.jobs-search-results-list__subtitle`). AI-assisted
 # search doesn't show a fixed count the same way, so this is expected to come back empty there.
 _HIT_COUNT_RE = re.compile(r"([\d,]+)\+?\s*results?\b", re.IGNORECASE)
+
+# The "…more" expand toggle lives inside the same container the description text is read from
+# (see _read_job_description_panel), so its own label rides along as trailing text -- e.g.
+# "...per year\n� more" (the ellipsis glyph often doesn't survive Selenium's text extraction
+# intact). Confirmed via a live before/after-click diff that the toggle never reveals additional
+# text -- the DOM already holds the full description -- so this is pure leftover noise, never a
+# sign of truncated content. Narrow on purpose: only a short, isolated trailing line (immediately
+# after a newline, at most a few punctuation-ish characters before "more"), so a real sentence
+# that happens to end in the word "more" is never touched.
+_TRAILING_MORE_TOGGLE_RE = re.compile(r"\n\s*[^\w\s]{0,3}\s*more\s*\Z", re.IGNORECASE)
+
 from selenium.webdriver.common.by import By
 
 from .chrome_driver import (
@@ -1928,7 +1939,7 @@ class JobSearcher:
                 out = self._dom_text(driver, el) or out
             except Exception:
                 pass
-        return out
+        return _TRAILING_MORE_TOGGLE_RE.sub("", out).rstrip()
 
     def _peek_job_from_list_link(self, link) -> dict | None:
         """
@@ -2947,6 +2958,11 @@ class JobSearcher:
             "h1.jobs-unified-top-card__job-title",
             "div[class*='jobs-details-top-card'] h1",
             "h1[class*='job-title']",
+            # "AI suggestion" search layout (confirmed 2026-09): top card classes are hashed/
+            # obfuscated (e.g. "_069cf603 ae20c373") and carry no stable hook. The title's own
+            # link to this same job (by id, from the URL above) is the one stable signal LinkedIn
+            # keeps across that layout's rebuilds.
+            f'a[href*="/jobs/view/{job_id}/"]',
         ):
             title = self._text_from_first_match(driver, (css,))
             if title:
@@ -2958,6 +2974,9 @@ class JobSearcher:
             ".jobs-unified-top-card__company-name a",
             ".jobs-unified-top-card__company-name",
             "a[class*='company-name']",
+            # "AI suggestion" layout: same hashed-class problem as title above, but the wrapping
+            # element keeps a stable aria-label ("Company, {name}.") regardless of class churn.
+            'div[aria-label^="Company, "] a',
         ):
             company = self._text_from_first_match(driver, (css,))
             if company:
