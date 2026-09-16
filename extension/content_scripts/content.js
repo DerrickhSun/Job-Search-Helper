@@ -875,7 +875,7 @@ function updateRecordButtonState(recordBtn) {
 function updateSaveQuestionsButtonState(saveQuestionsBtn) {
     if (isLinkedInApplicationFormOpen()) {
         saveQuestionsBtn.disabled = false;
-        saveQuestionsBtn.textContent = "Save questions";
+        saveQuestionsBtn.textContent = "Record questions";
     } else {
         saveQuestionsBtn.disabled = true;
         saveQuestionsBtn.textContent = "No form open";
@@ -933,7 +933,7 @@ function renderSavedQuestionsMenu(menu, questions, menuRoot) {
     if (!questions.length) {
         const empty = document.createElement("li");
         empty.className = "jobhelp-questions-empty";
-        empty.textContent = "No questions saved yet";
+        empty.textContent = "No questions recorded yet";
         menu.appendChild(empty);
         return;
     }
@@ -1200,9 +1200,9 @@ function formatApplicationQuestionsDownloadText(questions) {
 }
 
 function formatSavedQuestionsCountLabel(count) {
-    if (!count) return "No questions saved";
-    if (count === 1) return "1 question saved";
-    return count + " questions saved";
+    if (!count) return "No questions recorded";
+    if (count === 1) return "1 question recorded";
+    return count + " questions recorded";
 }
 
 function formatSavedQuestionPreview(question) {
@@ -1216,7 +1216,7 @@ function updateSavedQuestionsCountBtn(btn, menuRoot) {
         btn.textContent = formatSavedQuestionsCountLabel(questions.length);
         btn.title = questions.length
             ? "Hover to preview questions; click to clear"
-            : "Save a job while Easy Apply is open to capture questions";
+            : "Click \"Record questions\" while Easy Apply is open to capture them";
 
         if (!menuRoot) return;
 
@@ -1706,7 +1706,7 @@ function buildButtons(slot) {
         if (!questions.length) return;
 
         const confirmed = window.confirm(
-            "Clear all " + questions.length + " saved application question" +
+            "Clear all " + questions.length + " recorded application question" +
             (questions.length === 1 ? "" : "s") + "?"
         );
         if (!confirmed) return;
