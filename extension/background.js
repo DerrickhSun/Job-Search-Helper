@@ -328,6 +328,164 @@ async function getEasyApplyCompanies() {
   return data; // {companies: [...]}
 }
 
+// chrome.cookies bypasses httpOnly (unlike document.cookie), so this picks up li_at and other
+// session cookies a content script could never read directly. Shape matches what the server's
+// utils/chrome_driver.py::load_cookies() expects (see extension_server.py's /profile/connect
+// docstring) -- expirationDate (seconds, float, absent for session cookies) becomes an integer
+// "expiry"; everything else is a passthrough.
+async function getLinkedInCookies() {
+  const raw = await browser.cookies.getAll({ domain: "linkedin.com" });
+  return raw.map((c) => {
+    const cookie = {
+      name: c.name,
+      value: c.value,
+      domain: c.domain,
+      path: c.path,
+      secure: !!c.secure,
+    };
+    if (c.expirationDate !== undefined) {
+      cookie.expiry = Math.floor(c.expirationDate);
+    }
+    return cookie;
+  });
+}
+
+// A single device-wide profile id, shared across every site this device ever connects (LinkedIn
+// today, others later) -- NOT session-scoped: written once to browser.storage.local and reused
+// from then on, surviving browser restarts. Never generated locally on a whim -- see
+// connectToSite() below, which always defers to whatever id the server actually confirms.
+const PROFILE_ID_KEY = "jobApplyerProfileId";
+
+async function getStoredProfileId() {
+  const stored = await browser.storage.local.get(PROFILE_ID_KEY);
+  return stored[PROFILE_ID_KEY] || null;
+}
+
+async function storeProfileId(profileId) {
+  await browser.storage.local.set({ [PROFILE_ID_KEY]: profileId });
+}
+
+// Purely local UI state (does the toolbar button say "Connect" or "Disconnect") -- separate from
+// the profile id itself, which persists across a disconnect. Not authoritative for anything the
+// server does; a stale/missing entry here just means the button shows "Connect" again, which is
+// harmless (connecting is idempotent) rather than a real inconsistency to guard against.
+const CONNECTED_SITES_KEY = "jobApplyerConnectedSites";
+
+async function getConnectedSites() {
+  const stored = await browser.storage.local.get(CONNECTED_SITES_KEY);
+  return stored[CONNECTED_SITES_KEY] || {};
+}
+
+async function setSiteConnected(site, connected) {
+  const sites = await getConnectedSites();
+  if (connected) {
+    sites[site] = true;
+  } else {
+    delete sites[site];
+  }
+  await browser.storage.local.set({ [CONNECTED_SITES_KEY]: sites });
+}
+
+async function connectToSite(site) {
+  const { serverUrl, token } = await getExtensionServerSettings();
+  if (!token) {
+    return { error: "No API token set — configure it on the extension's options page." };
+  }
+
+  let cookies;
+  if (site === "linkedin") {
+    cookies = await getLinkedInCookies();
+  } else {
+    return { error: "Unsupported site: " + site };
+  }
+  if (!cookies.length) {
+    return { error: "No cookies found for " + site + " — make sure you're logged in to it in this browser." };
+  }
+
+  const existingProfileId = await getStoredProfileId();
+
+  let res;
+  try {
+    res = await fetchWithTimeout(
+      serverUrl + "/profile/connect",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+        },
+        body: JSON.stringify({ site, profile_id: existingProfileId, cookies }),
+      },
+      PROCESS_EXTENSION_TIMEOUT_MS
+    );
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return { error: "Timed out waiting for " + serverUrl };
+    }
+    return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    return { error: (data && data.error) || ("server responded " + res.status) };
+  }
+
+  // The server is the sole authority on this id (same reasoning as process-extension's
+  // server-minted server_request_id) -- always overwrite our own copy with whatever it confirms,
+  // even if it differs from what we just sent (e.g. our old id was no longer recognized).
+  if (data.profile_id) {
+    await storeProfileId(data.profile_id);
+  }
+  await setSiteConnected(site, true);
+  return data; // {profile_id}
+}
+
+async function disconnectSite(site) {
+  const { serverUrl, token } = await getExtensionServerSettings();
+  if (!token) {
+    return { error: "No API token set — configure it on the extension's options page." };
+  }
+
+  const profileId = await getStoredProfileId();
+  if (!profileId) {
+    // Nothing was ever connected server-side under any id -- just clear the stale local flag,
+    // if any, rather than erroring over a no-op.
+    await setSiteConnected(site, false);
+    return { disconnected: false };
+  }
+
+  let res;
+  try {
+    res = await fetchWithTimeout(
+      serverUrl + "/profile/disconnect",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+        },
+        body: JSON.stringify({ profile_id: profileId, site }),
+      },
+      PROCESS_EXTENSION_TIMEOUT_MS
+    );
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return { error: "Timed out waiting for " + serverUrl };
+    }
+    return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    return { error: (data && data.error) || ("server responded " + res.status) };
+  }
+
+  // profile_id itself is deliberately left in storage -- disconnecting a site forgets that
+  // site's cookies, not this device's identity (see extension_profiles.py::disconnect_site).
+  await setSiteConnected(site, false);
+  return data; // {disconnected: bool}
+}
+
 browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "GENERATE_COVER_LETTER") {
     generateCoverLetter(msg.job || {}).then(sendResponse);
@@ -351,6 +509,26 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === "GET_EASY_APPLY_COMPANIES") {
     getEasyApplyCompanies().then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === "CONNECT_LINKEDIN") {
+    connectToSite("linkedin").then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === "DISCONNECT_LINKEDIN") {
+    disconnectSite("linkedin").then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === "IS_SITE_CONNECTED") {
+    getConnectedSites().then((sites) => sendResponse({ connected: !!sites[msg.site] }));
+    return true;
+  }
+
+  if (msg.type === "GET_PROFILE_ID") {
+    getStoredProfileId().then((profileId) => sendResponse({ profileId }));
     return true;
   }
 

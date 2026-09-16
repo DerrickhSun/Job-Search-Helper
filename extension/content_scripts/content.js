@@ -905,12 +905,30 @@ function stopRecordButtonRefresh() {
     }
 }
 
-function startRecordButtonsRefresh(recordBtn, saveQuestionsBtn, coverLetterBtn) {
+// Set while a connect/disconnect request is in flight so the polling refresh below doesn't
+// clobber "Connecting…"/"Disconnecting…"/"Failed: …" mid-request (mirrors coverLetterBusy above).
+let connectLinkedInBusy = false;
+
+async function updateConnectLinkedInButtonState(connectLinkedInBtn) {
+    if (!connectLinkedInBtn || connectLinkedInBusy) return;
+    let connected = false;
+    try {
+        const res = await browser.runtime.sendMessage({ type: "IS_SITE_CONNECTED", site: "linkedin" });
+        connected = !!(res && res.connected);
+    } catch (err) {
+        connected = false;
+    }
+    connectLinkedInBtn.dataset.connected = connected ? "true" : "false";
+    connectLinkedInBtn.textContent = connected ? "Disconnect from LinkedIn" : "Connect to LinkedIn";
+}
+
+function startRecordButtonsRefresh(recordBtn, saveQuestionsBtn, coverLetterBtn, connectLinkedInBtn) {
     stopRecordButtonRefresh();
     const refresh = () => {
         updateRecordButtonState(recordBtn);
         updateSaveQuestionsButtonState(saveQuestionsBtn);
         updateCoverLetterButtonState(coverLetterBtn);
+        updateConnectLinkedInButtonState(connectLinkedInBtn);
     };
     refresh();
     recordButtonRefreshTimer = setInterval(refresh, RECORD_BUTTON_REFRESH_MS);
@@ -1256,6 +1274,44 @@ async function isAutoSyncDownloadsEnabled() {
     const settings = stored[COVER_LETTER_SETTINGS_KEY] || {};
     return settings.autoSyncDownloads !== false;
 }
+
+const DEFAULT_CONFIG_PAGE_URL = "https://derrickhsun.github.io/Job-Search-Helper/";
+
+async function allowedControlPanelOrigin() {
+    const stored = await browser.storage.local.get(COVER_LETTER_SETTINGS_KEY);
+    const settings = stored[COVER_LETTER_SETTINGS_KEY] || {};
+    try {
+        return new URL(settings.configPageUrl || DEFAULT_CONFIG_PAGE_URL).origin;
+    } catch {
+        return new URL(DEFAULT_CONFIG_PAGE_URL).origin;
+    }
+}
+
+// Bridge for the pages/ control panel (or a self-hosted fork at whatever origin the user has
+// configured as their "Config page URL") to ask this extension for its profile id without ever
+// needing the raw cookies themselves -- see extension_server.py's /profile/connect docstring.
+// Only ever relays to/from the exact configured origin; a postMessage from any other page is
+// ignored outright, since this content script runs on every https:// page, not just that one.
+window.addEventListener("message", async (event) => {
+    if (event.source !== window) return;
+    if (!event.data || event.data.source !== "jobapplyer-page" || event.data.type !== "GET_PROFILE_ID") return;
+
+    const allowedOrigin = await allowedControlPanelOrigin();
+    if (event.origin !== allowedOrigin) return;
+
+    let profileId = null;
+    try {
+        const res = await browser.runtime.sendMessage({ type: "GET_PROFILE_ID" });
+        profileId = (res && res.profileId) || null;
+    } catch (err) {
+        profileId = null;
+    }
+
+    window.postMessage(
+        { source: "jobapplyer-extension", type: "PROFILE_ID", requestId: event.data.requestId, profileId },
+        event.origin
+    );
+});
 
 const CONFLICT_MODAL_KIND_LABELS = {
     rule_conflict: "Existing rule disagrees with extension answer",
@@ -1693,7 +1749,37 @@ function buildButtons(slot) {
         }, 3000);
     });
 
-    startRecordButtonsRefresh(recordBtn, saveQuestionsBtn, coverLetterBtn);
+    const connectLinkedInBtn = document.createElement("button");
+    connectLinkedInBtn.type = "button";
+    connectLinkedInBtn.textContent = "Connect to LinkedIn";
+    connectLinkedInBtn.addEventListener("click", async () => {
+        const disconnecting = connectLinkedInBtn.dataset.connected === "true";
+
+        connectLinkedInBusy = true;
+        connectLinkedInBtn.disabled = true;
+        connectLinkedInBtn.textContent = disconnecting ? "Disconnecting…" : "Connecting…";
+
+        let res;
+        try {
+            res = await browser.runtime.sendMessage({
+                type: disconnecting ? "DISCONNECT_LINKEDIN" : "CONNECT_LINKEDIN",
+            });
+        } catch (err) {
+            res = { error: err.message };
+        }
+
+        connectLinkedInBtn.textContent = (!res || res.error)
+            ? "Failed: " + ((res && res.error) || "unknown error")
+            : (disconnecting ? "Disconnected." : "Connected!");
+
+        setTimeout(() => {
+            connectLinkedInBusy = false;
+            connectLinkedInBtn.disabled = false;
+            updateConnectLinkedInButtonState(connectLinkedInBtn);
+        }, 3000);
+    });
+
+    startRecordButtonsRefresh(recordBtn, saveQuestionsBtn, coverLetterBtn, connectLinkedInBtn);
 
     const questionsWrap = document.createElement("div");
     questionsWrap.className = "jobhelp-questions-wrap";
@@ -1872,6 +1958,7 @@ function buildButtons(slot) {
     slot.appendChild(saveQuestionsBtn);
     slot.appendChild(recordBtn);
     slot.appendChild(coverLetterBtn);
+    slot.appendChild(connectLinkedInBtn);
     slot.appendChild(questionsWrap);
     slot.appendChild(menuWrap);
     slot.appendChild(downloadBtn);

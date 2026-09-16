@@ -81,6 +81,90 @@ pingButton.addEventListener("click", async () => {
   }
 });
 
+// --- Device profile (extension-issued profile id) ---
+//
+// The extension's content script bridges window.postMessage <-> its own background.js (see
+// extension/content_scripts/content.js) so this page never needs the raw LinkedIn cookies --
+// only an opaque profile id, which the server can later use to look up which cookie set to act
+// with (see extension_server.py's /profile/connect and /profile/ping docstrings). Nothing here
+// triggers an actual action with the profile id yet -- ping only confirms the server recognizes it.
+
+const getProfileIdButton = document.getElementById("get-profile-id");
+const profileIdDisplay = document.getElementById("profile-id-display");
+const pingProfileButton = document.getElementById("ping-profile");
+const profileStatus = document.getElementById("profile-status");
+
+let currentProfileId = null;
+
+function requestProfileIdFromExtension(timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    const requestId = Math.random().toString(36).slice(2);
+    let settled = false;
+
+    const listener = (event) => {
+      if (event.source !== window) return;
+      if (!event.data || event.data.source !== "jobapplyer-extension" || event.data.type !== "PROFILE_ID") return;
+      if (event.data.requestId !== requestId) return;
+      settled = true;
+      window.removeEventListener("message", listener);
+      resolve(event.data.profileId || null);
+    };
+    window.addEventListener("message", listener);
+
+    window.postMessage({ source: "jobapplyer-page", type: "GET_PROFILE_ID", requestId }, window.location.origin);
+
+    // No extension installed (or an old version without this bridge) means no reply ever
+    // arrives -- fall back to "no profile id" instead of waiting forever.
+    setTimeout(() => {
+      if (settled) return;
+      window.removeEventListener("message", listener);
+      resolve(null);
+    }, timeoutMs);
+  });
+}
+
+getProfileIdButton.addEventListener("click", async () => {
+  profileStatus.textContent = "Asking the extension...";
+  profileStatus.className = "";
+  pingProfileButton.disabled = true;
+
+  const profileId = await requestProfileIdFromExtension();
+  if (!profileId) {
+    currentProfileId = null;
+    profileIdDisplay.textContent = "(none)";
+    profileStatus.textContent =
+      "No profile id — make sure the extension is installed and you've pressed " +
+      '"Connect to LinkedIn" at least once.';
+    profileStatus.className = "err";
+    return;
+  }
+
+  currentProfileId = profileId;
+  profileIdDisplay.textContent = profileId;
+  profileStatus.textContent = "";
+  pingProfileButton.disabled = false;
+});
+
+pingProfileButton.addEventListener("click", async () => {
+  if (!currentProfileId) return;
+  profileStatus.textContent = "Pinging server...";
+  profileStatus.className = "";
+  try {
+    const data = await callServer("/profile/ping", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile_id: currentProfileId }),
+    });
+    profileStatus.textContent = data.known
+      ? "Known profile — connected site(s): " + (data.sites.join(", ") || "(none)")
+      : "Server does not recognize this profile id.";
+    profileStatus.className = data.known ? "ok" : "err";
+  } catch (err) {
+    profileStatus.textContent = err.message;
+    profileStatus.className = "err";
+  }
+});
+
 // --- Config (data/behavior.json + data/search.json) ---
 
 const loadConfigButton = document.getElementById("load-config");

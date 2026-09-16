@@ -135,6 +135,50 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
         posting jobs through Greenhouse or Ashby. Used by the extension's content script to
         highlight matching job titles on LinkedIn's My Jobs tracker page.
 
+    POST /profile/connect
+        body: {"site": "linkedin", "profile_id": str | null,
+                "cookies": [{"name": str, "value": str, "domain": str, "path": str?,
+                              "expiry": int?, "secure": bool?}, ...]}
+        -> {"profile_id": str}
+
+        Called when the user presses a "Connect to <site>" button in the extension. `profile_id`
+        is whatever this device already has stored locally (or null the very first time any site
+        is connected) -- an id the server doesn't recognize is treated as "new device", not an
+        error, and a fresh one is minted. The extension must overwrite its own stored id with
+        whatever comes back (it may differ from what was sent, and is the only id valid for future
+        calls) -- same reasoning as `/process-extension`'s server-minted `server_request_id`: an id
+        used as a storage-key/lookup credential has to come from the server, never invented by the
+        caller, or one device could collide with or guess at another's id. `site` is checked
+        against a fixed allow-list (`utils.extension_profiles.SUPPORTED_SITES`; only "linkedin"
+        today), and every cookie must have a non-empty name/value plus a domain valid for that
+        site -- anything else in the list is rejected with 400. Cookies are stored under
+        data/extension_profiles/<profile_id>.json, keyed by `site` (LinkedIn today; other sites
+        can be connected later under the *same* profile id without disturbing this one) -- a
+        *separate* file from the Selenium-managed data/selenium_linkedin_cookies.json that
+        main.py's own bot session uses, and never synced to S3 (see that module's docstring for
+        why). Nothing today reads a connected profile's cookies automatically; this only stores
+        them for a future action to opt into acting as this profile's account.
+
+    POST /profile/ping
+        body: {"profile_id": str}
+        -> {"known": bool, "sites": [str, ...]}
+
+        Existence check only -- confirms whether `profile_id` was ever connected and which sites
+        it has cookies stored for, without exposing the cookies themselves or doing anything with
+        them. This and /profile/disconnect are the only things a caller (e.g. the `pages/` control
+        panel, once it has fetched a profile id from the extension) can do with a profile id today
+        -- no endpoint yet lets a profile id actually trigger any action.
+
+    POST /profile/disconnect
+        body: {"profile_id": str, "site": "linkedin"}
+        -> {"disconnected": bool}
+
+        Removes `site`'s stored cookies from `profile_id` -- the extension's "Disconnect" button
+        (which replaces "Connect to <site>" once connected). The profile id itself, and any other
+        site's cookies stored under it, are left alone; this only forgets one site's session, not
+        the device's identity. `disconnected` is false if `profile_id` was unknown or `site` was
+        never connected under it (not an error either way).
+
 AUTH:
     This server binds to 127.0.0.1 only, but any web page open in the browser can still attempt
     to ``fetch()`` a localhost port — without a check, a page other than our own extension could
@@ -204,6 +248,13 @@ from utils.eval_utils.easy_apply_company_memory import load_easy_apply_company_m
 from utils.eval_utils.student_job_filter import STUDENT_JOB_MODES
 from utils.eval_utils.unpaid_job_filter import UNPAID_JOB_MODES
 from utils.extension_process_service import process_extension_request, resolve_conflicts
+from utils.extension_profiles import (
+    SUPPORTED_SITES,
+    connect_profile,
+    disconnect_site,
+    profile_sites,
+    validate_cookie,
+)
 from utils.form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
 from utils.output_paths import COVERLETTERS_DIR, FORM_FILL_RULES_DIR, OUTPUT_DIR
 from utils.resume_cache import DEFAULT_RESUME_CACHE_PATH, DEFAULT_RESUME_FILE, load_or_build_resume
@@ -382,7 +433,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path not in (
             "/cover-letter", "/answer-fields", "/process-extension", "/process-extension/resolve",
-            "/config", "/blacklist",
+            "/config", "/blacklist", "/profile/connect", "/profile/ping", "/profile/disconnect",
         ):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
@@ -414,8 +465,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_process_extension_resolve(data)
         elif self.path == "/config":
             self._handle_post_config(data)
-        else:
+        elif self.path == "/blacklist":
             self._handle_post_blacklist(data)
+        elif self.path == "/profile/connect":
+            self._handle_profile_connect(data)
+        elif self.path == "/profile/ping":
+            self._handle_profile_ping(data)
+        else:
+            self._handle_profile_disconnect(data)
 
     def _handle_cover_letter(self, data: dict[str, Any]) -> None:
         title = str(data.get("title") or "").strip()
@@ -674,6 +731,50 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json(HTTPStatus.OK, self._blacklist_payload())
+
+    def _handle_profile_connect(self, data: dict[str, Any]) -> None:
+        site = str(data.get("site") or "").strip()
+        if site not in SUPPORTED_SITES:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"unsupported site: {site!r}"})
+            return
+
+        raw_profile_id = data.get("profile_id")
+        if raw_profile_id is not None and not isinstance(raw_profile_id, str):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "profile_id must be a string or null"})
+            return
+
+        raw_cookies = data.get("cookies")
+        if not isinstance(raw_cookies, list) or not raw_cookies:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "cookies must be a non-empty list"})
+            return
+
+        cookies: list[dict[str, Any]] = []
+        for item in raw_cookies:
+            try:
+                cookies.append(validate_cookie(item, site=site))
+            except ValueError as e:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
+                return
+
+        profile_id = connect_profile(profile_id=raw_profile_id, site=site, cookies=cookies)
+        self._send_json(HTTPStatus.OK, {"profile_id": profile_id})
+
+    def _handle_profile_ping(self, data: dict[str, Any]) -> None:
+        profile_id = str(data.get("profile_id") or "").strip()
+        if not profile_id:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "profile_id is required"})
+            return
+        sites = profile_sites(profile_id)
+        self._send_json(HTTPStatus.OK, {"known": sites is not None, "sites": sites or []})
+
+    def _handle_profile_disconnect(self, data: dict[str, Any]) -> None:
+        profile_id = str(data.get("profile_id") or "").strip()
+        site = str(data.get("site") or "").strip()
+        if not profile_id or not site:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "profile_id and site are required"})
+            return
+        disconnected = disconnect_site(profile_id, site)
+        self._send_json(HTTPStatus.OK, {"disconnected": disconnected})
 
 
 _BEHAVIOR_BOOL_FIELDS = (

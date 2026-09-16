@@ -210,6 +210,19 @@ with LinkedIn's Terms of Service. Apply only to jobs you're genuinely interested
   re-challenged by LinkedIn's risk engine; this reduces cold-start failures a lot, it doesn't
   eliminate checkpoints forever. Not started — still at the design stage.
 
+  **Update:** the upload half of this (extension reads cookies via `browser.cookies.getAll`, maps
+  `expirationDate` → `expiry`, POSTs to an authenticated endpoint) now exists — see
+  `POST /profile/connect` in `extension_server.py`, triggered by the LinkedIn toolbar's "Connect to
+  LinkedIn" button — but it was built for a different motivation (letting a device's browser
+  session act as *whatever LinkedIn account is logged into it*, separate from main.py's own bot
+  account, and eventually letting the `pages/` webpage trigger actions under that same identity via
+  a server-minted `profile_id` — see `utils/extension_profiles.py`) and so writes to its own
+  `data/extension_profiles/<profile_id>.json`, never `data/selenium_linkedin_cookies.json`.
+  Reusing it for cloud-bootstrap would mean pointing a handler at `DEFAULT_COOKIE_PATH` instead —
+  the login-tab flow described above is still unbuilt, and so is anything that actually *reads* a
+  connected profile's cookies (today `/profile/connect` only stores them; `/profile/ping` only
+  confirms a profile id is known).
+
 - **Future idea: containerize the bot with Docker for real use, not just as a build check.**
   A `Dockerfile`/`.dockerignore` already exist and build correctly (context = `server/`), but
   Docker isn't actually part of the normal workflow yet — the bot is still run directly via

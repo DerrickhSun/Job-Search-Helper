@@ -11,7 +11,8 @@
         "storage",
         "downloads",
         "clipboardWrite",
-        "webNavigation"
+        "webNavigation",
+        "cookies"
     ],
     "host_permissions": [
         "https://*/*",

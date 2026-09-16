@@ -74,7 +74,7 @@
       margin-top: 0;
     }
     .add-row input[type="date"] { flex: 0 0 auto; }
-    #status, #config-status, #save-config-status, #load-status, #save-status {
+    #status, #config-status, #save-config-status, #load-status, #save-status, #profile-status {
       margin-top: 0.5rem;
       font-family: ui-monospace, monospace;
       font-size: 0.85rem;
@@ -108,6 +108,18 @@
 
   <button id="ping">Ping local server</button>
   <div id="status"></div>
+
+  <fieldset>
+    <legend>Device profile (extension)</legend>
+    <p>
+      Requires the browser extension to be installed and connected (press "Connect to LinkedIn"
+      in its LinkedIn toolbar at least once).
+    </p>
+    <button id="get-profile-id" type="button">Get profile ID from extension</button>
+    <p>Profile ID: <code id="profile-id-display">(none)</code></p>
+    <button id="ping-profile" type="button" disabled>Ping profile</button>
+    <div id="profile-status"></div>
+  </fieldset>
 
   <fieldset>
     <legend>Bot config</legend>
