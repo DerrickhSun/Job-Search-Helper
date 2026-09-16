@@ -155,7 +155,6 @@ from utils.output_paths import (
 )
 from utils.s3_log_sync import PendingChangeTracker
 from utils.s3_outputs import (
-    release_sync_lock,
     sync_download_output_coordinated,
     sync_upload_output_coordinated,
 )
@@ -1240,9 +1239,6 @@ def _early_cli_flags() -> argparse.Namespace:
 
 def main():
     load_dotenv()
-    # Guard for the finally block below, in case something raises before the download call ever
-    # assigns it a real value.
-    lock_token: str | None = None
     cover_letter_changes = PendingChangeTracker()
     form_fill_rule_changes = PendingChangeTracker()
     timing = _load_timing()
@@ -1256,9 +1252,11 @@ def main():
             "S3 cover letters: active subfolder(s) coverletters/%s (other modes skipped)",
             ", coverletters/".join(cover_modes),
         )
-    # Held through the upload in the finally block below, across the entire pipeline run in
-    # between — see sync_download_output_coordinated.
-    lock_token = sync_download_output_coordinated(cover_letter_modes=cover_modes)
+    # Quick sync-down: acquires the general sync.lock, downloads/merges, releases immediately --
+    # it does NOT hold the lock for the rest of this run (which can take an hour or more).
+    # sync_upload_output_coordinated() re-acquires its own fresh lock and re-syncs right before
+    # uploading, at the end of this run, to fold in anything another device wrote in the meantime.
+    sync_download_output_coordinated(cover_letter_modes=cover_modes)
     prune_cover_letters_for_sync(cover_letter_modes=cover_modes, tracker=cover_letter_changes)
     warn_if_listings_log_sidecars(paths.get("listings_log"))
     migrate_legacy_consulting_companies_file()
@@ -1417,17 +1415,14 @@ def main():
             prune_cover_letters_for_sync(cover_letter_modes=cover_modes, tracker=cover_letter_changes)
             sync_upload_output_coordinated(
                 cover_letter_modes=cover_modes,
-                lock_token=lock_token,
                 cover_letter_changes=cover_letter_changes,
                 form_fill_rule_changes=form_fill_rule_changes,
             )
         except KeyboardInterrupt:
+            # sync_upload_output_coordinated() now acquires and releases its own lock entirely
+            # internally (try/finally) -- a second Ctrl+C landing here has nothing left for this
+            # handler to clean up.
             log.info("Shutdown: skipping S3 sync.")
-            # sync_upload_output_coordinated() releases the lock itself once it finishes the
-            # locked-scope upload — if Ctrl+C landed mid-upload instead, it never got there, so
-            # release it here rather than leaving it held until another device judges it stale.
-            if lock_token is not None:
-                release_sync_lock(lock_token)
 
 
 if __name__ == "__main__":

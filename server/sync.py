@@ -60,10 +60,11 @@ def main() -> None:
     local_applications = read_sheet_csv(APPLICATIONS_CSV)
     local_assisted = read_sheet_csv(ASSISTED_APPLICATIONS_CSV)
 
-    # 2. Pull the shared S3 state (overwrites the local files read above). The CSV merge below is
-    # a read-modify-write over the whole file, so the cross-device sync lock has to stay held from
-    # here through the upload at the end of this function — see sync_download_output_coordinated.
-    lock_token = sync_download_output_coordinated()
+    # 2. Pull the shared S3 state (overwrites the local files read above). The lock is only held
+    # for this quick download/merge round trip -- sync_upload_output_coordinated() re-acquires its
+    # own fresh lock and re-syncs immediately before uploading, so any change another device makes
+    # while the CSV merge below runs still gets folded in at upload time.
+    sync_download_output_coordinated()
     prune_cover_letters_for_sync(tracker=cover_letter_changes)
     warn_if_listings_log_sidecars()
     migrate_legacy_consulting_companies_file()
@@ -106,7 +107,7 @@ def main() -> None:
         )
 
     prune_cover_letters_for_sync(tracker=cover_letter_changes)
-    sync_upload_output_coordinated(lock_token=lock_token, cover_letter_changes=cover_letter_changes)
+    sync_upload_output_coordinated(cover_letter_changes=cover_letter_changes)
 
 
 if __name__ == "__main__":

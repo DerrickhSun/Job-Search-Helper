@@ -251,6 +251,36 @@ def acquire_sync_lock(
         return None
 
 
+def sync_lock_still_held(token: str, *, lock_name: str = "sync.lock") -> bool:
+    """
+    True if the lock this process acquired (``token``, the ETag :func:`acquire_sync_lock`
+    returned) is still the current lock object in S3 -- i.e. no other device has reclaimed it as
+    stale since. S3 has no cross-object atomic conditional writes, so there's no way to make an
+    upload to a *different* key literally require the lock object to still match in one atomic
+    step; calling this immediately before the actual upload step of a locked critical section
+    (not just checking at final release) is the closest practical approximation -- it shrinks the
+    race window from "the whole critical section's duration" down to a single network
+    round-trip. Returns False (never raises) on any error, including the lock object being gone
+    entirely -- callers should treat that the same as "lock lost" and skip the upload.
+    """
+    if not s3_output_sync_enabled():
+        return False
+    try:
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        s3 = _s3_client()
+    except ImportError:
+        return False
+
+    bucket = s3_output_bucket()
+    key = _sync_lock_key(lock_name)
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+    except (ClientError, BotoCoreError, OSError):
+        return False
+    return head.get("ETag") == token
+
+
 def release_sync_lock(token: str, *, lock_name: str = "sync.lock") -> None:
     """Release a lock acquired via :func:`acquire_sync_lock` (same ``lock_name``). Logs and returns
     on any failure."""
@@ -266,7 +296,19 @@ def release_sync_lock(token: str, *, lock_name: str = "sync.lock") -> None:
     try:
         s3.delete_object(Bucket=bucket, Key=key, IfMatch=token)
         log.debug("Released S3 sync lock s3://%s/%s", bucket, key)
-    except (ClientError, BotoCoreError, OSError) as e:
+    except ClientError as e:
+        status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        code = e.response.get("Error", {}).get("Code", "")
+        if status == 412 or code in ("PreconditionFailed", "ConditionalRequestConflict"):
+            log.warning(
+                "S3 sync lock s3://%s/%s was seized by another device before this run released "
+                "it (this run likely held it past the staleness window) — whatever this run just "
+                "uploaded may have raced with that device's own changes. Re-run sync to reconcile.",
+                bucket, key,
+            )
+        else:
+            log.warning("Could not release S3 sync lock s3://%s/%s: %s", bucket, key, e)
+    except (BotoCoreError, OSError) as e:
         log.warning(
             "Could not release S3 sync lock s3://%s/%s (it will self-clear once stale): %s",
             bucket, key, e,
@@ -293,10 +335,24 @@ def iter_local_files(root: Path) -> list[Path]:
     return sorted(out)
 
 
-def _s3_client():
-    import boto3
+_cached_s3_client = None
 
-    return boto3.session.Session().client("s3")
+
+def _s3_client():
+    """
+    Shared boto3 S3 client, built once per process and reused by every caller (this module,
+    s3_log_sync.py, output_cleanup.py). A fresh Session+client per call was paying a full TCP+TLS
+    handshake on every single S3 operation instead of reusing one warm connection pool -- boto3
+    clients are documented thread-safe, so one instance is safe to share across
+    extension_server.py's ThreadingHTTPServer request threads too. Credentials here are static
+    IAM keys (not temporary/STS), so there's no rotation/expiry to invalidate the cache for.
+    """
+    global _cached_s3_client
+    if _cached_s3_client is None:
+        import boto3
+
+        _cached_s3_client = boto3.session.Session().client("s3")
+    return _cached_s3_client
 
 
 def _merge_s3_csv(s3, bucket: str, key: str, local_path: Path) -> bool:
@@ -775,23 +831,23 @@ def sync_download_output_coordinated(
     local_dir: Path | str = OUTPUT_DIR,
     *,
     cover_letter_modes: tuple[str, ...] | None = None,
-) -> str | None:
+) -> None:
     """
-    Download from S3: cover letters and form-fill rules catch up via their own operation logs
-    (``utils/s3_log_sync.py``, imported lazily here to avoid a circular import — that module
-    imports back into this one), each with its own short-held lock; then the general
-    ``sync.lock`` is acquired and everything else (tracking CSVs, consulting-company memory,
-    etc.) downloads only if it's held.
+    Quick sync-down at the start of a run: cover letters and form-fill rules catch up via their
+    own operation logs (``utils/s3_log_sync.py``), each with its own short-held lock; then the
+    general ``sync.lock`` is acquired, everything else (tracking CSVs, consulting-company memory,
+    etc.) downloads only if it's held, and the lock is released immediately -- it is *not* held
+    for the rest of the caller's run.
 
-    Returns the ``sync.lock`` token — hold onto it and pass it to
-    :func:`sync_upload_output_coordinated` at the end of the run, *after* whatever
-    merge/processing this run does with the downloaded data. The lock must span that whole
-    round trip, not just this download call, or two devices can still each read a consistent
-    pre-lock snapshot and clobber each other on upload regardless. ``None`` means the lock
-    wasn't acquired (see :func:`acquire_sync_lock`) — this run's ``sync.lock``-scope download was
-    skipped, and the caller should skip its ``sync.lock``-scope upload too. Cover letters and
-    form-fill rules are unaffected by this particular token either way — they coordinate through
-    their own separate locks.
+    A long-running caller (``main.py`` sessions routinely run well past an hour) must not hold a
+    cross-device lock for that whole span -- another device would have no way to get a look-in,
+    and would end up either waiting the full lock-wait-timeout or reclaiming the lock as
+    "abandoned" out from under a run that's actually still healthy, just slow. Instead,
+    :func:`sync_upload_output_coordinated` re-acquires its *own* fresh lock and re-downloads/
+    re-merges immediately before uploading, to fold in anything another device wrote while this
+    run was busy -- the same "union local + S3" merge (:func:`_merge_s3_csv`) that already backs
+    every download, just run a second time right before the final push instead of relying on a
+    single merge from the very start of a potentially hours-old run.
     """
     from .s3_log_sync import (
         RESOURCE_COVERLETTERS,
@@ -820,31 +876,34 @@ def sync_download_output_coordinated(
         except ImportError:
             log.warning("Company blacklist/search-config S3 sync skipped: install boto3")
         sync_download_output(local_dir)
+        release_sync_lock(token)
     else:
         _sync_progress(
             "S3: sync lock unavailable — skipping this run's download of applications/consulting "
             "memory/etc. (cover letters and form-fill rules still synced normally)."
         )
-    return token
 
 
 def sync_upload_output_coordinated(
     local_dir: Path | str = OUTPUT_DIR,
     *,
     cover_letter_modes: tuple[str, ...] | None = None,
-    lock_token: str | None,
     cover_letter_changes: "PendingChangeTracker | None" = None,
     form_fill_rule_changes: "PendingChangeTracker | None" = None,
 ) -> None:
     """
-    Upload to S3, the upload-side counterpart to :func:`sync_download_output_coordinated`.
+    Re-sync then upload to S3, the upload-side counterpart to
+    :func:`sync_download_output_coordinated`.
 
-    ``lock_token`` is whatever that function returned at the start of the run — everything except
-    cover letters/form-fill rules only uploads (and the ``sync.lock`` is released) if it's not
-    ``None``. ``cover_letter_changes``/``form_fill_rule_changes`` are each resource's
+    Unlike the old design (acquire once at download time, hold across the whole run), this
+    acquires its *own fresh* ``sync.lock`` right here, re-downloads/re-merges the general scope
+    first (folding in anything another device wrote while this run was busy — the caller may have
+    been running for an hour or more since its own initial download), and only then uploads —
+    all within this one call, so the lock is held for one short round trip, not the run's whole
+    duration. ``cover_letter_changes``/``form_fill_rule_changes`` are each resource's
     :class:`utils.s3_log_sync.PendingChangeTracker` accumulated over the run (``None`` or empty is
-    a no-op for that resource) — pushed via their own log-sync protocol regardless of whether
-    ``lock_token`` was acquired, since they coordinate through their own separate locks.
+    a no-op for that resource) — pushed via their own log-sync protocol regardless of whether the
+    general lock was acquired here, since they coordinate through their own separate locks.
     """
     from .s3_log_sync import PendingChangeTracker, RESOURCE_COVERLETTERS, RESOURCE_FORM_FILL_RULES, sync_log_upload
 
@@ -853,19 +912,52 @@ def sync_upload_output_coordinated(
     # General (small, fixed-ish) scope goes first — it's quick, and getting the tracking
     # CSVs/archive/etc. up to date on S3 promptly shouldn't wait behind a potentially large batch
     # of cover letters/rules. The two scopes use independent locks, so there's no ordering hazard.
+    lock_token = acquire_sync_lock()
     if lock_token is not None:
-        sync_upload_output(local_dir)
+        # try/finally, not just a release at the end of the happy path: the token never leaves
+        # this function now (the old design returned it to the caller, which could clean up in
+        # its own except KeyboardInterrupt), so this function must guarantee its own release on
+        # any interruption -- an exception (including Ctrl+C) partway through the re-download or
+        # upload below must not orphan the lock we just acquired.
         try:
-            s3 = _s3_client()
-            bucket = s3_output_bucket()
-            _sync_company_blacklists_upload(s3, bucket)
-            _upload_search_config(s3, bucket)
-        except ImportError:
-            log.warning("Company blacklist/search-config S3 sync skipped: install boto3")
-        release_sync_lock(lock_token)
+            try:
+                s3 = _s3_client()
+                bucket = s3_output_bucket()
+                _sync_company_blacklists_download(s3, bucket)
+                _download_and_merge_search_config(s3, bucket)
+            except ImportError:
+                log.warning("Company blacklist/search-config S3 sync skipped: install boto3")
+            # Re-download/merge fresh S3 state into the local files *before* uploading -- this
+            # run's own new rows are already in those local files (accumulated since the initial
+            # download, while no lock was held), so this union is "their latest ∪ our latest",
+            # not just "ours".
+            sync_download_output(local_dir)
+
+            if sync_lock_still_held(lock_token):
+                sync_upload_output(local_dir)
+                try:
+                    s3 = _s3_client()
+                    bucket = s3_output_bucket()
+                    _sync_company_blacklists_upload(s3, bucket)
+                    _upload_search_config(s3, bucket)
+                except ImportError:
+                    log.warning("Company blacklist/search-config S3 sync skipped: install boto3")
+            else:
+                # Vanishingly unlikely given how short this window is (acquire -> re-download ->
+                # upload, all in this one call) — but if the re-download above was unusually slow
+                # (a huge batch of changed files, a network stall) and another device reclaimed
+                # the lock as stale in that gap, skip the upload rather than clobber their changes.
+                _sync_progress(
+                    "S3: sync lock was seized by another device during this upload's own re-sync "
+                    "step — skipping upload of applications/consulting memory/etc. to avoid "
+                    "clobbering their changes. Re-run sync to reconcile (cover letters and "
+                    "form-fill rules still uploaded normally, via their own separate locks)."
+                )
+        finally:
+            release_sync_lock(lock_token)
     else:
         _sync_progress(
-            "S3: sync lock was not held this run — skipping upload of applications/consulting "
+            "S3: sync lock unavailable — skipping this upload's push of applications/consulting "
             "memory/etc. (cover letters and form-fill rules still uploaded normally)."
         )
 

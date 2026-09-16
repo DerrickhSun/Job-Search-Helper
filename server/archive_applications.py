@@ -78,9 +78,10 @@ def main() -> None:
 
     load_dotenv()
     cover_letter_changes = PendingChangeTracker()
-    # Held through the upload in the finally block below — the archive merge in between is a
-    # read-modify-write over the whole CSV, so it needs the same lock scope as sync.py's merge.
-    lock_token = sync_download_output_coordinated()
+    # Quick sync-down: acquires the lock, downloads/merges, releases immediately. The upload in the
+    # finally block below re-acquires its own fresh lock and re-syncs right before uploading, to
+    # fold in anything another device wrote during the archive merge below.
+    sync_download_output_coordinated()
     prune_cover_letters_for_sync(tracker=cover_letter_changes)
     migrate_legacy_consulting_companies_file()
     migrate_legacy_root_archive_files()
@@ -101,7 +102,7 @@ def main() -> None:
             print(f"Assisted: reset {ASSISTED_APPLICATIONS_CSV.resolve()} to header only.")
     finally:
         prune_cover_letters_for_sync(tracker=cover_letter_changes)
-        sync_upload_output_coordinated(lock_token=lock_token, cover_letter_changes=cover_letter_changes)
+        sync_upload_output_coordinated(cover_letter_changes=cover_letter_changes)
 
 
 if __name__ == "__main__":

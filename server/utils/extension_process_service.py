@@ -179,7 +179,7 @@ def process_extension_request(
     needs a decision, otherwise stores the pending conflicts/blank-new-rules under a freshly-minted
     server id and returns a ``process_conflicts`` payload.
     """
-    lock_token = sync_download_output_coordinated()
+    sync_download_output_coordinated()
     cover_letter_changes = PendingChangeTracker()
     form_fill_rule_changes = PendingChangeTracker()
 
@@ -230,12 +230,10 @@ def process_extension_request(
         "invalid_question_blocks": invalid_question_blocks,
     }
 
-    if lock_token is not None:
-        sync_upload_output_coordinated(
-            lock_token=lock_token,
-            cover_letter_changes=cover_letter_changes,
-            form_fill_rule_changes=form_fill_rule_changes,
-        )
+    sync_upload_output_coordinated(
+        cover_letter_changes=cover_letter_changes,
+        form_fill_rule_changes=form_fill_rule_changes,
+    )
 
     pending_items = _build_pending_items(conflicts, blank_new_rules, reprioritize)
     if not pending_items:
@@ -308,7 +306,7 @@ def resolve_conflicts(
     dry_run = pending_req.dry_run
     choice_by_id = {str(r.get("conflict_id")): r.get("choice") for r in resolutions}
 
-    lock_token = sync_download_output_coordinated()
+    sync_download_output_coordinated()
     form_fill_rule_changes = PendingChangeTracker()
     engine = FormFillRulesEngine(rules_path=rules_dir or FORM_FILL_RULES_DIR, apply_source="linkedin")
     resume = _load_resume_for_rule_resolution()
@@ -368,8 +366,7 @@ def resolve_conflicts(
             else:
                 blank_skipped += 1
 
-    if lock_token is not None:
-        sync_upload_output_coordinated(lock_token=lock_token, form_fill_rule_changes=form_fill_rule_changes)
+    sync_upload_output_coordinated(form_fill_rule_changes=form_fill_rule_changes)
 
     summary = dict(pending_req.phase1_summary)
     summary["rules_replaced"] = replaced

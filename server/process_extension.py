@@ -58,7 +58,6 @@ from utils.output_paths import (
 )
 from utils.s3_log_sync import PendingChangeTracker
 from utils.s3_outputs import (
-    release_sync_lock,
     sync_download_output_coordinated,
     sync_upload_output_coordinated,
 )
@@ -373,9 +372,10 @@ def main() -> int:
     load_dotenv()
     cover_letter_changes = PendingChangeTracker()
     form_fill_rule_changes = PendingChangeTracker()
-    # Held across this whole run, through the upload near the end (or released early below if
-    # --print-only/--dry-run means that upload never happens) — see sync_download_output_coordinated.
-    lock_token = sync_download_output_coordinated()
+    # Quick sync-down: acquires the lock, downloads/merges, releases immediately. The upload near
+    # the end (skipped entirely for --print-only/--dry-run) re-acquires its own fresh lock and
+    # re-syncs right before uploading — see sync_download_output_coordinated.
+    sync_download_output_coordinated()
     prune_cover_letters_for_sync(tracker=cover_letter_changes)
     migrate_legacy_root_archive_files()
     migrate_form_fill_rules()
@@ -473,7 +473,6 @@ def main() -> int:
     if not args.print_only and not args.dry_run:
         prune_cover_letters_for_sync(tracker=cover_letter_changes)
         sync_upload_output_coordinated(
-            lock_token=lock_token,
             cover_letter_changes=cover_letter_changes,
             form_fill_rule_changes=form_fill_rule_changes,
         )
@@ -488,10 +487,6 @@ def main() -> int:
                     cleared.append(path.name)
         if cleared:
             print(f"Cleared extension export file(s): {', '.join(cleared)}")
-    elif lock_token is not None:
-        # --print-only/--dry-run never reaches the coordinated upload above, so release here
-        # instead of leaving it held until it's judged stale.
-        release_sync_lock(lock_token)
 
     return exit_code
 
