@@ -1531,6 +1531,43 @@ function renderSyncOutcome(card, outcome, onDone) {
     card.appendChild(footer);
 }
 
+// Shown when /profile/connect reports this LinkedIn account is already connected under a
+// *different* profile (see extension_server.py's /profile/connect docstring). Reuses the same
+// backdrop/card popup as the sync flow above, just with a fixed 3-choice footer instead of a
+// per-item conflict list.
+function renderLinkedInConnectConflict(card, { onChoice }) {
+    card.replaceChildren();
+
+    const heading = document.createElement("h2");
+    heading.textContent = "This LinkedIn account is already connected";
+    card.appendChild(heading);
+
+    const body = document.createElement("div");
+    body.textContent =
+        "Another device's profile is already connected to this LinkedIn account. Choose how to proceed:";
+    card.appendChild(body);
+
+    const footer = document.createElement("div");
+    footer.className = "jobhelp-conflict-footer";
+
+    const makeChoiceBtn = (label, choice, className) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = className;
+        btn.textContent = label;
+        btn.addEventListener("click", () => {
+            footer.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+            onChoice(choice);
+        });
+        return btn;
+    };
+
+    footer.appendChild(makeChoiceBtn("Join existing profile", "join", "submit"));
+    footer.appendChild(makeChoiceBtn("Merge profiles", "merge", "submit"));
+    footer.appendChild(makeChoiceBtn("Stay in current profile", "cancel", "close"));
+    card.appendChild(footer);
+}
+
 function injectSlotStyles(slot) {
     if (slot.querySelector("style[data-jobhelp]")) return;
 
@@ -1768,15 +1805,45 @@ function buildButtons(slot) {
             res = { error: err.message };
         }
 
-        connectLinkedInBtn.textContent = (!res || res.error)
-            ? "Failed: " + ((res && res.error) || "unknown error")
-            : (disconnecting ? "Disconnected." : "Connected!");
+        const finishBusy = (label) => {
+            connectLinkedInBtn.textContent = label;
+            setTimeout(() => {
+                connectLinkedInBusy = false;
+                connectLinkedInBtn.disabled = false;
+                updateConnectLinkedInButtonState(connectLinkedInBtn);
+            }, 3000);
+        };
 
-        setTimeout(() => {
-            connectLinkedInBusy = false;
-            connectLinkedInBtn.disabled = false;
-            updateConnectLinkedInButtonState(connectLinkedInBtn);
-        }, 3000);
+        if (!disconnecting && res && res.status === "conflict") {
+            const { backdrop, card } = openSyncPopup();
+            renderLinkedInConnectConflict(card, {
+                onChoice: async (choice) => {
+                    renderSyncStage(card, "Applying…");
+                    let result;
+                    try {
+                        result = await browser.runtime.sendMessage({
+                            type: "RESOLVE_LINKEDIN_CONNECT_CONFLICT",
+                            pendingId: res.pending_id,
+                            choice,
+                        });
+                    } catch (err) {
+                        result = { error: err.message };
+                    }
+                    backdrop.remove();
+                    finishBusy(
+                        (!result || result.error) ? "Failed: " + ((result && result.error) || "unknown error")
+                        : (result.status === "cancelled") ? "Connect to LinkedIn"
+                        : "Connected!"
+                    );
+                },
+            });
+            return;
+        }
+
+        finishBusy(
+            (!res || res.error) ? "Failed: " + ((res && res.error) || "unknown error")
+            : (disconnecting ? "Disconnected." : "Connected!")
+        );
     });
 
     startRecordButtonsRefresh(recordBtn, saveQuestionsBtn, coverLetterBtn, connectLinkedInBtn);

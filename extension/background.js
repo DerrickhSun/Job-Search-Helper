@@ -350,6 +350,24 @@ async function getLinkedInCookies() {
   });
 }
 
+// A stable per-account identity, resolved from LinkedIn's own "view my profile" redirect --
+// distinct from cookies (each device gets its own session-cookie values even for the same
+// account) so the server can tell "two devices, same account" apart from "two different
+// accounts" (see extension_server.py's /profile/connect docstring). credentials: "include" is
+// required since this is a cross-origin fetch from the background script; without it the
+// request goes out cookie-less and LinkedIn has no idea who's asking.
+async function getLinkedInIdentity() {
+  try {
+    const res = await fetch("https://www.linkedin.com/in/me/", {
+      credentials: "include",
+      redirect: "follow",
+    });
+    return res.url || null;
+  } catch (err) {
+    return null;
+  }
+}
+
 // A single device-wide profile id, shared across every site this device ever connects (LinkedIn
 // today, others later) -- NOT session-scoped: written once to browser.storage.local and reused
 // from then on, surviving browser restarts. Never generated locally on a whim -- see
@@ -393,8 +411,10 @@ async function connectToSite(site) {
   }
 
   let cookies;
+  let identity = null;
   if (site === "linkedin") {
     cookies = await getLinkedInCookies();
+    identity = await getLinkedInIdentity();
   } else {
     return { error: "Unsupported site: " + site };
   }
@@ -414,7 +434,7 @@ async function connectToSite(site) {
           "Content-Type": "application/json",
           "Authorization": "Bearer " + token,
         },
-        body: JSON.stringify({ site, profile_id: existingProfileId, cookies }),
+        body: JSON.stringify({ site, profile_id: existingProfileId, cookies, identity }),
       },
       PROCESS_EXTENSION_TIMEOUT_MS
     );
@@ -430,6 +450,13 @@ async function connectToSite(site) {
     return { error: (data && data.error) || ("server responded " + res.status) };
   }
 
+  if (data.status === "conflict") {
+    // This LinkedIn account is already connected under a different profile -- nothing is stored
+    // yet. The caller (content.js) is responsible for asking the user and following up with
+    // RESOLVE_LINKEDIN_CONNECT_CONFLICT once they've chosen.
+    return data; // {status: "conflict", pending_id, existing_profile_id}
+  }
+
   // The server is the sole authority on this id (same reasoning as process-extension's
   // server-minted server_request_id) -- always overwrite our own copy with whatever it confirms,
   // even if it differs from what we just sent (e.g. our old id was no longer recognized).
@@ -437,7 +464,49 @@ async function connectToSite(site) {
     await storeProfileId(data.profile_id);
   }
   await setSiteConnected(site, true);
-  return data; // {profile_id}
+  return data; // {status: "connected", profile_id}
+}
+
+async function resolveConnectConflict(site, pendingId, choice) {
+  const { serverUrl, token } = await getExtensionServerSettings();
+  if (!token) {
+    return { error: "No API token set — configure it on the extension's options page." };
+  }
+
+  let res;
+  try {
+    res = await fetchWithTimeout(
+      serverUrl + "/profile/connect/resolve",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+        },
+        body: JSON.stringify({ pending_id: pendingId, choice }),
+      },
+      PROCESS_EXTENSION_TIMEOUT_MS
+    );
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return { error: "Timed out waiting for " + serverUrl };
+    }
+    return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    return { error: (data && data.error) || ("server responded " + res.status) };
+  }
+
+  if (data.status === "joined" || data.status === "merged") {
+    if (data.profile_id) {
+      await storeProfileId(data.profile_id);
+    }
+    await setSiteConnected(site, true);
+  }
+  // "cancelled" -> nothing changes locally, same as if the connect attempt had never happened.
+  return data;
 }
 
 async function disconnectSite(site) {
@@ -519,6 +588,11 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === "DISCONNECT_LINKEDIN") {
     disconnectSite("linkedin").then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === "RESOLVE_LINKEDIN_CONNECT_CONFLICT") {
+    resolveConnectConflict("linkedin", msg.pendingId, msg.choice).then(sendResponse);
     return true;
   }
 

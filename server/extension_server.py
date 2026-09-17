@@ -138,26 +138,58 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
     POST /profile/connect
         body: {"site": "linkedin", "profile_id": str | null,
                 "cookies": [{"name": str, "value": str, "domain": str, "path": str?,
-                              "expiry": int?, "secure": bool?}, ...]}
-        -> {"profile_id": str}
+                              "expiry": int?, "secure": bool?}, ...],
+                "identity": str?}
+        -> {"status": "connected", "profile_id": str}
+           | {"status": "conflict", "pending_id": str, "existing_profile_id": str}
 
         Called when the user presses a "Connect to <site>" button in the extension. `profile_id`
         is whatever this device already has stored locally (or null the very first time any site
         is connected) -- an id the server doesn't recognize is treated as "new device", not an
-        error, and a fresh one is minted. The extension must overwrite its own stored id with
-        whatever comes back (it may differ from what was sent, and is the only id valid for future
-        calls) -- same reasoning as `/process-extension`'s server-minted `server_request_id`: an id
-        used as a storage-key/lookup credential has to come from the server, never invented by the
-        caller, or one device could collide with or guess at another's id. `site` is checked
-        against a fixed allow-list (`utils.extension_profiles.SUPPORTED_SITES`; only "linkedin"
-        today), and every cookie must have a non-empty name/value plus a domain valid for that
-        site -- anything else in the list is rejected with 400. Cookies are stored under
-        data/extension_profiles/<profile_id>.json, keyed by `site` (LinkedIn today; other sites
-        can be connected later under the *same* profile id without disturbing this one) -- a
-        *separate* file from the Selenium-managed data/selenium_linkedin_cookies.json that
-        main.py's own bot session uses, and never synced to S3 (see that module's docstring for
-        why). Nothing today reads a connected profile's cookies automatically; this only stores
-        them for a future action to opt into acting as this profile's account.
+        error, and a fresh one is minted on a normal (non-conflicting) connect. The extension must
+        overwrite its own stored id with whatever `status: "connected"` reports back (it may differ
+        from what was sent, and is the only id valid for future calls) -- same reasoning as
+        `/process-extension`'s server-minted `server_request_id`: an id used as a storage-key/
+        lookup credential has to come from the server, never invented by the caller, or one device
+        could collide with or guess at another's id. `site` is checked against a fixed allow-list
+        (`utils.extension_profiles.SUPPORTED_SITES`; only "linkedin" today), and every cookie must
+        have a non-empty name/value plus a domain valid for that site -- anything else in the list
+        is rejected with 400. Cookies are stored under data/extension_profiles/<profile_id>.json,
+        keyed by `site` (LinkedIn today; other sites can be connected later under the *same*
+        profile id without disturbing this one) -- a *separate* file from the Selenium-managed
+        data/selenium_linkedin_cookies.json that main.py's own bot session uses, and never synced
+        to S3 (see that module's docstring for why). Nothing today reads a connected profile's
+        cookies automatically; this only stores them for a future action to opt into acting as
+        this profile's account.
+
+        `identity` (required for any site in `utils.extension_profiles.SITES_WITH_IDENTITY` --
+        just "linkedin" today, a profile URL like `https://www.linkedin.com/in/<slug>/`, resolved
+        by the extension via LinkedIn's own `/in/me/` redirect) lets the server tell "two devices
+        connecting to the *same* account" apart from "two different accounts" -- cookies alone
+        can't, since each device gets its own session-cookie values even for one account. If
+        `identity` already belongs to a *different* existing profile, nothing is stored: the
+        attempted cookies/identity are stashed server-side under a freshly-minted `pending_id`
+        (expires after 10 minutes unresolved) and `status: "conflict"` is returned instead, along
+        with `existing_profile_id` so the extension can show the user a choice before anything
+        commits -- see `/profile/connect/resolve` below.
+
+    POST /profile/connect/resolve
+        body: {"pending_id": str, "choice": "join" | "merge" | "cancel"}
+        -> {"status": "joined" | "merged" | "cancelled", "profile_id": str?}
+           | {"error": str}
+
+        Applies the user's choice for a conflict reported by `/profile/connect`:
+          - "join": the requesting device's own profile (if it had one) is dropped entirely, and
+            it adopts `existing_profile_id` instead -- `profile_id` in the response is that id.
+          - "merge": the requesting device's own profile is connected as normal (minted fresh if
+            it never had one), then absorbs every site the existing profile has that it doesn't
+            (the existing profile's LinkedIn cookies are *not* copied over, since the requester's
+            own just-fetched ones for the same account replace them) -- `profile_id` in the
+            response is the survivor. The existing profile is then dropped.
+          - "cancel": the pending conflict is discarded; neither profile is touched, and
+            `profile_id` is omitted.
+        An unknown or already-resolved/expired `pending_id`, or an unrecognized `choice`, gets
+        `{"error": ...}` with 400 rather than silently no-op'ing.
 
     POST /profile/ping
         body: {"profile_id": str}
@@ -249,11 +281,16 @@ from utils.eval_utils.student_job_filter import STUDENT_JOB_MODES
 from utils.eval_utils.unpaid_job_filter import UNPAID_JOB_MODES
 from utils.extension_process_service import process_extension_request, resolve_conflicts
 from utils.extension_profiles import (
+    SITES_WITH_IDENTITY,
     SUPPORTED_SITES,
     connect_profile,
     disconnect_site,
+    find_conflicting_profile,
     profile_sites,
+    resolve_connect_conflict,
+    stage_connect_conflict,
     validate_cookie,
+    validate_identity,
 )
 from utils.form_fill_rules import DISCARD_APPLY, FormFillRulesEngine
 from utils.output_paths import COVERLETTERS_DIR, FORM_FILL_RULES_DIR, OUTPUT_DIR
@@ -433,7 +470,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path not in (
             "/cover-letter", "/answer-fields", "/process-extension", "/process-extension/resolve",
-            "/config", "/blacklist", "/profile/connect", "/profile/ping", "/profile/disconnect",
+            "/config", "/blacklist", "/profile/connect", "/profile/connect/resolve",
+            "/profile/ping", "/profile/disconnect",
         ):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
@@ -469,6 +507,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_post_blacklist(data)
         elif self.path == "/profile/connect":
             self._handle_profile_connect(data)
+        elif self.path == "/profile/connect/resolve":
+            self._handle_profile_connect_resolve(data)
         elif self.path == "/profile/ping":
             self._handle_profile_ping(data)
         else:
@@ -756,8 +796,46 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
                 return
 
-        profile_id = connect_profile(profile_id=raw_profile_id, site=site, cookies=cookies)
-        self._send_json(HTTPStatus.OK, {"profile_id": profile_id})
+        identity: str | None = None
+        if site in SITES_WITH_IDENTITY:
+            try:
+                identity = validate_identity(data.get("identity"), site=site)
+            except ValueError as e:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
+                return
+
+            existing_profile_id = find_conflicting_profile(
+                site=site, identity=identity, exclude_profile_id=raw_profile_id
+            )
+            if existing_profile_id is not None:
+                pending_id = stage_connect_conflict(
+                    site=site,
+                    cookies=cookies,
+                    identity=identity,
+                    requesting_profile_id=raw_profile_id,
+                    existing_profile_id=existing_profile_id,
+                )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"status": "conflict", "pending_id": pending_id, "existing_profile_id": existing_profile_id},
+                )
+                return
+
+        profile_id = connect_profile(profile_id=raw_profile_id, site=site, cookies=cookies, identity=identity)
+        self._send_json(HTTPStatus.OK, {"status": "connected", "profile_id": profile_id})
+
+    def _handle_profile_connect_resolve(self, data: dict[str, Any]) -> None:
+        pending_id = str(data.get("pending_id") or "").strip()
+        choice = str(data.get("choice") or "").strip()
+        if not pending_id or choice not in ("join", "merge", "cancel"):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "pending_id is required and choice must be 'join', 'merge', or 'cancel'"},
+            )
+            return
+        result = resolve_connect_conflict(pending_id, choice)
+        status = HTTPStatus.BAD_REQUEST if "error" in result else HTTPStatus.OK
+        self._send_json(status, result)
 
     def _handle_profile_ping(self, data: dict[str, Any]) -> None:
         profile_id = str(data.get("profile_id") or "").strip()
