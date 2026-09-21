@@ -2472,22 +2472,26 @@ class JobSearcher:
 
         The external "Apply" control (``#jobs-apply-button-id``) is a plain ``<button
         role="link">`` with no ``href`` at all — LinkedIn opens the destination in a new tab via
-        JS on click, so there's nothing to read without actually clicking. Clicks it, waits for a
-        new window handle, then polls that tab's URL until it holds *the same* value for
+        JS on click most of the time, but some ATS integrations instead navigate the *current*
+        tab (suspected culprit for a real miss on a Baseten posting -- its Ashby setup never
+        opened a second window) -- so there's nothing to read without actually clicking, and this
+        handles both. Clicks it, then polls whichever tab ends up holding the destination (a new
+        one if one opened, else the original) until its URL holds *the same* value for
         ``_APPLY_DESTINATION_SETTLE_SECONDS`` (not just until navigation has merely started) --
         some ATS flows bounce through an intermediate tracking/redirect hop before landing on the
         real destination (e.g. a company-page redirector in front of an Ashby/Greenhouse board),
         and grabbing the very first non-blank URL risked capturing that intermediate hop instead
         of the final one, silently defeating ``detect_easy_apply_service()`` (the intermediate
         domain matches neither "still on linkedin.com" nor any known ATS, so the company was
-        never recorded at all -- confirmed against a real miss where the run had genuinely
-        visited the job and completed normally). If the deadline is reached before the URL ever
-        stops changing, whatever was last observed is still used as a best-effort answer rather
-        than giving up entirely. Closes the tab and restores focus to the original window either
-        way. Returns ``""`` on anything unexpected — driver stopped, no button found, no new tab
-        within ``timeout_seconds``, or the "destination" still being a linkedin.com URL (a
-        LinkedIn-hosted interstitial, not the real external site) — callers fall back to the
-        LinkedIn job URL exactly as before.
+        never recorded at all -- confirmed against a real miss in the new-tab path already, and
+        the same-tab fallback below had the identical one-shot-read flaw but had never been
+        exercised by a caught example until Baseten). If the deadline is reached before the URL
+        ever stops changing, whatever was last observed is still used as a best-effort answer
+        rather than giving up entirely. Closes any opened tab and restores focus to the original
+        window either way. Returns ``""`` on anything unexpected — driver stopped, no button
+        found, no navigation at all within ``timeout_seconds``, or the "destination" still being
+        a linkedin.com URL (a LinkedIn-hosted interstitial, not the real external site) —
+        callers fall back to the LinkedIn job URL exactly as before.
         """
         if self._driver_stopped(driver):
             return ""
@@ -2543,12 +2547,26 @@ class JobSearcher:
                 except WebDriverException:
                     self._driver_stopped(driver)
         else:
-            # Defensive fallback: some flow navigated the current tab instead of opening a new
-            # one -- read the changed URL, then go back to restore the job detail pane so a later
-            # save_current_job() call still has the right page open.
-            cur = (driver.current_url or "").strip()
-            if cur and "linkedin.com" not in cur.lower():
-                dest = cur
+            # Defensive fallback: some flow navigates the current tab instead of opening a new
+            # one -- poll for the URL to settle the same way as the new-tab branch above (a
+            # same-tab redirect chain can just as easily bounce through an intermediate hop; a
+            # one-shot read here is the suspected cause of a real miss on a Baseten posting,
+            # whose Ashby integration never opened a second window), then go back to restore the
+            # job detail pane so a later save_current_job() call still has the right page open.
+            deadline = time.time() + timeout_seconds
+            stable_since = None
+            while time.time() < deadline:
+                cur = (driver.current_url or "").strip()
+                if cur and cur.lower() != "about:blank":
+                    if cur != dest:
+                        dest = cur
+                        stable_since = time.time()
+                    elif (
+                        stable_since is not None
+                        and time.time() - stable_since >= _APPLY_DESTINATION_SETTLE_SECONDS
+                    ):
+                        break
+                time.sleep(0.2)
             try:
                 driver.back()
             except WebDriverException:
