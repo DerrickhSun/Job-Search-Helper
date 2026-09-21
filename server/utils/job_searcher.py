@@ -106,6 +106,11 @@ DEFAULT_JOB_SEARCH_KEYWORDS: tuple[str, ...] = (
 
 _MIN_FIRST_NAME_LEN = 2
 
+# How long an external-apply destination URL must stay unchanged before
+# selected_job_apply_destination_url() trusts it as final, rather than an intermediate hop in a
+# multi-step redirect chain (see that method's docstring).
+_APPLY_DESTINATION_SETTLE_SECONDS = 0.6
+
 
 def normalize_search_keywords(keywords: str | Sequence[str]) -> list[str]:
     """Strip and drop empties; ``str`` is treated as a single query."""
@@ -2468,12 +2473,21 @@ class JobSearcher:
         The external "Apply" control (``#jobs-apply-button-id``) is a plain ``<button
         role="link">`` with no ``href`` at all — LinkedIn opens the destination in a new tab via
         JS on click, so there's nothing to read without actually clicking. Clicks it, waits for a
-        new window handle, reads that tab's URL as soon as navigation has started (no waiting for
-        full page load or touching the destination page further), closes the tab, and restores
-        focus to the original window. Returns ``""`` on anything unexpected — driver stopped, no
-        button found, no new tab within ``timeout_seconds``, or the "destination" still being a
-        linkedin.com URL (a LinkedIn-hosted interstitial, not the real external site) — callers
-        fall back to the LinkedIn job URL exactly as before.
+        new window handle, then polls that tab's URL until it holds *the same* value for
+        ``_APPLY_DESTINATION_SETTLE_SECONDS`` (not just until navigation has merely started) --
+        some ATS flows bounce through an intermediate tracking/redirect hop before landing on the
+        real destination (e.g. a company-page redirector in front of an Ashby/Greenhouse board),
+        and grabbing the very first non-blank URL risked capturing that intermediate hop instead
+        of the final one, silently defeating ``detect_easy_apply_service()`` (the intermediate
+        domain matches neither "still on linkedin.com" nor any known ATS, so the company was
+        never recorded at all -- confirmed against a real miss where the run had genuinely
+        visited the job and completed normally). If the deadline is reached before the URL ever
+        stops changing, whatever was last observed is still used as a best-effort answer rather
+        than giving up entirely. Closes the tab and restores focus to the original window either
+        way. Returns ``""`` on anything unexpected — driver stopped, no button found, no new tab
+        within ``timeout_seconds``, or the "destination" still being a linkedin.com URL (a
+        LinkedIn-hosted interstitial, not the real external site) — callers fall back to the
+        LinkedIn job URL exactly as before.
         """
         if self._driver_stopped(driver):
             return ""
@@ -2504,11 +2518,18 @@ class JobSearcher:
             try:
                 driver.switch_to.window(new_handle)
                 deadline = time.time() + timeout_seconds
+                stable_since: float | None = None
                 while time.time() < deadline:
                     cur = (driver.current_url or "").strip()
                     if cur and cur.lower() != "about:blank":
-                        dest = cur
-                        break
+                        if cur != dest:
+                            dest = cur
+                            stable_since = time.time()
+                        elif (
+                            stable_since is not None
+                            and time.time() - stable_since >= _APPLY_DESTINATION_SETTLE_SECONDS
+                        ):
+                            break
                     time.sleep(0.2)
             except WebDriverException:
                 pass
@@ -2599,6 +2620,43 @@ class JobSearcher:
             "fetch_dedicated_page_requirements: captured %d chars for job %s", len(result), job_id
         )
         return result
+
+    def fetch_job_apply_destination_by_id(self, lookup_driver, job_id: str) -> str:
+        """
+        Open the job via the two-pane search view (``?currentJobId=``) and return its external
+        apply destination (see ``selected_job_apply_destination_url``) -- ``""`` if it's Easy
+        Apply (no external ``#jobs-apply-button-id``), the page fails to load, or nothing
+        resolved in time.
+
+        Deliberately **not** the dedicated single-job page (``/jobs/view/<id>/``, the pattern
+        ``fetch_dedicated_page_requirements`` uses) -- ``selected_job_apply_destination_url`` has
+        only ever been written against, and tested against, the two-pane search-results view
+        (the page shape ``main.py``'s own filter pipeline always calls it from); the dedicated
+        page's DOM was never confirmed to expose the same ``#jobs-apply-button-id`` element, and
+        a real run showed it silently returning "" there -- the button lookup failing outright,
+        never even attempting a click, rather than a slow page needing a longer wait.
+
+        Used by ``scan_saved.py``'s secondary driver to backfill
+        ``utils.eval_utils.easy_apply_company_memory`` for jobs that were saved without ever
+        going through ``main.py --filter``'s own live detection.
+        """
+        url = (
+            "https://www.linkedin.com/jobs/search/"
+            f"?currentJobId={job_id}&f_TPR=r604800"
+            "&geoId=92000000&origin=JOB_SEARCH_PAGE_JOB_FILTER"
+        )
+        try:
+            lookup_driver.get(url)
+        except Exception as e:
+            log.debug("fetch_job_apply_destination_by_id: navigation failed for %s: %s", url, e)
+            return ""
+        # Matches the wait budget confirmed live against a real Greenhouse/Ashby posting (see
+        # scripts/test_apply_destination_read.py's --wait default plus this same post-navigation
+        # settle wait) -- the dedicated-page version of this method used a shorter, unverified
+        # single wait, which is the leading suspect for why it missed a real Greenhouse posting.
+        time.sleep(4.0)
+        time.sleep(max(1.0, self.job_description_wait_seconds))
+        return self.selected_job_apply_destination_url(lookup_driver)
 
     def company_page_looks_consulting(self, company_driver, company_url: str) -> bool:
         """

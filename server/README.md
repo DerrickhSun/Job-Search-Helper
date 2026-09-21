@@ -228,3 +228,19 @@ with LinkedIn's Terms of Service. Apply only to jobs you're genuinely interested
   Docker isn't actually part of the normal workflow yet — the bot is still run directly via
   `python main.py`. Come back to this later to actually adopt it (e.g. as the way this runs on a
   server/VM, or to standardize the dev environment), rather than leaving it as a dormant file.
+
+- **Future idea: replace the tier-4 (last-resort) consulting-company check in
+  `utils/eval_utils/consulting_filter.py` with a plain unauthenticated HTTP fetch instead of
+  Selenium navigating to `linkedin.com/company/.../about`.** Verified directly (real `curl`, no
+  cookies, no browser): LinkedIn's public company pages are accessible while logged out and
+  server-render the Industry field straight into the initial HTML --
+  `<div data-test-id="about-us__industry"><dt>Industry</dt><dd>Hospitals and Health
+  Care</dd></div>` for `linkedin.com/company/ensign-services`, no JS execution needed. A plain
+  `requests.get()` + a small HTML parse would get the same signal this tier already uses, without
+  a live Chrome session, and without any session cookies at all (so zero account-risk from doing
+  it -- only plain IP-based rate limiting could apply, not the login-session risk-scoring that
+  everything else in this bot has to worry about). Two things to verify before relying on it: (1)
+  whether repeated/rapid requests from one IP get rate-limited or challenged -- only tested a
+  single request so far; (2) this is scraping outside LinkedIn's API, same ToS consideration as
+  the rest of this bot's LinkedIn automation, just via a different (unauthenticated) mechanism.
+  Not started.

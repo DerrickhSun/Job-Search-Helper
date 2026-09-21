@@ -1,10 +1,10 @@
 """
-Secondary Chrome worker for LinkedIn company-page consulting checks and filter-mode
-company Jobs scans.
+Secondary Chrome worker for LinkedIn company-page consulting checks, filter-mode company Jobs
+scans, and (via ``scan_saved.py``) reading a saved job's external apply destination.
 
 Owns the second WebDriver exclusively on one background thread. Primary submits commands
-via a queue; consulting / dedicated-requirements calls block until the worker finishes
-(so a company-jobs scan that is in flight must complete first).
+via a queue; consulting / dedicated-requirements / apply-destination calls block until the
+worker finishes (so a company-jobs scan that is in flight must complete first).
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ _STOP = object()
 
 @dataclass
 class _Cmd:
-    kind: str  # "consulting" | "dedicated_reqs" | "company_scan" | "stop"
+    kind: str  # "consulting" | "dedicated_reqs" | "apply_destination" | "company_scan" | "stop"
     payload: Any = None
     future: Future | None = None
 
@@ -166,6 +166,18 @@ class CompanyLookupWorker:
         self._q.put(_Cmd(kind="dedicated_reqs", payload=job_id, future=fut))
         return str(fut.result() or "")
 
+    def submit_apply_destination(self, job_id: str) -> str:
+        """Block until the worker opens the job's own page and reads its external apply
+        destination (see JobSearcher.fetch_job_apply_destination_by_id)."""
+        if not self._accepting_work():
+            return ""
+        self.start()
+        if not self._accepting_work():
+            return ""
+        fut: Future[str] = Future()
+        self._q.put(_Cmd(kind="apply_destination", payload=job_id, future=fut))
+        return str(fut.result() or "")
+
     def submit_company_scan(self, company_url: str) -> None:
         """
         Queue a company Jobs-tab scan (non-blocking).
@@ -264,6 +276,14 @@ class CompanyLookupWorker:
             if cmd.kind == "dedicated_reqs":
                 driver = self._ensure_driver()
                 result = self._searcher.fetch_dedicated_page_requirements(
+                    driver, str(cmd.payload or "")
+                )
+                if fut is not None and not fut.done():
+                    fut.set_result(str(result or ""))
+                return
+            if cmd.kind == "apply_destination":
+                driver = self._ensure_driver()
+                result = self._searcher.fetch_job_apply_destination_by_id(
                     driver, str(cmd.payload or "")
                 )
                 if fut is not None and not fut.done():
