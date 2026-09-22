@@ -11,11 +11,13 @@ values and saves nothing on failure, so a bad edit here can't corrupt any of the
 ## Using it locally
 
 Just open `pages/index.html` directly in a browser (or serve the folder with any static file
-server). Enter your server URL (default `http://127.0.0.1:8743`) and the same token from
-`COVER_LETTER_SERVER_TOKEN` in `.env` / the extension's options page, then **Save**. From there:
+server). Enter your server URL (default `http://127.0.0.1:8743`), then **Save**. From there:
 **Ping local server** just checks connectivity; **Load config** pulls the current
 behavior/search settings into the form below, and **Save updates** pushes your edits back
 (always sends the full form as one update — there's no per-field diffing).
+
+No token/auth is required today — see `extension_server.py`'s AUTH docstring for why, and the
+planned profile-ownership-password replacement tracked in `server/README.md`'s TODO.
 
 ## Deploying via GitHub Pages
 
@@ -32,6 +34,3 @@ subject to full CORS and Chrome's Private Network Access checks when it calls a 
 like `127.0.0.1`. `extension_server.py`'s `do_OPTIONS` already answers both (wide-open CORS +
 `Access-Control-Allow-Private-Network: true`), so no server change should be needed — just make
 sure whoever's `extension_server.py` you're pointing at is a version that includes that header.
-
-The token field is never written into this repo — it's typed in by hand and kept in the
-browser's `localStorage`, the same way the extension keeps it in `browser.storage.local`.

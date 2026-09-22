@@ -1,13 +1,11 @@
 // Job-Applyer control panel — talks to the same local extension_server.py the browser
 // extension does (see extension/background.js). Settings are kept in this browser's
-// localStorage only; the token never leaves this page except in the Authorization header
-// sent straight to the server URL below.
+// localStorage only. No auth today (see extension_server.py's AUTH docstring).
 
 const SETTINGS_KEY = "jobApplyerControlPanelSettings";
 const DEFAULT_SERVER_URL = "http://127.0.0.1:8743";
 
 const serverUrlInput = document.getElementById("server-url");
-const tokenInput = document.getElementById("token");
 const saveButton = document.getElementById("save");
 const saveStatus = document.getElementById("save-status");
 const pingButton = document.getElementById("ping");
@@ -21,13 +19,11 @@ function loadSettings() {
     settings = {};
   }
   serverUrlInput.value = settings.serverUrl || DEFAULT_SERVER_URL;
-  tokenInput.value = settings.token || "";
 }
 
 function saveSettings() {
   const settings = {
     serverUrl: serverUrlInput.value.trim() || DEFAULT_SERVER_URL,
-    token: tokenInput.value.trim(),
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   return settings;
@@ -43,16 +39,10 @@ saveButton.addEventListener("click", () => {
 // non-2xx, or non-JSON body) so callers only need one catch block.
 async function callServer(path, options = {}) {
   const settings = saveSettings();
-  if (!settings.token) {
-    throw new Error("Set a token above first.");
-  }
 
   let res;
   try {
-    res = await fetch(settings.serverUrl.replace(/\/+$/, "") + path, {
-      ...options,
-      headers: { "Authorization": "Bearer " + settings.token, ...(options.headers || {}) },
-    });
+    res = await fetch(settings.serverUrl.replace(/\/+$/, "") + path, options);
   } catch (err) {
     throw new Error(
       "Could not reach " + settings.serverUrl + ": " + err.message +

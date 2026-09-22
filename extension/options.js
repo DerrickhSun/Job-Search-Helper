@@ -9,7 +9,6 @@ const DEFAULT_CONFIG_PAGE_URL = "https://derrickhsun.github.io/Job-Search-Helper
 
 const form = document.getElementById("settings-form");
 const serverUrlInput = document.getElementById("server-url");
-const tokenInput = document.getElementById("token");
 const configPageUrlInput = document.getElementById("config-page-url");
 const autoSyncDownloadsInput = document.getElementById("auto-sync-downloads");
 const statusEl = document.getElementById("status");
@@ -18,7 +17,6 @@ async function loadSettings() {
     const stored = await browser.storage.local.get(COVER_LETTER_SETTINGS_KEY);
     const settings = stored[COVER_LETTER_SETTINGS_KEY] || {};
     serverUrlInput.value = settings.serverUrl || DEFAULT_COVER_LETTER_SERVER_URL;
-    tokenInput.value = settings.token || "";
     configPageUrlInput.value = settings.configPageUrl || DEFAULT_CONFIG_PAGE_URL;
     // Undefined (never saved before) defaults to checked/true, matching background.js's default.
     autoSyncDownloadsInput.checked = settings.autoSyncDownloads !== false;
@@ -29,7 +27,6 @@ form.addEventListener("submit", async (event) => {
 
     const settings = {
         serverUrl: serverUrlInput.value.trim() || DEFAULT_COVER_LETTER_SERVER_URL,
-        token: tokenInput.value.trim(),
         configPageUrl: configPageUrlInput.value.trim() || DEFAULT_CONFIG_PAGE_URL,
         autoSyncDownloads: autoSyncDownloadsInput.checked,
     };

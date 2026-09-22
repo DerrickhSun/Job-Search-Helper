@@ -59,18 +59,13 @@
 <body>
   <h1>Cover letter generator</h1>
   <p class="hint">
-    Connects to job-applyer's local <code>cover_letter_server.py</code> (loopback-only,
-    requires the token it prints/writes to its own <code>.env</code> on first run).
+    Connects to job-applyer's local <code>cover_letter_server.py</code> (loopback-only).
   </p>
 
   <form id="settings-form">
     <label>
       <span>Server URL</span>
       <input type="text" id="server-url" placeholder="http://127.0.0.1:8743">
-    </label>
-    <label>
-      <span>API token</span>
-      <input type="password" id="token" placeholder="COVER_LETTER_SERVER_TOKEN value" autocomplete="off">
     </label>
     <label>
       <span>Config page URL</span>

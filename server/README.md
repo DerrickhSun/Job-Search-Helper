@@ -244,3 +244,32 @@ with LinkedIn's Terms of Service. Apply only to jobs you're genuinely interested
   single request so far; (2) this is scraping outside LinkedIn's API, same ToS consideration as
   the rest of this bot's LinkedIn automation, just via a different (unauthenticated) mechanism.
   Not started.
+
+- **Future idea: restore some form of auth on `extension_server.py`, in place of the
+  `COVER_LETTER_SERVER_TOKEN` bearer token that was removed.** The token was dropped deliberately
+  (see `extension_server.py`'s AUTH docstring) -- it required a manual copy-paste from the
+  server's console/`.env` into both the extension's options page and `pages/`'s settings before
+  either would work, and the project's small enough right now that this specific attacker (some
+  other page you have open, probing `127.0.0.1:8743`, since the server's CORS is wide-open to let
+  `pages/` work at all) isn't worth that setup friction. Not a permanent shrug, though -- planned
+  replacement, once `utils/extension_profiles.py`'s profile system has an actual consumer worth
+  protecting:
+
+  A user-chosen **password per profile**, set the first time a profile is created (never stored
+  in plaintext -- a salted hash alongside the rest of that profile's JSON). A device that already
+  created or joined a profile keeps the password stored locally next to its `profile_id`
+  (`browser.storage.local`) and sends it silently on every normal reconnect, so this adds zero
+  day-to-day friction. It only needs to be typed by a human at the two moments that actually
+  matter: creating a profile the first time, and when a *different* device wants to join/merge
+  into that same profile via the `/profile/connect` identity-conflict path -- without the correct
+  password, that device just ends up with its own new, separate profile instead of being able to
+  touch/merge into someone else's. This specifically closes a gap nothing else here does: a page
+  can't forge real LinkedIn cookies at all (no `cookies` permission), so the practical risk this
+  guards against is a different device (or a rogue extension with `cookies` access) later trying
+  to claim/merge into an *existing* profile it shouldn't be able to touch, not casual cookie theft
+  via a forged connect call. Complementary to, not a replacement for, whatever ends up gating the
+  rest of the server (blacklist/config edits, cover-letter generation, etc.) -- that's a separate,
+  still-open question (a same-origin `chrome-extension://`/`moz-extension://` check was discussed
+  as one option, real but limited: it can't be forged by page JS, but only proves "some browser
+  extension," not specifically this one, unless `manifest.json` pins a fixed `"key"`, and it does
+  nothing against a non-browser local process forging the same header). Not started.

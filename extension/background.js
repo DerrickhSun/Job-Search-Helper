@@ -113,11 +113,10 @@ async function downloadTextFile(text, filename) {
   }
 }
 
-// Config for job-applyer's local extension_server.py — see options.html.
-// The server is loopback-only by design and requires a bearer token; both are
-// set by the user via the options page rather than hardcoded here, since the
-// token is a live secret. Same server/settings for both cover-letter
-// generation and form-field answers below.
+// Config for job-applyer's local extension_server.py — see options.html. The server is
+// loopback-only by design; no token/auth today (see extension_server.py's AUTH docstring for
+// why, and the planned replacement). Same server/settings for both cover-letter generation and
+// form-field answers below.
 const COVER_LETTER_SETTINGS_KEY = "coverLetterSettings";
 const DEFAULT_COVER_LETTER_SERVER_URL = "http://127.0.0.1:8743";
 
@@ -126,7 +125,6 @@ async function getExtensionServerSettings() {
   const settings = stored[COVER_LETTER_SETTINGS_KEY] || {};
   return {
     serverUrl: (settings.serverUrl || DEFAULT_COVER_LETTER_SERVER_URL).replace(/\/+$/, ""),
-    token: settings.token,
     // Undefined (never saved before) defaults to true -- matches options.js's checked-by-default
     // checkbox, so existing users who haven't touched the new setting keep today's behavior.
     autoSyncDownloads: settings.autoSyncDownloads !== false,
@@ -134,10 +132,7 @@ async function getExtensionServerSettings() {
 }
 
 async function generateCoverLetter(job) {
-  const { serverUrl, token } = await getExtensionServerSettings();
-  if (!token) {
-    return { error: "No API token set — configure it on the extension's options page." };
-  }
+  const { serverUrl } = await getExtensionServerSettings();
 
   let res;
   try {
@@ -145,7 +140,6 @@ async function generateCoverLetter(job) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": "Bearer " + token,
       },
       body: JSON.stringify({
         title: job.title,
@@ -167,10 +161,7 @@ async function generateCoverLetter(job) {
 }
 
 async function answerFields(fields) {
-  const { serverUrl, token } = await getExtensionServerSettings();
-  if (!token) {
-    return { error: "No API token set — configure it on the extension's options page." };
-  }
+  const { serverUrl } = await getExtensionServerSettings();
 
   let res;
   try {
@@ -178,7 +169,6 @@ async function answerFields(fields) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": "Bearer " + token,
       },
       body: JSON.stringify({ fields }),
     });
@@ -210,15 +200,12 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 async function processExtensionRequest({ recordedJobsText, savedQuestionsText, dryRun }) {
-  const { serverUrl, token, autoSyncDownloads } = await getExtensionServerSettings();
+  const { serverUrl, autoSyncDownloads } = await getExtensionServerSettings();
   if (!autoSyncDownloads) {
     // Downloads (recorded_jobs.txt / saved_job_application_questions.txt) already happened in
     // content.js before this message was sent -- this setting only controls whether we also
-    // import them straight into the server, so no server/token is needed at all here.
+    // import them straight into the server, so no server call is needed at all here.
     return { type: "download_only" };
-  }
-  if (!token) {
-    return { error: "No API token set — configure it on the extension's options page." };
   }
   const requestId = crypto.randomUUID();
 
@@ -230,7 +217,6 @@ async function processExtensionRequest({ recordedJobsText, savedQuestionsText, d
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer " + token,
         },
         body: JSON.stringify({
           request_id: requestId,
@@ -260,10 +246,7 @@ async function processExtensionRequest({ recordedJobsText, savedQuestionsText, d
 }
 
 async function resolveExtensionConflicts({ requestId, serverRequestId, resolutions }) {
-  const { serverUrl, token } = await getExtensionServerSettings();
-  if (!token) {
-    return { error: "No API token set — configure it on the extension's options page." };
-  }
+  const { serverUrl } = await getExtensionServerSettings();
 
   let res;
   try {
@@ -273,7 +256,6 @@ async function resolveExtensionConflicts({ requestId, serverRequestId, resolutio
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer " + token,
         },
         body: JSON.stringify({
           request_id: requestId,
@@ -302,16 +284,13 @@ async function resolveExtensionConflicts({ requestId, serverRequestId, resolutio
 }
 
 async function getEasyApplyCompanies() {
-  const { serverUrl, token } = await getExtensionServerSettings();
-  if (!token) {
-    return { error: "No API token set — configure it on the extension's options page." };
-  }
+  const { serverUrl } = await getExtensionServerSettings();
 
   let res;
   try {
     res = await fetchWithTimeout(
       serverUrl + "/easy-apply-companies",
-      { method: "GET", headers: { "Authorization": "Bearer " + token } },
+      { method: "GET" },
       PROCESS_EXTENSION_TIMEOUT_MS
     );
   } catch (err) {
@@ -405,10 +384,7 @@ async function setSiteConnected(site, connected) {
 }
 
 async function connectToSite(site) {
-  const { serverUrl, token } = await getExtensionServerSettings();
-  if (!token) {
-    return { error: "No API token set — configure it on the extension's options page." };
-  }
+  const { serverUrl } = await getExtensionServerSettings();
 
   let cookies;
   let identity = null;
@@ -432,7 +408,6 @@ async function connectToSite(site) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer " + token,
         },
         body: JSON.stringify({ site, profile_id: existingProfileId, cookies, identity }),
       },
@@ -468,10 +443,7 @@ async function connectToSite(site) {
 }
 
 async function resolveConnectConflict(site, pendingId, choice) {
-  const { serverUrl, token } = await getExtensionServerSettings();
-  if (!token) {
-    return { error: "No API token set — configure it on the extension's options page." };
-  }
+  const { serverUrl } = await getExtensionServerSettings();
 
   let res;
   try {
@@ -481,7 +453,6 @@ async function resolveConnectConflict(site, pendingId, choice) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer " + token,
         },
         body: JSON.stringify({ pending_id: pendingId, choice }),
       },
@@ -510,10 +481,7 @@ async function resolveConnectConflict(site, pendingId, choice) {
 }
 
 async function disconnectSite(site) {
-  const { serverUrl, token } = await getExtensionServerSettings();
-  if (!token) {
-    return { error: "No API token set — configure it on the extension's options page." };
-  }
+  const { serverUrl } = await getExtensionServerSettings();
 
   const profileId = await getStoredProfileId();
   if (!profileId) {
@@ -531,7 +499,6 @@ async function disconnectSite(site) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer " + token,
         },
         body: JSON.stringify({ profile_id: profileId, site }),
       },

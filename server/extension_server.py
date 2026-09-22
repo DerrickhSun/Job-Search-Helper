@@ -8,7 +8,7 @@ Run from inside server/::
     python extension_server.py
     python extension_server.py --port 8743 --resume resume.pdf
 
-Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
+Endpoints (no authentication today; see AUTH below)::
 
     GET  /health
         -> {"status": "ok"}
@@ -212,19 +212,21 @@ Endpoints (all require ``Authorization: Bearer <token>``; see AUTH below)::
         never connected under it (not an error either way).
 
 AUTH:
-    This server binds to 127.0.0.1 only, but any web page open in the browser can still attempt
-    to ``fetch()`` a localhost port — without a check, a page other than our own extension could
-    silently trigger LLM calls or read resume content back out of the response. A shared-secret
-    token gates every request instead. Set ``COVER_LETTER_SERVER_TOKEN`` in ``.env`` once and
-    configure the same value in the extension. If it's unset, one is generated on first run and
-    appended to ``.env`` — copy the printed value into the extension's settings.
+    None right now, deliberately -- this used to require a shared-secret ``Authorization: Bearer
+    <token>`` on every request (set via ``COVER_LETTER_SERVER_TOKEN``), which meant a manual
+    copy-paste from the server's console/``.env`` into the extension's options page (and again
+    into ``pages/``'s settings) before either would work at all. Removed for now: this server
+    binds to 127.0.0.1 only, and the project is small enough that this class of attacker (some
+    other page you have open also probing this port) isn't worth the setup friction it costs
+    every new install. This is a real, known gap, not an oversight -- see the "profile ownership
+    password" item in this file's TODO/README for the planned replacement, which would restore a
+    meaningful barrier without requiring anyone to copy a secret around by hand.
 
     Call this API from the extension's background/service-worker script (not a content script)
     with ``http://127.0.0.1:<port>/*`` in ``host_permissions``. Chrome's extension fetch bypasses
     CORS outright when the origin is covered by host_permissions, but Firefox still sends a real
-    CORS preflight (``OPTIONS``) for non-"simple" requests — a JSON body and a custom
-    ``Authorization`` header each independently trigger one — even from a privileged background
-    script.
+    CORS preflight (``OPTIONS``) for non-"simple" requests — a JSON body triggers one even from a
+    privileged background script.
 
     A plain web page (e.g. the GitHub Pages control panel in ``pages/``) has no such privilege and
     is fully subject to CORS, plus Chrome's Private Network Access checks: a page loaded from a
@@ -241,12 +243,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import hmac
 import json
 import logging
-import os
 import re
-import secrets
 import shutil
 import sys
 import unicodedata
@@ -301,27 +300,11 @@ from utils.search_config import load_search_config, save_search_config
 
 log = logging.getLogger(__name__)
 
-_TOKEN_ENV_VAR = "COVER_LETTER_SERVER_TOKEN"
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8743
 _MAX_BODY_BYTES = 200_000
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 _LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)", re.IGNORECASE)
-
-
-def _load_or_create_token() -> str:
-    token = (os.environ.get(_TOKEN_ENV_VAR) or "").strip()
-    if token:
-        return token
-    token = secrets.token_urlsafe(32)
-    env_path = Path(".env")
-    with env_path.open("a", encoding="utf-8") as f:
-        f.write(f"\n{_TOKEN_ENV_VAR}={token}\n")
-    print(
-        f"Generated a new extension server token and saved it to {env_path.resolve()}.\n"
-        f"Configure the browser extension with this token:\n\n    {token}\n"
-    )
-    return token
 
 
 def _default_downloads_dir() -> Path:
@@ -405,7 +388,6 @@ class _Handler(BaseHTTPRequestHandler):
     resume: dict[str, Any]
     cover_gen: CoverLetterGenerator
     rules_engine: FormFillRulesEngine
-    token: str
     downloads_dir: Path
 
     def log_message(self, fmt: str, *args) -> None:
@@ -427,23 +409,11 @@ class _Handler(BaseHTTPRequestHandler):
             # an unhandled traceback in the console.
             log.info("Client disconnected before response could be sent: %s", e)
 
-    def _authorized(self) -> bool:
-        auth = self.headers.get("Authorization", "")
-        prefix = "Bearer "
-        if not auth.startswith(prefix):
-            return False
-        return hmac.compare_digest(auth[len(prefix):].strip(), self.token)
-
     def do_OPTIONS(self) -> None:
-        # CORS preflight is unauthenticated by design — the browser is only
-        # asking permission to send the real request's headers, it hasn't
-        # attached them yet, so gating this on _authorized() would make every
-        # preflight fail and the real GET/POST would never be sent. Auth is
-        # still enforced there.
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         # Lets a page on a public origin (e.g. GitHub Pages) call this loopback server at all --
         # see the AUTH section of this module's docstring for why Chrome requires this.
         self.send_header("Access-Control-Allow-Private-Network", "true")
@@ -454,9 +424,6 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path not in ("/health", "/config", "/blacklist", "/easy-apply-companies"):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            return
-        if not self._authorized():
-            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
         if self.path == "/health":
             self._send_json(HTTPStatus.OK, {"status": "ok"})
@@ -474,9 +441,6 @@ class _Handler(BaseHTTPRequestHandler):
             "/profile/ping", "/profile/disconnect",
         ):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            return
-        if not self._authorized():
-            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
 
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -939,7 +903,6 @@ def main() -> int:
         )
         return 1
 
-    token = _load_or_create_token()
     configure_dspy()
     resume = load_or_build_resume(args.resume, args.resume_cache, force_reparse=args.force_resume_parse)
     log.info(
@@ -957,7 +920,6 @@ def main() -> int:
     # it's meant to run on any page, so the two site-specific rule types
     # (literal_from_apply_source / choose_label_from_apply_source) are unused.
     _Handler.rules_engine = FormFillRulesEngine(apply_source=None)
-    _Handler.token = token
     _Handler.downloads_dir = downloads_dir
 
     server = ThreadingHTTPServer((args.host, args.port), _Handler)
