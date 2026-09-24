@@ -35,6 +35,37 @@
   a {
     color: inherit;
   }
+  #easy-apply-log-section {
+    margin-top: 10px;
+    border-top: 1px solid #ddd;
+    padding-top: 8px;
+  }
+  #easy-apply-log-heading {
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  #easy-apply-log-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+  #easy-apply-log-list li {
+    padding: 3px 0;
+    border-bottom: 1px solid #f0f0f0;
+    overflow-wrap: break-word;
+  }
+  #easy-apply-log-list li:last-child {
+    border-bottom: none;
+  }
+  .easy-apply-service {
+    font-weight: 600;
+  }
+  .easy-apply-time {
+    color: #777;
+    font-size: 11px;
+  }
 </style>
 </head>
 <body>
@@ -44,6 +75,10 @@
     <button id="open-config-btn" type="button">Open config page</button>
   </div>
   <div id="status"></div>
+  <div id="easy-apply-log-section" hidden>
+    <div id="easy-apply-log-heading">Recently detected</div>
+    <ul id="easy-apply-log-list"></ul>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>

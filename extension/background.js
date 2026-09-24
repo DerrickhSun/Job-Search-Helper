@@ -307,6 +307,69 @@ async function getEasyApplyCompanies() {
   return data; // {companies: [...]}
 }
 
+// Batched so a highlighting pass over many tracker rows costs one round trip, not one per
+// company -- mirrors GET /easy-apply-companies's single-fetch shape (see
+// extension_server.py's /spam-check docstring for the actual rule).
+async function checkSpamCompanies(companies) {
+  const { serverUrl } = await getExtensionServerSettings();
+
+  let res;
+  try {
+    res = await fetchWithTimeout(
+      serverUrl + "/spam-check",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companies }),
+      },
+      PROCESS_EXTENSION_TIMEOUT_MS
+    );
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return { error: "Timed out waiting for " + serverUrl };
+    }
+    return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    return { error: (data && data.error) || ("server responded " + res.status) };
+  }
+  return data; // {flagged: [...]}
+}
+
+// until: null/undefined -> permanent (data/company_blacklist.json), else a "YYYY-MM-DD" string
+// -> temporary (data/company_blacklist_temporary.json). Mirrors the same two actions the pages/
+// control panel already uses against this same /blacklist endpoint.
+async function blacklistCompany(company, until) {
+  const { serverUrl } = await getExtensionServerSettings();
+  const body = until ? { action: "add_temporary", company, until } : { action: "add_permanent", company };
+
+  let res;
+  try {
+    res = await fetchWithTimeout(
+      serverUrl + "/blacklist",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      PROCESS_EXTENSION_TIMEOUT_MS
+    );
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return { error: "Timed out waiting for " + serverUrl };
+    }
+    return { error: "could not reach extension server at " + serverUrl + ": " + err.message };
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    return { error: (data && data.error) || ("server responded " + res.status) };
+  }
+  return data; // {permanent: [...], temporary: [...]}
+}
+
 // chrome.cookies bypasses httpOnly (unlike document.cookie), so this picks up li_at and other
 // session cookies a content script could never read directly. Shape matches what the server's
 // utils/chrome_driver.py::load_cookies() expects (see extension_server.py's /profile/connect
@@ -522,7 +585,165 @@ async function disconnectSite(site) {
   return data; // {disconnected: bool}
 }
 
-browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+// --- Passive Greenhouse/Ashby detection from real user "Apply" clicks -------------------------
+//
+// content.js reports every click on LinkedIn's external Apply button here; this watches wherever
+// it leads (a new tab, or the same tab navigating away -- both happen in the wild, see
+// utils/job_searcher.py::selected_job_apply_destination_url's own docstring) and, if the final
+// destination is Greenhouse/Ashby, reports it to the server. Mirrors
+// utils/eval_utils/easy_apply_company_memory.py::detect_easy_apply_service exactly; since this
+// is triggered by a genuine user click in a real, non-automated browser, none of main.py's
+// Selenium-fingerprint/risk-engine concerns apply here at all.
+
+function detectEasyApplyService(url) {
+  const u = (url || "").toLowerCase().trim();
+  if (!u) return null;
+  if (u.includes("greenhouse.io") || u.includes("gh_jid=")) return "greenhouse";
+  if (u.includes("ashbyhq.com") || u.includes("ashby_jid=")) return "ashby";
+  return null;
+}
+
+const APPLY_CLICK_TTL_MS = 20_000; // give up if nothing ever resolves within this long
+const DESTINATION_SETTLE_MS = 800; // debounce: wait for a tab's URL to stop changing
+
+// tabId (the LinkedIn tab that reported a click) -> { company, title, timer }. Consumed either
+// when a new tab opens with this as its opener, or when this same tab navigates away.
+const pendingApplyClicks = new Map();
+// tabId (whichever tab -- new or original -- is now heading to the destination) -> the same
+// shape plus lastUrl, while we wait for its navigation to settle.
+const watchedDestinationTabs = new Map();
+
+function badgeEasyApplyDetected(service) {
+  const color = service === "ashby" ? "#7c3aed" : "#0f9d58";
+  browser.action.setBadgeBackgroundColor({ color });
+  browser.action.setBadgeText({ text: "✓" });
+  setTimeout(() => browser.action.setBadgeText({ text: "" }), 5000);
+}
+
+const EASY_APPLY_LOG_KEY = "jobApplyerEasyApplyDetections";
+const EASY_APPLY_LOG_MAX = 20;
+
+async function logEasyApplyDetection(company, service) {
+  const stored = await browser.storage.local.get(EASY_APPLY_LOG_KEY);
+  const log = stored[EASY_APPLY_LOG_KEY] || [];
+  log.unshift({ company, service, at: Date.now() });
+  await browser.storage.local.set({ [EASY_APPLY_LOG_KEY]: log.slice(0, EASY_APPLY_LOG_MAX) });
+}
+
+async function getEasyApplyDetectionLog() {
+  const stored = await browser.storage.local.get(EASY_APPLY_LOG_KEY);
+  return stored[EASY_APPLY_LOG_KEY] || [];
+}
+
+async function reportEasyApplyCompany(company, service) {
+  const { serverUrl } = await getExtensionServerSettings();
+  try {
+    await fetchWithTimeout(
+      serverUrl + "/easy-apply-companies",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ company, service }),
+      },
+      PROCESS_EXTENSION_TIMEOUT_MS
+    );
+  } catch (err) {
+    console.warn("[JobHelp] could not report easy-apply company:", err.message);
+    return;
+  }
+  await logEasyApplyDetection(company, service);
+  badgeEasyApplyDetected(service);
+}
+
+function finalizeDestination(tabId) {
+  const watched = watchedDestinationTabs.get(tabId);
+  if (!watched) return;
+  watchedDestinationTabs.delete(tabId);
+  clearTimeout(watched.timer);
+  const service = detectEasyApplyService(watched.lastUrl);
+  if (service) {
+    reportEasyApplyCompany(watched.company, service);
+  }
+}
+
+function watchTabForDestination(tabId, company, title) {
+  const entry = { company, title, lastUrl: "", timer: null };
+  entry.timer = setTimeout(() => finalizeDestination(tabId), APPLY_CLICK_TTL_MS);
+  watchedDestinationTabs.set(tabId, entry);
+}
+
+function noteTabNavigation(tabId, url) {
+  const entry = watchedDestinationTabs.get(tabId);
+  if (!entry) return;
+  entry.lastUrl = url;
+  clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => finalizeDestination(tabId), DESTINATION_SETTLE_MS);
+}
+
+browser.webNavigation.onCompleted.addListener((details) => {
+  if (details.frameId !== 0) return; // top frame only
+
+  if (watchedDestinationTabs.has(details.tabId)) {
+    noteTabNavigation(details.tabId, details.url);
+    return;
+  }
+
+  const pending = pendingApplyClicks.get(details.tabId);
+  if (pending && !(details.url || "").toLowerCase().includes("linkedin.com")) {
+    // Same-tab navigation away from LinkedIn -- start watching this tab for its own settle
+    // (confirmed live: some ATS integrations, e.g. Baseten's Ashby setup, do this instead of
+    // opening a new tab).
+    pendingApplyClicks.delete(details.tabId);
+    clearTimeout(pending.timer);
+    watchTabForDestination(details.tabId, pending.company, pending.title);
+    noteTabNavigation(details.tabId, details.url);
+  }
+});
+
+browser.tabs.onCreated.addListener((tab) => {
+  const opener = tab.openerTabId;
+  if (opener == null || !pendingApplyClicks.has(opener)) return;
+  const pending = pendingApplyClicks.get(opener);
+  pendingApplyClicks.delete(opener);
+  clearTimeout(pending.timer);
+  watchTabForDestination(tab.id, pending.company, pending.title);
+});
+
+browser.tabs.onRemoved.addListener((tabId) => {
+  const pending = pendingApplyClicks.get(tabId);
+  if (pending) {
+    clearTimeout(pending.timer);
+    pendingApplyClicks.delete(tabId);
+  }
+  const watched = watchedDestinationTabs.get(tabId);
+  if (watched) {
+    clearTimeout(watched.timer);
+    watchedDestinationTabs.delete(tabId);
+  }
+});
+
+browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "APPLY_BUTTON_CLICKED") {
+    if (msg.knownDestination) {
+      // content.js already resolved the real destination from the apply link's own href (the
+      // newer "SDUI" apply control) -- no need to wait for any navigation to settle.
+      const service = detectEasyApplyService(msg.knownDestination);
+      if (service) reportEasyApplyCompany(msg.company, service);
+      return;
+    }
+    const tabId = sender.tab && sender.tab.id;
+    if (tabId != null && msg.company) {
+      const timer = setTimeout(() => pendingApplyClicks.delete(tabId), APPLY_CLICK_TTL_MS);
+      pendingApplyClicks.set(tabId, { company: msg.company, title: msg.title || "", timer });
+    }
+    return; // fire-and-forget, no response expected
+  }
+
+  if (msg.type === "GET_EASY_APPLY_DETECTIONS") {
+    getEasyApplyDetectionLog().then((log) => sendResponse({ log }));
+    return true;
+  }
+
   if (msg.type === "GENERATE_COVER_LETTER") {
     generateCoverLetter(msg.job || {}).then(sendResponse);
     return true;
@@ -545,6 +766,16 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === "GET_EASY_APPLY_COMPANIES") {
     getEasyApplyCompanies().then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === "CHECK_SPAM_COMPANIES") {
+    checkSpamCompanies(msg.companies || []).then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === "BLACKLIST_COMPANY") {
+    blacklistCompany(msg.company, msg.until || null).then(sendResponse);
     return true;
   }
 

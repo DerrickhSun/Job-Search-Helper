@@ -115,6 +115,7 @@ from utils.eval_utils.easy_apply_company_memory import (
     detect_easy_apply_service,
     load_easy_apply_company_memory,
 )
+from utils.eval_utils.spam_repost_detector import record_application as _record_spam_check_application
 from utils.eval_utils.student_job_filter import classify_student_job, student_job_passes_filter
 from utils.eval_utils.unpaid_job_filter import is_unpaid_job, unpaid_job_passes_filter
 from utils.cover_letter import (
@@ -398,7 +399,13 @@ def run(
 
     def _tracker_log(*a, **kw):
         with tracker_lock:
-            return tracker.log(*a, **kw)
+            result = tracker.log(*a, **kw)
+        if kw.get("status") == "applied" and a:
+            job_or_peek = a[0]
+            _record_spam_check_application(
+                str(job_or_peek.get("company") or ""), str(job_or_peek.get("title") or "")
+            )
+        return result
 
     company_lookup_worker: CompanyLookupWorker | None = None
 

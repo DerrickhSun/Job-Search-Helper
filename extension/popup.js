@@ -133,3 +133,47 @@ saveFieldsBtn.addEventListener("click", async () => {
         saveFieldsBtn.disabled = false;
     }
 });
+
+// --- Recently detected Greenhouse/Ashby companies (see background.js's passive detection) ---
+
+const easyApplyLogSection = document.getElementById("easy-apply-log-section");
+const easyApplyLogList = document.getElementById("easy-apply-log-list");
+
+function formatRelativeTime(ts) {
+    const seconds = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (seconds < 60) return "just now";
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return minutes + "m ago";
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return hours + "h ago";
+    return Math.round(hours / 24) + "d ago";
+}
+
+async function loadEasyApplyLog() {
+    let res;
+    try {
+        res = await browser.runtime.sendMessage({ type: "GET_EASY_APPLY_DETECTIONS" });
+    } catch (err) {
+        return;
+    }
+    const log = (res && res.log) || [];
+    if (!log.length) return;
+
+    easyApplyLogList.replaceChildren();
+    for (const entry of log) {
+        const li = document.createElement("li");
+        const service = document.createElement("span");
+        service.className = "easy-apply-service";
+        service.textContent = entry.service === "ashby" ? "Ashby" : "Greenhouse";
+        const time = document.createElement("span");
+        time.className = "easy-apply-time";
+        time.textContent = " — " + formatRelativeTime(entry.at);
+        li.textContent = entry.company + " → ";
+        li.appendChild(service);
+        li.appendChild(time);
+        easyApplyLogList.appendChild(li);
+    }
+    easyApplyLogSection.hidden = false;
+}
+
+loadEasyApplyLog();

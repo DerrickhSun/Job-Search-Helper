@@ -131,9 +131,36 @@ Endpoints (no authentication today; see AUTH below)::
                             "service": "greenhouse"|"ashby", "last_seen": "YYYY-MM-DD"}, ...]}
 
         Read-only dump of output/easy_apply_companies.json (see
-        utils/eval_utils/easy_apply_company_memory.py) -- companies filter-mode runs have detected
+        utils/eval_utils/easy_apply_company_memory.py) -- companies filter-mode runs (or a manual
+        `scan_saved.py` pass, or the extension's own passive detection below) have detected
         posting jobs through Greenhouse or Ashby. Used by the extension's content script to
         highlight matching job titles on LinkedIn's My Jobs tracker page.
+
+    POST /easy-apply-companies
+        body: {"company": str, "service": "greenhouse"|"ashby"}
+        -> {"companies": [...]}  (same shape as the GET above, reflecting the new entry)
+
+        Records one company/service pairing -- the extension's own passive detection calls this
+        when a real user click on LinkedIn's external "Apply" button leads to a Greenhouse/Ashby
+        destination (background.js watches where the click leads via `webNavigation.onCompleted`,
+        the same signal `utils/job_searcher.py::selected_job_apply_destination_url` approximates
+        via polling for Selenium). `service` must be one of
+        `utils.eval_utils.easy_apply_company_memory.EASY_APPLY_SERVICES`.
+
+    POST /spam-check
+        body: {"companies": [str, ...]}
+        -> {"flagged": [str, ...]}  (the subset of the input list, same spelling, that's flagged)
+
+        Flags companies suspected of spam-reposting the same job title repeatedly (not a LinkedIn
+        issue or a bug in our own processing -- some employers just throw out many near-duplicate
+        postings). See `utils/eval_utils/spam_repost_detector.py` for the actual rule (more than
+        `SPAM_MIN_COUNT` applications under the same title within `SPAM_WINDOW_DAYS` days, across
+        both bot auto-applies and assisted/extension-recorded applications). Computed live from
+        an in-process cache rebuilt lazily (only when a request actually arrives and the cache is
+        older than `CACHE_MAX_AGE_SECONDS`) -- there is no persisted "spam companies" file to go
+        stale, since the flag is cheap to recompute and therefore never needs active pruning. Used
+        by the extension's content script to badge matching job titles on LinkedIn's My Jobs
+        tracker page, the same way `/easy-apply-companies` does.
 
     POST /profile/connect
         body: {"site": "linkedin", "profile_id": str | null,
@@ -275,7 +302,11 @@ from utils.eval_utils.company_blacklist import (
     save_company_blacklist,
     save_temporary_blacklist,
 )
-from utils.eval_utils.easy_apply_company_memory import load_easy_apply_company_memory
+from utils.eval_utils.easy_apply_company_memory import (
+    EASY_APPLY_SERVICES,
+    load_easy_apply_company_memory,
+)
+from utils.eval_utils.spam_repost_detector import company_spam_suspected
 from utils.eval_utils.student_job_filter import STUDENT_JOB_MODES
 from utils.eval_utils.unpaid_job_filter import UNPAID_JOB_MODES
 from utils.extension_process_service import process_extension_request, resolve_conflicts
@@ -438,7 +469,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path not in (
             "/cover-letter", "/answer-fields", "/process-extension", "/process-extension/resolve",
             "/config", "/blacklist", "/profile/connect", "/profile/connect/resolve",
-            "/profile/ping", "/profile/disconnect",
+            "/profile/ping", "/profile/disconnect", "/easy-apply-companies", "/spam-check",
         ):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
@@ -475,8 +506,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_profile_connect_resolve(data)
         elif self.path == "/profile/ping":
             self._handle_profile_ping(data)
-        else:
+        elif self.path == "/profile/disconnect":
             self._handle_profile_disconnect(data)
+        elif self.path == "/easy-apply-companies":
+            self._handle_post_easy_apply_company(data)
+        else:
+            self._handle_spam_check(data)
 
     def _handle_cover_letter(self, data: dict[str, Any]) -> None:
         title = str(data.get("title") or "").strip()
@@ -693,6 +728,30 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_get_easy_apply_companies(self) -> None:
         mem = load_easy_apply_company_memory()
         self._send_json(HTTPStatus.OK, {"companies": mem.entries})
+
+    def _handle_post_easy_apply_company(self, data: dict[str, Any]) -> None:
+        company = str(data.get("company") or "").strip()
+        service = str(data.get("service") or "").strip()
+        if not company:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "company is required"})
+            return
+        if service not in EASY_APPLY_SERVICES:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": f"service must be one of {sorted(EASY_APPLY_SERVICES)}"},
+            )
+            return
+        mem = load_easy_apply_company_memory()
+        mem.remember(slug=None, company_display=company, service=service)
+        self._send_json(HTTPStatus.OK, {"companies": mem.entries})
+
+    def _handle_spam_check(self, data: dict[str, Any]) -> None:
+        companies = data.get("companies")
+        if not isinstance(companies, list) or not all(isinstance(c, str) for c in companies):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "companies must be a list of strings"})
+            return
+        flagged = [c for c in companies if c.strip() and company_spam_suspected(c)]
+        self._send_json(HTTPStatus.OK, {"flagged": flagged})
 
     def _handle_post_blacklist(self, data: dict[str, Any]) -> None:
         action = str(data.get("action") or "").strip()

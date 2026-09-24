@@ -111,6 +111,30 @@ _MIN_FIRST_NAME_LEN = 2
 # multi-step redirect chain (see that method's docstring).
 _APPLY_DESTINATION_SETTLE_SECONDS = 0.6
 
+# Newer "SDUI" job pages (LinkedIn's own param name: isSdui=true on the wrapped URL below) render
+# the external Apply control as a plain <a aria-label="Apply on company website" href="..."> --
+# real anchor, real href -- instead of the older no-href <button role="link" id="jobs-apply-
+# button-id">. Confirmed live: a real Ashby posting used this form and was missed entirely by
+# both this method (looking only for the old button) and the extension's own click-listener
+# (same selector). See selected_job_apply_destination_url().
+_APPLY_LINK_CSS = 'a[aria-label="Apply on company website"]'
+_SAFETY_GO_MARKER = "linkedin.com/safety/go/"
+
+
+def _decode_linkedin_safety_go_url(href: str) -> str:
+    """
+    LinkedIn wraps some external links in a ``linkedin.com/safety/go/?url=<percent-encoded>&...``
+    redirect tracker -- if `href` matches that shape, decode and return the real destination;
+    otherwise return `href` unchanged. The wrapped URL is percent-encoded (dots as ``%2E`` etc.),
+    so a plain substring check for "ashbyhq.com"/"greenhouse.io" against the raw, un-decoded
+    `href` would silently miss every match -- decoding first is not optional.
+    """
+    if _SAFETY_GO_MARKER not in href:
+        return href
+    query = urllib.parse.urlparse(href).query
+    wrapped = urllib.parse.parse_qs(query).get("url")
+    return wrapped[0] if wrapped else href
+
 
 def normalize_search_keywords(keywords: str | Sequence[str]) -> list[str]:
     """Strip and drop empties; ``str`` is treated as a single query."""
@@ -2470,13 +2494,23 @@ class JobSearcher:
         """
         Best-effort external apply destination for the selected (non-Easy-Apply) job.
 
-        The external "Apply" control (``#jobs-apply-button-id``) is a plain ``<button
-        role="link">`` with no ``href`` at all — LinkedIn opens the destination in a new tab via
-        JS on click most of the time, but some ATS integrations instead navigate the *current*
-        tab (suspected culprit for a real miss on a Baseten posting -- its Ashby setup never
-        opened a second window) -- so there's nothing to read without actually clicking, and this
-        handles both. Clicks it, then polls whichever tab ends up holding the destination (a new
-        one if one opened, else the original) until its URL holds *the same* value for
+        Tries the newer "SDUI" rendering first: some job pages (LinkedIn's own param name --
+        ``isSdui=true`` shows up on the wrapped URL below) render the external Apply control as a
+        plain ``<a aria-label="Apply on company website" href="...">`` -- a real anchor with a
+        real href, wrapped in a ``linkedin.com/safety/go/?url=<percent-encoded>&...`` redirect
+        tracker (see ``_decode_linkedin_safety_go_url``). When present, reading and decoding that
+        href is simpler and strictly more reliable than clicking through: no click, no new tab, no
+        redirect-settle wait, no chance of capturing an intermediate hop. Confirmed live: a real
+        Ashby posting used this exact form and was missed entirely, since neither this method nor
+        the extension's own click-listener recognized anything but the older button below.
+
+        Falls back to the older external "Apply" control (``#jobs-apply-button-id``), a plain
+        ``<button role="link">`` with no ``href`` at all — LinkedIn opens the destination in a new
+        tab via JS on click most of the time, but some ATS integrations instead navigate the
+        *current* tab (confirmed live: a Baseten posting's Ashby setup never opened a second
+        window) -- so there's nothing to read without actually clicking, and this handles both.
+        Clicks it, then polls whichever tab ends up holding the destination (a new one if one
+        opened, else the original) until its URL holds *the same* value for
         ``_APPLY_DESTINATION_SETTLE_SECONDS`` (not just until navigation has merely started) --
         some ATS flows bounce through an intermediate tracking/redirect hop before landing on the
         real destination (e.g. a company-page redirector in front of an Ashby/Greenhouse board),
@@ -2495,6 +2529,22 @@ class JobSearcher:
         """
         if self._driver_stopped(driver):
             return ""
+
+        try:
+            links = driver.find_elements(By.CSS_SELECTOR, _APPLY_LINK_CSS)
+        except WebDriverException:
+            links = []
+        for link in links:
+            try:
+                href = (link.get_attribute("href") or "").strip()
+            except WebDriverException:
+                continue
+            if not href:
+                continue
+            dest = _decode_linkedin_safety_go_url(href)
+            if dest and "linkedin.com" not in dest.lower():
+                return dest
+
         try:
             btn = driver.find_element(By.CSS_SELECTOR, "#jobs-apply-button-id")
         except WebDriverException:

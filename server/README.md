@@ -273,3 +273,49 @@ with LinkedIn's Terms of Service. Apply only to jobs you're genuinely interested
   as one option, real but limited: it can't be forged by page JS, but only proves "some browser
   extension," not specifically this one, unless `manifest.json` pins a fixed `"key"`, and it does
   nothing against a non-browser local process forging the same header). Not started.
+
+- **Future idea: a request queue, so a device without heavy (Selenium) access can still queue up
+  work for a device that has it.** Directly related to the "let a webpage trigger the bot
+  programs" idea above -- same underlying need (something has to actually run `main.py`-style
+  work on the caller's behalf), but framed as async queue-and-poll instead of a live subprocess
+  the caller waits on. Only relevant once there's an actual reason to go beyond one person's own
+  devices all running locally -- **explicitly deferred until then**, not needed for today's setup.
+
+  Design settled on so far, reusing infrastructure that already exists rather than standing up
+  anything new:
+  - **S3 is the queue, not a new hosted service.** Every device already talks to S3 outbound over
+    plain HTTPS for `output/` sync -- no port forwarding, no inbound exposure, works across
+    completely different networks. A `request_queue/` prefix (one file per pending request) lets
+    a light device write a request and a heavy device read/claim it without either ever needing
+    to be reachable by the other. Claiming a request reuses the same locking pattern already
+    built for general S3 sync (`acquire_sync_lock`) -- not a new concurrency problem.
+  - **Rejected: direct light-to-heavy communication (light devices "detect" and call a heavy
+    device's server directly).** Doesn't actually work today regardless of any flag --
+    `extension_server.py` deliberately refuses to bind to anything but loopback
+    (`_LOOPBACK_HOSTS` check in `main()`), specifically so it's unreachable by anything off the
+    same machine. Making that work would mean opening the server to the LAN or internet (reopening
+    the whole auth/exposure question above) *and* solving discovery (mDNS on the same LAN, or a
+    registry service -- which is itself a cloud coordination point, not a shortcut around one).
+  - **Rejected: a cloud-hosted "light dispatcher" that pushes work to heavy devices instead of
+    them polling S3.** Would be more responsive (push vs. poll latency), but not worth it at this
+    scale: it requires actually hosting and maintaining something 24/7 (the exact cost/complexity
+    the S3 approach avoids), needs its own auth surface (light devices proving they may submit,
+    heavy devices proving they may claim -- the same multi-device auth problem already being
+    deferred elsewhere in this list), and is a single point of failure S3 doesn't have. None of
+    that latency actually matters here either -- these are multi-minute tasks once picked up, so
+    noticing a request 5 seconds vs. 5 minutes after submission makes no practical difference.
+  - **Heavy-side execution: a flag on `extension_server.py`, not a separate program.** The actual
+    heavy-lifting code (`JobSearcher`, `FormFillRulesEngine`, Selenium/Chrome driving) already
+    lives in shared `utils/` modules that `main.py`/`cleanup.py`/`scan_saved.py` all call into --
+    a queue worker calling the same functions isn't a rewrite regardless of where it lives, so the
+    only real question was one running process per heavy machine or two. Answer: one -- a
+    background-thread poller gated by a flag/env var (e.g. `--heavy-access` /
+    `HEAVY_ACCESS=1`), mirroring `utils/company_lookup_worker.py::CompanyLookupWorker`'s existing
+    precedent (a second Chrome session owned by its own thread while the HTTP handler thread stays
+    responsive to normal light requests). This is what lets one machine handle both light and
+    heavy work without duplicating anything.
+  - **Stale requests need pruning** -- same `STALE_AFTER_DAYS`-style TTL pattern already used for
+    the easy-apply/consulting-company memories, so an abandoned request (no heavy device ever
+    checked in) doesn't sit in S3 forever.
+
+  Not started -- design only, revisit once there's an actual need to go beyond local-only use.

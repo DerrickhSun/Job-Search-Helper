@@ -1568,6 +1568,226 @@ function renderLinkedInConnectConflict(card, { onChoice }) {
     card.appendChild(footer);
 }
 
+// --- Blacklist company popup: reuses the same backdrop/card modal as the sync/connect flows ---
+
+function openBlacklistFlow(detectedCompany) {
+    const { backdrop, card } = openSyncPopup();
+    if (detectedCompany) {
+        renderBlacklistDurationStep(card, detectedCompany, backdrop);
+    } else {
+        renderBlacklistCompanyStep(card, backdrop);
+    }
+}
+
+function renderBlacklistCompanyStep(card, backdrop) {
+    card.replaceChildren();
+
+    const heading = document.createElement("h2");
+    heading.textContent = "Blacklist a company";
+    card.appendChild(heading);
+
+    const body = document.createElement("div");
+    body.textContent = "No job detected on this page — enter the company to blacklist:";
+    card.appendChild(body);
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Company name";
+    input.style.width = "100%";
+    input.style.marginTop = "8px";
+    input.style.boxSizing = "border-box";
+    card.appendChild(input);
+
+    const footer = document.createElement("div");
+    footer.className = "jobhelp-conflict-footer";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "close";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", () => backdrop.remove());
+    footer.appendChild(cancelBtn);
+
+    const nextBtn = document.createElement("button");
+    nextBtn.type = "button";
+    nextBtn.className = "submit";
+    nextBtn.textContent = "Next";
+    nextBtn.addEventListener("click", () => {
+        const company = input.value.trim();
+        if (!company) return;
+        renderBlacklistDurationStep(card, company, backdrop);
+    });
+    footer.appendChild(nextBtn);
+
+    card.appendChild(footer);
+    input.focus();
+}
+
+// Blank years/months/days/date -> permanent blacklist. An explicit date (native <input
+// type="date">, already YYYY-MM-DD) wins over the relative fields if both are somehow filled.
+function resolveBlacklistUntil({ years, months, days, explicitDate }) {
+    if (explicitDate) return explicitDate;
+
+    const y = parseInt(years, 10) || 0;
+    const m = parseInt(months, 10) || 0;
+    const d = parseInt(days, 10) || 0;
+    if (y === 0 && m === 0 && d === 0) return null;
+
+    const until = new Date();
+    until.setFullYear(until.getFullYear() + y);
+    until.setMonth(until.getMonth() + m);
+    until.setDate(until.getDate() + d);
+
+    const yyyy = until.getFullYear();
+    const mm = String(until.getMonth() + 1).padStart(2, "0");
+    const dd = String(until.getDate()).padStart(2, "0");
+    return yyyy + "-" + mm + "-" + dd;
+}
+
+function renderBlacklistDurationStep(card, company, backdrop) {
+    card.replaceChildren();
+
+    const heading = document.createElement("h2");
+    heading.textContent = "Blacklist “" + company + "”";
+    card.appendChild(heading);
+
+    const hint = document.createElement("div");
+    hint.textContent =
+        "Leave everything below blank for a permanent blacklist, or set how long it should last:";
+    card.appendChild(hint);
+
+    const ymdRow = document.createElement("div");
+    ymdRow.style.display = "flex";
+    ymdRow.style.gap = "8px";
+    ymdRow.style.marginTop = "10px";
+
+    const makeNumberField = (labelText) => {
+        const wrap = document.createElement("label");
+        wrap.style.flex = "1";
+        wrap.style.fontSize = "12px";
+        const span = document.createElement("span");
+        span.textContent = labelText;
+        span.style.display = "block";
+        span.style.marginBottom = "2px";
+        const fieldInput = document.createElement("input");
+        fieldInput.type = "number";
+        fieldInput.min = "0";
+        fieldInput.step = "1";
+        fieldInput.style.width = "100%";
+        fieldInput.style.boxSizing = "border-box";
+        wrap.appendChild(span);
+        wrap.appendChild(fieldInput);
+        return { wrap, input: fieldInput };
+    };
+
+    const years = makeNumberField("Years");
+    const months = makeNumberField("Months");
+    const days = makeNumberField("Days");
+    ymdRow.appendChild(years.wrap);
+    ymdRow.appendChild(months.wrap);
+    ymdRow.appendChild(days.wrap);
+    card.appendChild(ymdRow);
+
+    const orDiv = document.createElement("div");
+    orDiv.textContent = "— or —";
+    orDiv.style.textAlign = "center";
+    orDiv.style.margin = "10px 0";
+    orDiv.style.color = "#777";
+    orDiv.style.fontSize = "12px";
+    card.appendChild(orDiv);
+
+    const dateWrap = document.createElement("label");
+    dateWrap.style.display = "block";
+    const dateSpan = document.createElement("span");
+    dateSpan.textContent = "Specific end date";
+    dateSpan.style.display = "block";
+    dateSpan.style.fontSize = "12px";
+    dateSpan.style.marginBottom = "2px";
+    const dateInput = document.createElement("input");
+    dateInput.type = "date";
+    dateInput.style.width = "100%";
+    dateInput.style.boxSizing = "border-box";
+    dateWrap.appendChild(dateSpan);
+    dateWrap.appendChild(dateInput);
+    card.appendChild(dateWrap);
+
+    const statusEl = document.createElement("div");
+    statusEl.style.marginTop = "8px";
+    statusEl.style.fontSize = "13px";
+    card.appendChild(statusEl);
+
+    const footer = document.createElement("div");
+    footer.className = "jobhelp-conflict-footer";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "close";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", () => backdrop.remove());
+    footer.appendChild(cancelBtn);
+
+    const submitBtn = document.createElement("button");
+    submitBtn.type = "button";
+    submitBtn.className = "submit";
+    submitBtn.textContent = "Blacklist";
+    submitBtn.addEventListener("click", async () => {
+        const until = resolveBlacklistUntil({
+            years: years.input.value,
+            months: months.input.value,
+            days: days.input.value,
+            explicitDate: dateInput.value,
+        });
+
+        submitBtn.disabled = true;
+        cancelBtn.disabled = true;
+        statusEl.textContent = "Saving…";
+
+        let res;
+        try {
+            res = await browser.runtime.sendMessage({ type: "BLACKLIST_COMPANY", company, until });
+        } catch (err) {
+            res = { error: err.message };
+        }
+
+        if (!res || res.error) {
+            renderBlacklistOutcome(
+                card, (res && res.error) || "unknown error", true, () => backdrop.remove()
+            );
+            return;
+        }
+
+        const label = until ? ("until " + until) : "permanently";
+        renderBlacklistOutcome(
+            card, "“" + company + "” blacklisted " + label + ".", false, () => backdrop.remove()
+        );
+    });
+    footer.appendChild(submitBtn);
+
+    card.appendChild(footer);
+}
+
+function renderBlacklistOutcome(card, message, isError, onDone) {
+    card.replaceChildren();
+
+    const heading = document.createElement("h2");
+    heading.textContent = isError ? "Blacklist failed" : "Company blacklisted";
+    card.appendChild(heading);
+
+    const body = document.createElement("div");
+    body.textContent = message;
+    card.appendChild(body);
+
+    const footer = document.createElement("div");
+    footer.className = "jobhelp-conflict-footer";
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "submit";
+    closeBtn.textContent = "Close";
+    closeBtn.addEventListener("click", onDone);
+    footer.appendChild(closeBtn);
+    card.appendChild(footer);
+}
+
 function injectSlotStyles(slot) {
     if (slot.querySelector("style[data-jobhelp]")) return;
 
@@ -1846,6 +2066,14 @@ function buildButtons(slot) {
         );
     });
 
+    const blacklistBtn = document.createElement("button");
+    blacklistBtn.type = "button";
+    blacklistBtn.textContent = "Blacklist company";
+    blacklistBtn.addEventListener("click", () => {
+        const job = getJobForRecord();
+        openBlacklistFlow(job && job.company ? job.company : null);
+    });
+
     startRecordButtonsRefresh(recordBtn, saveQuestionsBtn, coverLetterBtn, connectLinkedInBtn);
 
     const questionsWrap = document.createElement("div");
@@ -2026,6 +2254,7 @@ function buildButtons(slot) {
     slot.appendChild(recordBtn);
     slot.appendChild(coverLetterBtn);
     slot.appendChild(connectLinkedInBtn);
+    slot.appendChild(blacklistBtn);
     slot.appendChild(questionsWrap);
     slot.appendChild(menuWrap);
     slot.appendChild(downloadBtn);
@@ -2116,10 +2345,13 @@ function companyNamesMatch(a, b) {
     return longer.includes(shorter);
 }
 
-function isEasyApplyCompany(companyDisplay, companies) {
+// Returns the matched company-memory entry (so its `service` decides which badge to show), or
+// null -- one match slot per company is fine even though jobs can end up with several *tags*
+// later, since a company only ever uses one ATS at a time (see easy_apply_company_memory.py).
+function findEasyApplyCompanyMatch(companyDisplay, companies) {
     const nc = normalizeCompanyName(companyDisplay);
-    if (!nc) return false;
-    return companies.some((entry) => entry.normalized_name && companyNamesMatch(nc, entry.normalized_name));
+    if (!nc) return null;
+    return companies.find((entry) => entry.normalized_name && companyNamesMatch(nc, entry.normalized_name)) || null;
 }
 
 // Tracker rows read "Company · Location" (or "Company · Location (Remote)") in one line.
@@ -2128,6 +2360,29 @@ function extractCompanyFromTrackerLine(text) {
 }
 
 const EASY_APPLY_PROCESSED_ATTR = "data-jobhelp-easy-apply-checked";
+
+// Same green for every service (green reads as "good" at a glance) with a distinct *shape* per
+// service so they're still individually identifiable (and still distinguishable for colorblind
+// users, since shape doesn't rely on color at all) -- a small badge appended next to the title
+// rather than recoloring it, so this can sit alongside other tags later (blacklist/consulting/
+// etc.) without any of them fighting over the same "one color" slot on the title text.
+const EASY_APPLY_BADGE_COLOR = "#2f9e44";
+const EASY_APPLY_BADGE_STYLE = {
+    greenhouse: { symbol: "●", label: "Greenhouse" },
+    ashby: { symbol: "◆", label: "Ashby" },
+};
+
+function buildEasyApplyBadge(service) {
+    const style = EASY_APPLY_BADGE_STYLE[service];
+    if (!style) return null;
+    const badge = document.createElement("span");
+    badge.className = "jobhelp-easy-apply-badge";
+    badge.textContent = " " + style.symbol;
+    badge.title = "This company uses " + style.label;
+    badge.style.color = EASY_APPLY_BADGE_COLOR;
+    badge.style.fontWeight = "bold";
+    return badge;
+}
 
 function highlightEasyApplyJobs(companies) {
     if (!companies || !companies.length) return;
@@ -2139,26 +2394,84 @@ function highlightEasyApplyJobs(companies) {
         link.setAttribute(EASY_APPLY_PROCESSED_ATTR, "1");
 
         const company = extractCompanyFromTrackerLine(paragraphs[1].textContent);
-        if (company && isEasyApplyCompany(company, companies)) {
-            paragraphs[0].style.color = "seagreen";
-        }
+        const match = company && findEasyApplyCompanyMatch(company, companies);
+        const badge = match && buildEasyApplyBadge(match.service);
+        if (badge) paragraphs[0].appendChild(badge);
     }
 }
 
+// Negative counterpart to the green badges above: companies suspected of spam-reposting the
+// same job title repeatedly (see extension_server.py's /spam-check and
+// utils/eval_utils/spam_repost_detector.py for the actual rule). Unlike easy-apply companies,
+// there's no fixed list to fetch up front -- which companies to ask about depends on what's
+// currently on the page, so this batches the tracker rows into one CHECK_SPAM_COMPANIES call per
+// scan instead of checking one at a time.
+const SPAM_PROCESSED_ATTR = "data-jobhelp-spam-checked";
+const SPAM_BADGE_COLOR = "#c0392b";
+const SPAM_BADGE_SYMBOL = "▲";
+
+function buildSpamBadge() {
+    const badge = document.createElement("span");
+    badge.className = "jobhelp-spam-badge";
+    badge.textContent = " " + SPAM_BADGE_SYMBOL;
+    badge.title = "This company may be spam-reposting the same job title repeatedly";
+    badge.style.color = SPAM_BADGE_COLOR;
+    badge.style.fontWeight = "bold";
+    return badge;
+}
+
+function checkAndBadgeSpamCompanies() {
+    const pending = [];
+    const companiesToCheck = new Set();
+    const links = document.querySelectorAll('a[href*="/jobs/view/"]');
+    for (const link of links) {
+        if (link.getAttribute(SPAM_PROCESSED_ATTR)) continue;
+        const paragraphs = link.querySelectorAll("p");
+        if (paragraphs.length < 2) continue;
+        link.setAttribute(SPAM_PROCESSED_ATTR, "1");
+
+        const company = extractCompanyFromTrackerLine(paragraphs[1].textContent);
+        if (!company) continue;
+        pending.push({ titleParagraph: paragraphs[0], company });
+        companiesToCheck.add(company);
+    }
+    if (!pending.length) return;
+
+    browser.runtime.sendMessage({ type: "CHECK_SPAM_COMPANIES", companies: [...companiesToCheck] })
+        .then((res) => {
+            const flagged = new Set((res && res.flagged) || []);
+            if (!flagged.size) return;
+            for (const { titleParagraph, company } of pending) {
+                if (flagged.has(company)) {
+                    titleParagraph.appendChild(buildSpamBadge());
+                }
+            }
+        })
+        .catch((err) => {
+            console.warn("[JobHelp] could not check spam companies:", err.message);
+        });
+}
+
 function startEasyApplyHighlighting() {
+    // Doesn't wait on the easy-apply company list below -- an unrelated round trip -- so this
+    // runs (and can start badging spam) immediately.
+    checkAndBadgeSpamCompanies();
+
     browser.runtime.sendMessage({ type: "GET_EASY_APPLY_COMPANIES" }).then((res) => {
         const companies = (res && res.companies) || [];
-        if (!companies.length) return;
-
         highlightEasyApplyJobs(companies);
 
         // The tracker is a SPA (pagination/lazy render adds rows without a full reload); rescan
         // on DOM changes, debounced since pagination can add many nodes in one burst. Already-
-        // processed links are skipped (see EASY_APPLY_PROCESSED_ATTR), so repeat scans are cheap.
+        // processed links are skipped (see EASY_APPLY_PROCESSED_ATTR/SPAM_PROCESSED_ATTR), so
+        // repeat scans are cheap.
         let debounceTimer = null;
         const observer = new MutationObserver(() => {
             clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => highlightEasyApplyJobs(companies), 150);
+            debounceTimer = setTimeout(() => {
+                highlightEasyApplyJobs(companies);
+                checkAndBadgeSpamCompanies();
+            }, 150);
         });
         observer.observe(document.body, { childList: true, subtree: true });
     }).catch((err) => {
@@ -2173,9 +2486,65 @@ function startEasyApplyHighlighting() {
 // too (all_frames, for scanning fields inside embedded ATS forms), and a
 // full-width fixed taskbar bar has no sensible rendering inside a nested
 // iframe's own viewport.
+// Passive Greenhouse/Ashby detection: report every real external-Apply click so background.js
+// can watch where it leads (see detectEasyApplyService there) -- mirrors
+// utils/eval_utils/easy_apply_company_memory.py's detection, just triggered by genuine user
+// clicks instead of main.py's automated ones, so none of that bot-detection risk applies here.
+// Capture phase so this still fires even if something else on the page stops propagation later.
+// LinkedIn wraps some external links in a linkedin.com/safety/go/?url=<percent-encoded>&...
+// redirect tracker -- mirrors utils/job_searcher.py::_decode_linkedin_safety_go_url. The wrapped
+// URL is percent-encoded (dots as %2E etc.), so checking the raw href for "ashbyhq.com"/
+// "greenhouse.io" without decoding first would silently miss every match.
+function decodeLinkedInSafetyGoUrl(href) {
+    if (!href || !href.includes("linkedin.com/safety/go/")) return href;
+    try {
+        const wrapped = new URL(href, location.href).searchParams.get("url");
+        return wrapped || href;
+    } catch (err) {
+        return href;
+    }
+}
+
+function startApplyClickReporting() {
+    document.addEventListener("click", (event) => {
+        // Newer "SDUI" job pages render external Apply as a real <a href="..."> (confirmed live:
+        // a real Ashby posting used this form and was missed entirely by the older
+        // #jobs-apply-button-id-only selector below, since that control simply isn't there).
+        const newLink = event.target.closest &&
+            event.target.closest('a[aria-label="Apply on company website"]');
+        const oldBtn = !newLink && event.target.closest && event.target.closest("#jobs-apply-button-id");
+        if (!newLink && !oldBtn) return;
+
+        const job = getJobForRecord();
+        if (!job || !job.company) return;
+
+        if (newLink) {
+            // The href already IS the destination (once decoded) -- report it directly instead
+            // of waiting for a click-through navigation to resolve, which is both simpler and
+            // more reliable than the new-tab/same-tab tracking below needs to be for the older
+            // button.
+            const dest = decodeLinkedInSafetyGoUrl(newLink.getAttribute("href") || "");
+            browser.runtime.sendMessage({
+                type: "APPLY_BUTTON_CLICKED",
+                company: job.company,
+                title: job.title,
+                knownDestination: dest || null,
+            }).catch(() => {});
+            return;
+        }
+
+        browser.runtime.sendMessage({
+            type: "APPLY_BUTTON_CLICKED",
+            company: job.company,
+            title: job.title,
+        }).catch(() => {});
+    }, true);
+}
+
 if (window.top === window) {
   if (isLinkedInPage()) {
     showTaskbar();
+    startApplyClickReporting();
     if (isJobsTrackerPage()) {
       startEasyApplyHighlighting();
     }
