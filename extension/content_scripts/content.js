@@ -1013,7 +1013,7 @@ function scheduleQuestionsMenuHoverClose(menuRoot) {
     questionsMenuHoverCloseTimer = setTimeout(() => {
         questionsMenuHoverCloseTimer = null;
         closeSavedQuestionsMenu(menuRoot);
-    }, SAVED_MENU_HOVER_CLOSE_MS);
+    }, RECORDED_MENU_HOVER_CLOSE_MS);
 }
 
 function resetSavedQuestionsMenuPosition(menu) {

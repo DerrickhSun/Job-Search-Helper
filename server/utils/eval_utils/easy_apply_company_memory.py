@@ -47,11 +47,18 @@ def detect_easy_apply_service(url: str) -> str | None:
     ``ashby_jid=``) -- e.g. ``https://superhuman.com/company/careers/jobs?ashby_jid=...`` is
     Ashby embedded on Superhuman's own domain, not Ashby's hosted subdomain at all, and would be
     missed by a hostname-only check.
+
+    Also checks ``grnh.se``, Greenhouse's own link-shortener domain -- confirmed live: LinkedIn's
+    "Apply on company website" link for a Greenhouse posting can wrap a ``grnh.se/<slug>`` short
+    link instead of the final ``job-boards.greenhouse.io/...?gh_jid=...`` URL, and that short link
+    itself redirects to the real board rather than embedding ``gh_jid=`` anywhere in its own query
+    string -- so without this check it reads as neither greenhouse.io nor gh_jid= and is missed
+    entirely, even though it unambiguously *is* Greenhouse.
     """
     u = (url or "").strip().lower()
     if not u:
         return None
-    if "greenhouse.io" in u or "gh_jid=" in u:
+    if "greenhouse.io" in u or "gh_jid=" in u or "grnh.se" in u:
         return "greenhouse"
     if "ashbyhq.com" in u or "ashby_jid=" in u:
         return "ashby"

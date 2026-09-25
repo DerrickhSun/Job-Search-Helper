@@ -598,7 +598,12 @@ async function disconnectSite(site) {
 function detectEasyApplyService(url) {
   const u = (url || "").toLowerCase().trim();
   if (!u) return null;
-  if (u.includes("greenhouse.io") || u.includes("gh_jid=")) return "greenhouse";
+  // grnh.se is Greenhouse's own link-shortener domain -- confirmed live: LinkedIn's "Apply on
+  // company website" link can wrap a grnh.se/<slug> short link instead of the final
+  // job-boards.greenhouse.io/...?gh_jid=... URL, and that short link doesn't embed gh_jid=
+  // anywhere in its own query string, so it reads as neither greenhouse.io nor gh_jid= without
+  // this check even though it unambiguously *is* Greenhouse.
+  if (u.includes("greenhouse.io") || u.includes("gh_jid=") || u.includes("grnh.se")) return "greenhouse";
   if (u.includes("ashbyhq.com") || u.includes("ashby_jid=")) return "ashby";
   return null;
 }
@@ -775,7 +780,16 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "BLACKLIST_COMPANY") {
-    blacklistCompany(msg.company, msg.until || null).then(sendResponse);
+    blacklistCompany(msg.company, msg.until || null)
+      .then(sendResponse)
+      .catch((err) => {
+        // Without this, an unexpected exception here would leave the message channel closed
+        // with no response at all -- the caller's sendMessage() then resolves with `undefined`
+        // instead of rejecting, which is indistinguishable from "no error info given" (shows up
+        // client-side as a generic "unknown error"). Logging here surfaces what actually failed.
+        console.warn("[JobHelp] blacklistCompany failed:", err);
+        sendResponse({ error: (err && err.message) || String(err) });
+      });
     return true;
   }
 
